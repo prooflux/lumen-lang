@@ -1,0 +1,9 @@
+# Illustrative negative case. MUST fail to compile.
+# Expected diagnostic: E0150 chained comparison is not allowed.
+# Comparison operators are non-associative, so 'a < b < c' is rejected rather
+# than silently parsed as '(a < b) < c'. This removes a classic foot-gun.
+# Confident fix: split into 'a < b and b < c'.
+
+fn in_range(x: Int) -> Bool {
+  return 0 < x < 10            # E0150 here
+}

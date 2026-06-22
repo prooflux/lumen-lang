@@ -1,0 +1,23 @@
+# Lumen-mu. Conformance: positive. Expected stdout: "ok 4\ndiv by zero\n".
+# Demonstrates a user sum type, Result, exhaustive match, and the non-coercing ? operator.
+
+type DivError = | DivByZero
+
+fn checked_div(a: Int, b: Int) -> Result[Int, DivError] {
+  if b == 0 { return err(DivByZero) }
+  return ok(a / b)
+}
+
+fn show(r: Result[Int, DivError], console: Console) -> Unit {
+  match r {
+    ok(v)  -> console.print(text_concat("ok ", int_to_text(v)))
+    err(e) -> match e {
+                DivByZero -> console.print("div by zero")
+              }
+  }
+}
+
+fn main(console: Console) -> Unit {
+  show(checked_div(8, 2), console)
+  show(checked_div(8, 0), console)
+}

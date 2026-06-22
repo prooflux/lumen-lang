@@ -1,0 +1,19 @@
+# Illustrative (not yet runnable). Demonstrates contracts.
+# Positive case: integer square root with a precondition and a postcondition.
+# In debug builds the contracts are checked; a violation produces a structured
+# C#### contract-violation diagnostic pointing at the exact clause.
+
+fn isqrt(n: Int) -> Int
+  requires n >= 0
+  ensures  result * result <= n
+{
+  var r = 0
+  while (r + 1) * (r + 1) <= n {
+    r = r + 1
+  }
+  return r
+}
+
+fn main(console: Console) {
+  console.print(to_text(isqrt(17)))     # expected output: 4
+}

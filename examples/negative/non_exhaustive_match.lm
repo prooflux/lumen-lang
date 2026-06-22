@@ -1,0 +1,17 @@
+# Illustrative negative case. MUST fail to compile.
+# Expected diagnostic: E0210 non-exhaustive match: missing case Triangle.
+# Exhaustiveness checking turns "the author forgot a case" from a silent
+# run-time bug into a compile error that names the exact missing variant.
+
+type Shape =
+  | Circle(radius: Float)
+  | Rect(width: Float, height: Float)
+  | Triangle(base: Float, height: Float)
+
+fn area(s: Shape) -> Float {
+  match s {
+    Circle(r)  -> 3.14159 * r * r
+    Rect(w, h) -> w * h
+    # Triangle is missing -> E0210, pointing at this match.
+  }
+}

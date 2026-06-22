@@ -1,0 +1,14 @@
+# Illustrative negative case. MUST fail to compile.
+# Expected diagnostic: E0102 type-mismatch at the call to add, second argument.
+#   expected Int, got Text. Confident fix: wrap with to_int(...).
+# There is no implicit coercion in Lumen, so this is a compile error, not a
+# silent run-time surprise.
+
+fn add(a: Int, b: Int) -> Int {
+  return a + b
+}
+
+fn main(console: Console) {
+  let total = add(1, "2")        # E0102 here, at "2"
+  console.print(to_text(total))
+}

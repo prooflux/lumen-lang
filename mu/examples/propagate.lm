@@ -1,0 +1,26 @@
+# Lumen-mu. Conformance: positive. Expected stdout: "9\n".
+# Demonstrates ? propagation (non-coercing: the error type must match the enclosing fn).
+
+type ParseError = | NotANumber
+
+fn parse_digit(t: Text) -> Result[Int, ParseError] {
+  # (stdlib helper in the real subset; illustrative here)
+  if text_eq(t, "0") { return ok(0) }
+  if text_eq(t, "3") { return ok(3) }
+  if text_eq(t, "6") { return ok(6) }
+  return err(NotANumber)
+}
+
+fn sum_three(a: Text, b: Text, c: Text) -> Result[Int, ParseError] {
+  let x = parse_digit(a)?        # short-circuits with err(NotANumber) on failure, type-matched
+  let y = parse_digit(b)?
+  let z = parse_digit(c)?
+  return ok(x + y + z)
+}
+
+fn main(console: Console) -> Unit {
+  match sum_three("0", "3", "6") {
+    ok(v)  -> console.print(int_to_text(v))
+    err(_) -> console.print("parse error")
+  }
+}

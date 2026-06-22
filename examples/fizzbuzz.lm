@@ -1,0 +1,17 @@
+# Illustrative (not yet runnable). Classic FizzBuzz, 1..=15.
+# Conformance: positive case. Demonstrates for-in, match on a tuple, and Text.
+
+fn classify(n: Int) -> Text {
+  match (n % 3, n % 5) {
+    (0, 0) -> "FizzBuzz"
+    (0, _) -> "Fizz"
+    (_, 0) -> "Buzz"
+    (_, _) -> to_text(n)
+  }
+}
+
+fn main(console: Console) {
+  for n in range(1, 16) {
+    console.print(classify(n))
+  }
+}

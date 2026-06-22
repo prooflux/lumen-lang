@@ -1,0 +1,13 @@
+# Illustrative (not yet runnable). Expected output: 55
+# Conformance: positive case, expected stdout "55\n".
+
+fn fib(n: Int) -> Int {
+  if n < 2 {
+    return n
+  }
+  return fib(n - 1) + fib(n - 2)
+}
+
+fn main(console: Console) {
+  console.print(to_text(fib(10)))
+}

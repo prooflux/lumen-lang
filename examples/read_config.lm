@@ -1,0 +1,26 @@
+# Illustrative (not yet runnable). Demonstrates capabilities, Result, and '?'.
+# The function can read the filesystem ONLY because it is handed a FileSystem.
+# A reviewer (human or agent) sees the entire effect surface from the signature.
+# Conformance: positive case (valid file) and a negative case (missing file ->
+# structured Error propagated, no exception).
+
+type Config = {
+  host: Text,
+  port: Int,
+}
+
+fn load_config(fs: FileSystem, path: Text) -> Result<Config, Error> {
+  let raw = fs.read(path)?          # Err short-circuits, carrying a structured Error
+  let data = json.parse(raw)?
+  return Ok(Config {
+    host: data.get_text("host")?,
+    port: data.get_int("port")?,
+  })
+}
+
+fn main(fs: FileSystem, console: Console) {
+  match load_config(fs, "config.json") {
+    Ok(cfg)  -> console.print("listening on \(cfg.host):\(to_text(cfg.port))")
+    Err(e)   -> console.print("config error \(e.code): \(e.message)")
+  }
+}

@@ -1,0 +1,4 @@
+# Lumen-mu (integer subset). Expected stdout: "42\n".
+# main calls helper, which is DEFINED LATER (forward reference).
+fn main(console: Console) -> Unit { console.print_int(helper(21)) }
+fn helper(n: Int) -> Int { return n + n }

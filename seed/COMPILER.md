@@ -23,14 +23,17 @@ Conformance (`node test.mjs`):
 
 ```
 PASS  fib_print.lm  -> "55\n"   (ir_words=35)
-PASS  add.lm        -> "42\n"   (ir_words=15)
-PASS  max.lm        -> "13\n"   (ir_words=24)
-PASS  fact.lm       -> "120\n"  (ir_words=29)
+PASS  add.lm        -> "42\n"   (ir_words=19)
+PASS  max.lm        -> "13\n"   (ir_words=28)
+PASS  fact.lm       -> "120\n"  (ir_words=33)
+PASS  locals.lm     -> "31\n"   (ir_words=31)
+PASS  forward.lm    -> "42\n"   (ir_words=17)
+PASS  mutual.lm     -> "1\n"    (ir_words=51)
 
-4/4 Lumen-mu programs compiled from source and ran correctly.
+7/7 Lumen-mu programs compiled from source and ran correctly.
 ```
 
-These exercise: recursion, multi-argument calls, `if`/`else` (with jump backpatching), and the full integer arithmetic set (`+ - * / <`). A strong correctness signal: the compiler emits the SAME 35 IR words for `fib` that the hand-written `fib.lmir` does, byte for byte.
+These exercise: recursion, multi-argument calls, `if`/`else` (with jump backpatching), the full integer arithmetic set (`+ - * / <`), `let` local bindings (`locals.lm`), forward references (`forward.lm`: `main` calls a function defined after it), and mutual recursion (`mutual.lm`: `is_even`/`is_odd` call each other). Functions may be defined in any order: every call is recorded in a fixup table and resolved after the whole program is parsed.
 
 Performance (`node bench.mjs`, fib(30) = 832040):
 
@@ -44,10 +47,18 @@ This is the bootstrap interpreter's speed. The "fastest, most optimized" target 
 
 ## Subset compiled today
 
-`fn`, parameters, `if`/`else`, `return`, integer literals, `+ - * / <`, function calls (define-before-use), and `console.print_int(expr)`. The grammar is a strict subset of `../docs/spec/GRAMMAR.md`.
+`fn`, parameters, `let` local bindings, `if`/`else`, `return`, integer literals, `+ - * / <`, function calls in **any order** (forward references and mutual recursion), and `console.print_int(expr)`. The grammar is a strict subset of `../docs/spec/GRAMMAR.md`.
 
-Not yet: `let`/locals, `Text`, sum and record types, `Result`/`?`, and forward references (a fixup table for calls to later-defined functions). These are the next increments. After enough of them land, the goal is to rewrite this compiler IN Lumen-mu and run it on the seed, reaching the self-hosting fixpoint.
+The frame model scales cleanly: a call's arguments occupy frame slots `[0, nparam)` and `let` locals occupy `[nparam, nparam+nlocal)`; a `RESERVE` at function entry sizes the frame (backpatched once the local count is known), `GETARG` reads any slot, `SETLOCAL` writes a local, and `RET` discards the whole frame. Forward references work because every `CALL` records a fixup (code position plus callee name) and all fixups are resolved against the symbol table after the entire program is parsed.
+
+Not yet: `Text`, sum and record types, `Result`/`?`, and block-scoped (rather than function-scoped) locals. These are the next increments. After enough of them land, the goal is to rewrite this compiler IN Lumen-mu and run it on the seed, reaching the self-hosting fixpoint.
+
+Capacity (current region sizes, all trivially enlargeable in `lumenc.wat`'s memory map): about 83 functions, 62 params and 62 locals per function, 1666 tokens, and thousands of call fixups. Enough for the bootstrap and the self-hosted Lumen-mu compiler; the sizes are constants, not architecture.
 
 ## How it was built
 
-Written and verified directly (the multi-agent workflow was rate-limited). One real bug was found and fixed during bring-up: `$streq` returned "equal" for every comparison (a mis-targeted branch), which made the symbol and parameter tables always resolve to their first entry. `fib` passed anyway by luck (single parameter, first symbol); `add` and `max` exposed it (`add(20,22)` gave 40, `max(7,13)` gave 7). The fix made all four programs correct. The episode is a small live demonstration of the project's own thesis: a deterministic, inspectable pipeline made the bug reproducible and the fix verifiable.
+Written and verified directly with a growing conformance suite (`test.mjs`), one feature at a time, test-first. Two real bugs were found and fixed during bring-up, both via the deterministic, inspectable pipeline (dump the IR, see the cause, fix it):
+
+1. `$streq` returned "equal" for every comparison (a mis-targeted branch), so the symbol and parameter tables always resolved to their first entry. `fib` passed by luck (single parameter, first symbol); `add(20,22)` gave 40 and `max(7,13)` gave 7, which exposed it.
+
+This is the project's own thesis in miniature: a deterministic pipeline makes a bug reproducible and a fix verifiable.

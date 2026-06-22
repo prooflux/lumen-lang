@@ -5,19 +5,26 @@
 ;; (recursive-descent parser that emits IR directly, with JZ backpatching and a function
 ;; symbol table) -> $run (the bytecode interpreter). Exported: compile_and_run(srclen).
 ;;
-;; Subset: fn / params / if [else] / return / Int arithmetic (+ - < ) / function calls
-;; (define-before-use) / console.print_int(expr). No let, no Text/sum/Result yet.
+;; Subset: fn / params / let locals / if [else] / return / Int arithmetic (+ - * / <) /
+;; function calls (ANY order: forward references and mutual recursion via a fixup table) /
+;; console.print_int(expr). No Text/sum/Result yet.
 ;;
-;; Memory map (bytes):
-;;   [1024 .. 9216)    operand stack (i64 slots)
-;;   [9216 .. 11264)   call stack (i32 pairs: return_pc, prev_argbase)
+;; Frame model: a call's args occupy frame slots [0,nparam); `let` locals occupy
+;; [nparam, nparam+nlocal). RESERVE sizes the frame at entry; GETARG reads any slot;
+;; SETLOCAL writes a local slot. RET discards the whole frame and pushes the result.
+;;
+;; Memory map (bytes). Region sizes are constants, trivially enlarged if a program needs more.
+;;   [1024 .. 9216)    operand stack (i64 slots; 1024 frames deep)
+;;   [9216 .. 11264)   call stack (i32 pairs: return_pc, prev_argbase; 256 deep)
 ;;   [11264 .. 11328)  itoa text buffer (ANCHOR 11326)
-;;   [11328 .. 20000)  CODE (emitted IR words)
-;;   [20000 .. 30000)  SRC (source bytes, host-written)
-;;   [30000 .. 50000)  TOKENS (kind:i32, a:i32, b:i32) = 12 bytes each
-;;   [50000 .. 51000)  SYMBOLS (name_off, name_len, entry) = 12 bytes each
-;;   [51000 .. 52000)  PARAMS of current fn (name_off, name_len) = 8 bytes each
-;;   [52000 .. )       keyword literals (data)
+;;   [11328 .. 20000)  CODE (emitted IR words; ~2167)
+;;   [20000 .. 30000)  SRC (source bytes, host-written; 10 KB)
+;;   [30000 .. 50000)  TOKENS (kind:i32, a:i32, b:i32) = 12 bytes each (~1666)
+;;   [50000 .. 51000)  SYMBOLS (name_off, name_len, entry) = 12 bytes each (~83 fns)
+;;   [51000 .. 51500)  PARAMS of current fn (name_off, name_len) = 8 bytes each (~62)
+;;   [51500 .. 52000)  LOCALS of current fn (name_off, name_len) = 8 bytes each (~62)
+;;   [52000 .. 52073]  keyword literals (data)
+;;   [53000 .. )       call-target FIXUPS (code_pos, name_off, name_len) = 12 bytes each
 (module
   (import "lumen" "console_print" (func $console_print (param i32 i32)))
   (memory (export "mem") 3)
@@ -28,6 +35,7 @@
   (data (i32.const 52030) "return")
   (data (i32.const 52040) "print_int")
   (data (i32.const 52060) "main")
+  (data (i32.const 52070) "let")
 
   (global $osp     (mut i32) (i32.const 0))
   (global $csp     (mut i32) (i32.const 0))
@@ -38,6 +46,8 @@
   (global $ntok    (mut i32) (i32.const 0))
   (global $nsym    (mut i32) (i32.const 0))
   (global $nparam  (mut i32) (i32.const 0))
+  (global $nlocal  (mut i32) (i32.const 0))   ;; local (let) count of current fn
+  (global $nfixup  (mut i32) (i32.const 0))   ;; pending call-target fixups (forward refs)
   (global $main_entry (mut i32) (i32.const 0))
 
   ;; ---------- small helpers ----------
@@ -122,6 +132,58 @@
         (local.set $k (i32.add (local.get $k) (i32.const 1)))
         (br $l)))
     (return (i32.const -1)))
+
+  ;; locals (let bindings) table at [51500 .. 52000), 8 bytes each (name_off, name_len)
+  (func $local_add (param $off i32) (param $len i32)
+    (local $base i32)
+    (local.set $base (i32.add (i32.const 51500) (i32.mul (global.get $nlocal) (i32.const 8))))
+    (i32.store (local.get $base) (local.get $off))
+    (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $len))
+    (global.set $nlocal (i32.add (global.get $nlocal) (i32.const 1))))
+  (func $local_find (param $off i32) (param $len i32) (result i32)
+    (local $k i32) (local $base i32)
+    (local.set $k (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_u (local.get $k) (global.get $nlocal)))
+        (local.set $base (i32.add (i32.const 51500) (i32.mul (local.get $k) (i32.const 8))))
+        (if (call $eqlit (i32.load (local.get $base)) (i32.load (i32.add (local.get $base) (i32.const 4)))
+                         (local.get $off) (local.get $len))
+          (then (return (local.get $k))))
+        (local.set $k (i32.add (local.get $k) (i32.const 1)))
+        (br $l)))
+    (return (i32.const -1)))
+  ;; resolve a name to a frame slot: params occupy [0,nparam), locals occupy [nparam, nparam+nlocal)
+  (func $var_find (param $off i32) (param $len i32) (result i32)
+    (local $s i32)
+    (local.set $s (call $param_find (local.get $off) (local.get $len)))
+    (if (i32.ge_s (local.get $s) (i32.const 0)) (then (return (local.get $s))))
+    (local.set $s (call $local_find (local.get $off) (local.get $len)))
+    (if (i32.ge_s (local.get $s) (i32.const 0)) (then (return (i32.add (global.get $nparam) (local.get $s)))))
+    (return (i32.const -1)))
+
+  ;; call-target fixups at [53000 ..), 12 bytes each (code_pos, name_off, name_len).
+  ;; Every CALL records one; all are resolved after the whole program is parsed, so a
+  ;; function may be CALLed before it is defined (forward refs, mutual recursion).
+  (func $fixup_add (param $pos i32) (param $off i32) (param $len i32)
+    (local $base i32)
+    (local.set $base (i32.add (i32.const 53000) (i32.mul (global.get $nfixup) (i32.const 12))))
+    (i32.store (local.get $base) (local.get $pos))
+    (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $off))
+    (i32.store (i32.add (local.get $base) (i32.const 8)) (local.get $len))
+    (global.set $nfixup (i32.add (global.get $nfixup) (i32.const 1))))
+  (func $resolve_fixups
+    (local $k i32) (local $base i32)
+    (local.set $k (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_u (local.get $k) (global.get $nfixup)))
+        (local.set $base (i32.add (i32.const 53000) (i32.mul (local.get $k) (i32.const 12))))
+        (call $patch (i32.load (local.get $base))
+          (call $sym_find (i32.load (i32.add (local.get $base) (i32.const 4)))
+                          (i32.load (i32.add (local.get $base) (i32.const 8)))))
+        (local.set $k (i32.add (local.get $k) (i32.const 1)))
+        (br $l))))
 
   ;; code emit
   (func $emitw (param $v i32)
@@ -215,6 +277,7 @@
         (if (i32.eq (local.get $c) (i32.const 93)) (then (local.set $val (i32.const 16))))
         (if (i32.eq (local.get $c) (i32.const 42)) (then (local.set $val (i32.const 17))))   ;; '*'
         (if (i32.eq (local.get $c) (i32.const 47)) (then (local.set $val (i32.const 18))))   ;; '/'
+        (if (i32.eq (local.get $c) (i32.const 61)) (then (local.set $val (i32.const 19))))   ;; '='
         (call $tokset (local.get $n) (local.get $val) (i32.const 0) (i32.const 0))
         (local.set $n (i32.add (local.get $n) (i32.const 1)))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -268,12 +331,13 @@
                     (br $cl)))))
             (call $adv)   ;; ')'
             (call $emitw (i32.const 8))   ;; CALL
-            (call $emitw (call $sym_find (local.get $off) (local.get $len)))
+            (call $fixup_add (global.get $emit) (local.get $off) (local.get $len))   ;; entry resolved later
+            (call $emitw (i32.const 0))   ;; placeholder entry (backpatched by $resolve_fixups)
             (call $emitw (local.get $argc))
             (return)))
-        ;; variable
+        ;; variable (param or local) -> GETARG reads frame slot argbase+slot
         (call $emitw (i32.const 2))   ;; GETARG
-        (call $emitw (call $param_find (local.get $off) (local.get $len)))
+        (call $emitw (call $var_find (local.get $off) (local.get $len)))
         (return))))
 
   (func $c_mul
@@ -321,7 +385,24 @@
       (else
         (call $patch (local.get $jz) (global.get $emit)))))
 
+  (func $c_let
+    (local $off i32) (local $len i32) (local $idx i32)
+    (call $adv)   ;; 'let'
+    (local.set $off (call $ta (global.get $tp)))
+    (local.set $len (call $tb (global.get $tp)))
+    (call $adv)   ;; binding name
+    (if (i32.eq (call $tk (global.get $tp)) (i32.const 8))   ;; optional ': type'
+      (then (call $adv) (call $skip_type)))
+    (call $adv)        ;; '='
+    (call $c_expr)     ;; value -> top of operand stack
+    (local.set $idx (global.get $nlocal))
+    (call $local_add (local.get $off) (local.get $len))
+    (call $emitw (i32.const 14))                              ;; SETLOCAL
+    (call $emitw (i32.add (global.get $nparam) (local.get $idx))))
+
   (func $c_stmt
+    (if (call $kw_is (global.get $tp) (i32.const 52070) (i32.const 3))   ;; 'let'
+      (then (call $c_let) (return)))
     (if (call $kw_is (global.get $tp) (i32.const 52010) (i32.const 2))   ;; 'if'
       (then (call $c_if) (return)))
     (if (call $kw_is (global.get $tp) (i32.const 52030) (i32.const 6))   ;; 'return'
@@ -338,7 +419,7 @@
     (call $adv))  ;; '}'
 
   (func $c_fn
-    (local $foff i32) (local $flen i32) (local $ismain i32)
+    (local $foff i32) (local $flen i32) (local $ismain i32) (local $reservefix i32)
     (call $adv)   ;; 'fn'
     (local.set $foff (call $ta (global.get $tp)))
     (local.set $flen (call $tb (global.get $tp)))
@@ -348,6 +429,7 @@
     (if (local.get $ismain) (then (global.set $main_entry (global.get $emit))))
     (call $adv)   ;; '('
     (global.set $nparam (i32.const 0))
+    (global.set $nlocal (i32.const 0))
     (block $pe
       (loop $pl
         (br_if $pe (i32.eq (call $tk (global.get $tp)) (i32.const 4)))   ;; ')'
@@ -359,7 +441,11 @@
         (br $pe)))
     (call $adv)   ;; ')'
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 9)) (then (call $adv) (call $skip_type)))   ;; '->' type
+    ;; reserve the frame (params + locals); operand backpatched once nlocal is known
+    (call $emitw (i32.const 13))   ;; RESERVE
+    (local.set $reservefix (global.get $emit)) (call $emitw (i32.const 0))
     (call $c_block)
+    (call $patch (local.get $reservefix) (i32.add (global.get $nparam) (global.get $nlocal)))
     (if (local.get $ismain) (then (call $emitw (i32.const 0)))))   ;; HALT after main
 
   (func $c_program
@@ -454,24 +540,37 @@
         (if (i32.eq (local.get $op) (i32.const 12)) (then
           (local.set $bb (call $opop)) (local.set $a (call $opop))
           (call $opush (i64.div_s (local.get $a) (local.get $bb))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 13)) (then           ;; RESERVE n (frame slots): zero-fill up to argbase+n
+          (local.set $target (i32.add (global.get $argbase) (call $codew (global.get $pc))))
+          (global.set $pc (i32.add (global.get $pc) (i32.const 1)))
+          (block $re (loop $rl
+            (br_if $re (i32.ge_s (global.get $osp) (local.get $target)))
+            (call $opush (i64.const 0))
+            (br $rl)))
+          (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 14)) (then           ;; SETLOCAL slot: pop -> frame slot argbase+slot
+          (local.set $target (call $codew (global.get $pc)))
+          (global.set $pc (i32.add (global.get $pc) (i32.const 1)))
+          (local.set $t (call $opop))
+          (i64.store (i32.add (i32.const 1024) (i32.mul (i32.add (global.get $argbase) (local.get $target)) (i32.const 8))) (local.get $t))
+          (br $loop)))
         (if (i32.eq (local.get $op) (i32.const 10)) (then (call $print_i64 (call $opop)) (br $loop)))
         (br $halt))))
 
   ;; ---------- entry points ----------
   (func (export "compile") (param $srclen i32) (result i32)
-    (global.set $emit (i32.const 0)) (global.set $nsym (i32.const 0)) (global.set $main_entry (i32.const 0))
-    (call $lex (local.get $srclen))
-    (global.set $tp (i32.const 0))
-    (call $c_program)
+    (drop (call $lex_compile (local.get $srclen)))
     (global.get $emit))
   (func (export "compile_and_run") (param $srclen i32)
     (drop (call $lex_compile (local.get $srclen)))
     (call $run (global.get $main_entry)))
   (func $lex_compile (param $srclen i32) (result i32)
-    (global.set $emit (i32.const 0)) (global.set $nsym (i32.const 0)) (global.set $main_entry (i32.const 0))
+    (global.set $emit (i32.const 0)) (global.set $nsym (i32.const 0))
+    (global.set $nfixup (i32.const 0)) (global.set $main_entry (i32.const 0))
     (call $lex (local.get $srclen))
     (global.set $tp (i32.const 0))
     (call $c_program)
+    (call $resolve_fixups)   ;; resolve all call targets, including forward references
     (global.get $emit))
   (func (export "run") (param $start i32) (call $run (local.get $start)))
   (func (export "dbg_ntok") (result i32) (global.get $ntok))

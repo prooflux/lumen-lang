@@ -9,6 +9,9 @@ const cases = [
   ['../mu/examples/add.lm', '42\n'],
   ['../mu/examples/max.lm', '13\n'],
   ['../mu/examples/fact.lm', '120\n'],
+  ['../mu/examples/locals.lm', '31\n'],
+  ['../mu/examples/forward.lm', '42\n'],
+  ['../mu/examples/mutual.lm', '1\n'],
 ];
 
 const wabt = await wabtInit();

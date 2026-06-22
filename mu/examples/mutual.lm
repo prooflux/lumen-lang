@@ -1,0 +1,10 @@
+# Lumen-mu (integer subset). Expected stdout: "1\n". Mutual recursion (forward refs both ways).
+fn is_even(n: Int) -> Int {
+  if n < 1 { return 1 }
+  return is_odd(n - 1)
+}
+fn is_odd(n: Int) -> Int {
+  if n < 1 { return 0 }
+  return is_even(n - 1)
+}
+fn main(console: Console) -> Unit { console.print_int(is_even(10)) }

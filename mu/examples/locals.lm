@@ -1,0 +1,7 @@
+# Lumen-mu (integer subset). Expected stdout: "31\n". Local `let` bindings.
+fn compute(x: Int) -> Int {
+  let a = x + 1
+  let b = x * 2
+  return a + b
+}
+fn main(console: Console) -> Unit { console.print_int(compute(10)) }

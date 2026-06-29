@@ -38,8 +38,10 @@
   (data (i32.const 52020) "else")
   (data (i32.const 52030) "return")
   (data (i32.const 52040) "print_int")
+  (data (i32.const 52050) "while")
   (data (i32.const 52060) "main")
   (data (i32.const 52070) "let")
+  (data (i32.const 52080) "var")
   (data (i32.const 52100) "int_to_text")
   (data (i32.const 52120) "text_concat")
   (data (i32.const 52140) "print")
@@ -564,13 +566,46 @@
     (call $emitw (i32.const 14))                              ;; SETLOCAL
     (call $emitw (i32.add (global.get $nparam) (local.get $idx))))
 
+  (func $c_assign
+    (local $off i32) (local $len i32) (local $slot i32)
+    (local.set $off (call $ta (global.get $tp)))
+    (local.set $len (call $tb (global.get $tp)))
+    (call $adv)   ;; IDENT
+    (call $adv)   ;; '='
+    (call $c_expr)
+    (local.set $slot (call $var_find (local.get $off) (local.get $len)))
+    (if (i32.lt_s (local.get $slot) (i32.const 0))
+      (then (call $err_add (i32.const 1) (local.get $off) (local.get $len)) (local.set $slot (i32.const 0))))
+    (call $emitw (i32.const 14))   ;; SETLOCAL
+    (call $emitw (local.get $slot)))
+
+  (func $c_while
+    (local $jz i32) (local $cond_pc i32)
+    (call $adv)            ;; 'while'
+    (local.set $cond_pc (global.get $emit))
+    (call $c_expr)         ;; condition
+    (call $emitw (i32.const 6))                ;; JZ
+    (local.set $jz (global.get $emit)) (call $emitw (i32.const 0))
+    (call $c_block)        ;; body
+    (call $emitw (i32.const 7))                ;; JMP
+    (call $emitw (local.get $cond_pc))
+    (call $patch (local.get $jz) (global.get $emit)))
+
   (func $c_stmt
     (if (call $kw_is (global.get $tp) (i32.const 52070) (i32.const 3))   ;; 'let'
       (then (call $c_let) (return)))
+    (if (call $kw_is (global.get $tp) (i32.const 52080) (i32.const 3))   ;; 'var'
+      (then (call $c_let) (return)))
+    (if (call $kw_is (global.get $tp) (i32.const 52050) (i32.const 5))   ;; 'while'
+      (then (call $c_while) (return)))
     (if (call $kw_is (global.get $tp) (i32.const 52010) (i32.const 2))   ;; 'if'
       (then (call $c_if) (return)))
     (if (call $kw_is (global.get $tp) (i32.const 52030) (i32.const 6))   ;; 'return'
       (then (call $adv) (call $c_expr) (call $emitw (i32.const 9)) (return)))
+    (if (i32.eq (call $tk (global.get $tp)) (i32.const 1))   ;; IDENT
+      (then
+        (if (i32.eq (call $tk (i32.add (global.get $tp) (i32.const 1))) (i32.const 19))   ;; '='
+          (then (call $c_assign) (return)))))
     (call $c_expr))
 
   (func $c_block

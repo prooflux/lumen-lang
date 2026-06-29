@@ -18,6 +18,8 @@ const cases = [
   ['../mu/examples/compare.lm', '100\n50\n1\n'],
   ['../mu/examples/gcd.lm', '12\n'],
   ['../mu/examples/fizzbuzz.lm', '1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz\n'],
+  ['../mu/examples/count.lm', '1\n2\n3\n4\n5\n'],
+  ['../mu/examples/sum_loop.lm', '55\n'],
 ];
 
 const wabt = await wabtInit();

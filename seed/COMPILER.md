@@ -22,18 +22,14 @@ The compiler and the interpreter are the same module; `compile_and_run(srclen)` 
 Conformance (`node test.mjs`):
 
 ```
-PASS  fib_print.lm  -> "55\n"   (ir_words=35)
-PASS  add.lm        -> "42\n"   (ir_words=19)
-PASS  max.lm        -> "13\n"   (ir_words=28)
-PASS  fact.lm       -> "120\n"  (ir_words=33)
-PASS  locals.lm     -> "31\n"   (ir_words=31)
-PASS  forward.lm    -> "42\n"   (ir_words=17)
-PASS  mutual.lm     -> "1\n"    (ir_words=51)
-
-7/7 Lumen-mu programs compiled from source and ran correctly.
+13/13 Lumen-mu programs compiled from source and ran correctly.
+  fib_print, add, max, fact, locals, forward, mutual,
+  hello, greet, report, compare, gcd, fizzbuzz
 ```
 
-These exercise: recursion, multi-argument calls, `if`/`else` (with jump backpatching), the full integer arithmetic set (`+ - * / <`), `let` local bindings (`locals.lm`), forward references (`forward.lm`: `main` calls a function defined after it), and mutual recursion (`mutual.lm`: `is_even`/`is_odd` call each other). Functions may be defined in any order: every call is recorded in a fixup table and resolved after the whole program is parsed.
+These exercise: recursion and mutual recursion, multi-argument calls, `if`/`else` (jump backpatching), the full integer operator set (`+ - * / %`), all comparisons (`< <= > >= == !=`), `let` local bindings, forward references (functions defined in any order, resolved through a fixup table), and the `Text` type (string literals with `\n`, `console.print`, `int_to_text`, `text_concat`). `fizzbuzz.lm` is a real recursive FizzBuzz; `gcd.lm` is the Euclidean algorithm. The compiler also reports structured errors (`file:line:col: error: unknown function 'foo'`) for unknown names, which the CLI surfaces instead of running.
+
+This is enough of a language to hand to an LLM. See `../LANGUAGE.md` (the reference), `../FOR_LLMS.md` (the test kit), and the `../lumen` CLI (`run` / `check` / `ir`).
 
 Performance (`node bench.mjs`, fib(30) = 832040):
 

@@ -1,0 +1,11 @@
+# Lumen-mu. Expected stdout: "100\n50\n1\n". Comparison operators == and <=.
+fn classify(n: Int) -> Int {
+  if n == 0 { return 100 }
+  if n <= 5 { return 50 }
+  return 1
+}
+fn main(console: Console) -> Unit {
+  console.print_int(classify(0))
+  console.print_int(classify(3))
+  console.print_int(classify(9))
+}

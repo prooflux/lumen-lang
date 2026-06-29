@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The Lumen CLI. Usage: ./lumen <run|check|ir> <file.lm>
+# First run: (cd seed && npm install) to fetch the WAT assembler.
+here="$(cd "$(dirname "$0")" && pwd)"
+exec node "$here/seed/lumen.mjs" "$@"

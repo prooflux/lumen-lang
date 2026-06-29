@@ -12,6 +12,12 @@ const cases = [
   ['../mu/examples/locals.lm', '31\n'],
   ['../mu/examples/forward.lm', '42\n'],
   ['../mu/examples/mutual.lm', '1\n'],
+  ['../mu/examples/hello.lm', 'hello, world\n'],
+  ['../mu/examples/greet.lm', 'hi there\n'],
+  ['../mu/examples/report.lm', 'fib(10) = 55\n'],
+  ['../mu/examples/compare.lm', '100\n50\n1\n'],
+  ['../mu/examples/gcd.lm', '12\n'],
+  ['../mu/examples/fizzbuzz.lm', '1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz\n'],
 ];
 
 const wabt = await wabtInit();

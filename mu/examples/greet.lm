@@ -1,0 +1,4 @@
+# Lumen-mu. Expected stdout: "hi there\n". text_concat builtin.
+fn main(console: Console) -> Unit {
+  console.print(text_concat("hi ", "there\n"))
+}

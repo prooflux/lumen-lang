@@ -1,0 +1,4 @@
+# Lumen-mu. Expected stdout: "hello, world\n". String literal + console.print(text).
+fn main(console: Console) -> Unit {
+  console.print("hello, world\n")
+}

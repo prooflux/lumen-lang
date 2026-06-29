@@ -1,0 +1,6 @@
+# Lumen-mu. Expected stdout: "12\n". Euclidean gcd: modulo + recursion + ==.
+fn gcd(a: Int, b: Int) -> Int {
+  if b == 0 { return a }
+  return gcd(b, a % b)
+}
+fn main(console: Console) -> Unit { console.print_int(gcd(48, 36)) }

@@ -1,0 +1,15 @@
+# Lumen-mu. FizzBuzz 1..15 via recursion (no loops). modulo + Text + comparisons.
+fn line_text(i: Int) -> Text {
+  if i % 15 == 0 { return "FizzBuzz\n" }
+  if i % 3 == 0 { return "Fizz\n" }
+  if i % 5 == 0 { return "Buzz\n" }
+  return text_concat(int_to_text(i), "\n")
+}
+fn run(i: Int, n: Int, console: Console) -> Int {
+  if i > n { return 0 }
+  console.print(line_text(i))
+  return run(i + 1, n, console)
+}
+fn main(console: Console) -> Unit {
+  run(1, 15, console)
+}

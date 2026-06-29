@@ -1,0 +1,8 @@
+# Lumen-mu. Expected stdout: "fib(10) = 55\n". int_to_text + text_concat + recursion + Text.
+fn fib(n: Int) -> Int {
+  if n < 2 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+fn main(console: Console) -> Unit {
+  console.print(text_concat(text_concat("fib(10) = ", int_to_text(fib(10))), "\n"))
+}

@@ -20,7 +20,7 @@ fn sum_three(a: Text, b: Text, c: Text) -> Result[Int, ParseError] {
 
 fn main(console: Console) -> Unit {
   match sum_three("0", "3", "6") {
-    ok(v)  -> console.print(int_to_text(v))
-    err(_) -> console.print("parse error")
+    ok(v)  -> console.print(text_concat(int_to_text(v), "\n"))
+    err(_) -> console.print("parse error\n")
   }
 }

@@ -5,11 +5,14 @@
 ;; (recursive-descent parser that emits IR directly, with JZ backpatching and a function
 ;; symbol table) -> $run (the bytecode interpreter). Exported: compile_and_run(srclen).
 ;;
-;; Subset: fn / params / let locals / if [else] / return / Int + Text types /
+;; Subset: fn / params / let+var locals / if [else] / while / return / Int + Text types /
 ;; arithmetic (+ - * / %) / comparison (< <= > >= == !=) / string literals ("..\n") /
 ;; function calls (ANY order: forward references and mutual recursion via a fixup table) /
-;; console.print(text), console.print_int(int), int_to_text(int), text_concat(a,b).
-;; Compile errors (unknown variable/function) recorded for the CLI. No sum/Result yet.
+;; sum types (`type T = | A | B(F)`), the built-in Result with ok/err, `match` (incl.
+;; nested + binding + `_`), and the non-coercing `?` operator / console.print(text),
+;; console.print_int(int), int_to_text(int), text_concat(a,b), text_eq(a,b).
+;; Compile errors recorded for the CLI. SAFETY: the compiler and interpreter always
+;; terminate (parser forward-progress + EOF guards; interpreter fuel cap).
 ;;
 ;; Frame model: a call's args occupy frame slots [0,nparam); `let` locals occupy
 ;; [nparam, nparam+nlocal). RESERVE sizes the frame at entry; GETARG reads any slot;
@@ -45,6 +48,11 @@
   (data (i32.const 52100) "int_to_text")
   (data (i32.const 52120) "text_concat")
   (data (i32.const 52140) "print")
+  (data (i32.const 52150) "type")
+  (data (i32.const 52160) "match")
+  (data (i32.const 52170) "text_eq")
+  (data (i32.const 52180) "ok")
+  (data (i32.const 52190) "err")
 
   (global $osp     (mut i32) (i32.const 0))
   (global $csp     (mut i32) (i32.const 0))
@@ -61,6 +69,7 @@
   (global $hp      (mut i32) (i32.const 100000))   ;; heap bump pointer (Text objects)
   (global $main_entry (mut i32) (i32.const 0))
   (global $fuel_max (mut i64) (i64.const 4000000000))   ;; SAFETY: interpreter step cap (overridable via set_fuel_max)
+  (global $nvariant (mut i32) (i32.const 0))   ;; sum-type variants; table at [52400), 12 bytes (name_off, name_len, tag)
 
   ;; ---------- small helpers ----------
   (func $b (param $i i32) (result i32)
@@ -179,6 +188,36 @@
     (if (i32.ge_s (local.get $s) (i32.const 0)) (then (return (i32.add (global.get $nparam) (local.get $s)))))
     (return (i32.const -1)))
 
+  ;; sum-type variant table at [52400 ..), 12 bytes each (name_off, name_len, tag).
+  (func $variant_add (param $off i32) (param $len i32) (param $tag i32)
+    (local $base i32)
+    (local.set $base (i32.add (i32.const 52400) (i32.mul (global.get $nvariant) (i32.const 12))))
+    (i32.store (local.get $base) (local.get $off))
+    (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $len))
+    (i32.store (i32.add (local.get $base) (i32.const 8)) (local.get $tag))
+    (global.set $nvariant (i32.add (global.get $nvariant) (i32.const 1))))
+  (func $variant_find (param $off i32) (param $len i32) (result i32)   ;; -> tag, or -1
+    (local $k i32) (local $base i32)
+    (local.set $k (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_u (local.get $k) (global.get $nvariant)))
+        (local.set $base (i32.add (i32.const 52400) (i32.mul (local.get $k) (i32.const 12))))
+        (if (call $eqlit (i32.load (local.get $base)) (i32.load (i32.add (local.get $base) (i32.const 4)))
+                         (local.get $off) (local.get $len))
+          (then (return (i32.load (i32.add (local.get $base) (i32.const 8))))))
+        (local.set $k (i32.add (local.get $k) (i32.const 1)))
+        (br $l)))
+    (return (i32.const -1)))
+  ;; allocate an anonymous frame slot (scratch for match/?); returns its slot index.
+  ;; Adds a real locals-table entry with name_len 0 so it never matches a named lookup
+  ;; and the table stays dense (local_find scans [0,nlocal)).
+  (func $tmp_local (result i32)
+    (local $idx i32)
+    (local.set $idx (i32.add (global.get $nparam) (global.get $nlocal)))
+    (call $local_add (i32.const 0) (i32.const 0))
+    (local.get $idx))
+
   ;; compile-error records at [90000 ..), 12 bytes each (code, name_off, name_len).
   ;; code 1 = unknown variable, code 2 = unknown function.
   (func $err_add (param $code i32) (param $off i32) (param $len i32)
@@ -296,6 +335,12 @@
                   (i32.load8_u (i32.add (i32.add (local.get $pb) (i32.const 4)) (local.get $i))))
       (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $bl)))
     (local.get $ptr))
+  ;; runtime: Text equality (len-prefixed) -> 0/1
+  (func $texteq (param $pa i32) (param $pb i32) (result i32)
+    (local $la i32)
+    (local.set $la (i32.load (local.get $pa)))
+    (if (i32.ne (local.get $la) (i32.load (local.get $pb))) (then (return (i32.const 0))))
+    (return (call $streq (i32.add (local.get $pa) (i32.const 4)) (i32.add (local.get $pb) (i32.const 4)) (local.get $la))))
 
   ;; ---------- tokenizer ----------
   (func $lex (param $srclen i32)
@@ -426,6 +471,8 @@
         (if (i32.eq (local.get $c) (i32.const 42)) (then (local.set $val (i32.const 17))))   ;; '*'
         (if (i32.eq (local.get $c) (i32.const 47)) (then (local.set $val (i32.const 18))))   ;; '/'
         (if (i32.eq (local.get $c) (i32.const 37)) (then (local.set $val (i32.const 26))))   ;; '%'
+        (if (i32.eq (local.get $c) (i32.const 124)) (then (local.set $val (i32.const 27))))  ;; '|' (sum-type variant separator)
+        (if (i32.eq (local.get $c) (i32.const 63)) (then (local.set $val (i32.const 28))))   ;; '?' (try / error propagation)
         (if (i32.eq (local.get $c) (i32.const 61)) (then (local.set $val (i32.const 19))))   ;; '='
         (call $tokset (local.get $n) (local.get $val) (i32.const 0) (i32.const 0))
         (local.set $n (i32.add (local.get $n) (i32.const 1)))
@@ -447,7 +494,9 @@
         (call $adv))))
 
   (func $c_primary
-    (local $off i32) (local $len i32) (local $argc i32) (local $moff i32) (local $mlen i32) (local $slot i32)
+    (local $off i32) (local $len i32) (local $argc i32) (local $moff i32) (local $mlen i32) (local $slot i32) (local $tag i32)
+    (if (call $kw_is (global.get $tp) (i32.const 52160) (i32.const 5))   ;; 'match' expression
+      (then (call $c_match) (return)))
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 2))   ;; INT
       (then
         (call $emitw (i32.const 1)) (call $emitw (call $ta (global.get $tp)))
@@ -490,15 +539,25 @@
                     (call $adv) (call $c_expr) (local.set $argc (i32.add (local.get $argc) (i32.const 1)))
                     (br $cl)))))
             (call $adv)   ;; ')'
+            (local.set $tag (call $variant_find (local.get $off) (local.get $len)))
+            (if (i32.ge_s (local.get $tag) (i32.const 0))   ;; variant constructor Name(arg): payload is on the stack
+              (then (call $emitw (i32.const 25)) (call $emitw (local.get $tag)) (return)))   ;; MKSUM tag
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52100) (i32.const 11))   ;; int_to_text(x)
               (then (call $emitw (i32.const 18)) (return)))   ;; INT2TEXT
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52120) (i32.const 11))   ;; text_concat(a,b)
               (then (call $emitw (i32.const 17)) (return)))   ;; CONCAT
+            (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52170) (i32.const 7))   ;; text_eq(a,b)
+              (then (call $emitw (i32.const 28)) (return)))   ;; TEXTEQ
             (call $emitw (i32.const 8))   ;; CALL
             (call $fixup_add (global.get $emit) (local.get $off) (local.get $len))   ;; entry resolved later
             (call $emitw (i32.const 0))   ;; placeholder entry (backpatched by $resolve_fixups)
             (call $emitw (local.get $argc))
             (return)))
+        ;; nullary variant constructor (e.g. DivByZero) -> push dummy payload, then MKSUM
+        (local.set $tag (call $variant_find (local.get $off) (local.get $len)))
+        (if (i32.ge_s (local.get $tag) (i32.const 0))
+          (then (call $emitw (i32.const 1)) (call $emitw (i32.const 0))                ;; PUSH 0 payload
+                (call $emitw (i32.const 25)) (call $emitw (local.get $tag)) (return)))  ;; MKSUM tag
         ;; variable (param or local) -> GETARG reads frame slot argbase+slot
         (local.set $slot (call $var_find (local.get $off) (local.get $len)))
         (if (i32.lt_s (local.get $slot) (i32.const 0))   ;; unknown name
@@ -515,16 +574,42 @@
     (call $adv)                                              ;; consume it -> strict forward progress
     (call $emitw (i32.const 1)) (call $emitw (i32.const 0)))  ;; PUSH 0 (keep operand stack balanced)
 
-  (func $c_mul
+  ;; the `?` operator: on a Result, short-circuit-return the err, else unwrap the ok value.
+  ;; Non-coercing: the err value is returned unchanged, so the enclosing fn's error type must match.
+  (func $c_apply_try
+    (local $s i32) (local $jz i32)
+    (local.set $s (call $tmp_local))
+    (call $emitw (i32.const 14)) (call $emitw (local.get $s))   ;; SETLOCAL S
+    (call $emitw (i32.const 2)) (call $emitw (local.get $s))    ;; GETARG S
+    (call $emitw (i32.const 26))                                ;; SUMTAG
+    (call $emitw (i32.const 1)) (call $emitw (i32.const 1))     ;; PUSH 1 (err tag)
+    (call $emitw (i32.const 19))                                ;; EQ  -> 1 if err, 0 if ok
+    (call $emitw (i32.const 6)) (local.set $jz (global.get $emit)) (call $emitw (i32.const 0))   ;; JZ -> ok
+    (call $emitw (i32.const 2)) (call $emitw (local.get $s))    ;; GETARG S   (err path)
+    (call $emitw (i32.const 9))                                 ;; RET (return the err Result)
+    (call $patch (local.get $jz) (global.get $emit))           ;; ok:
+    (call $emitw (i32.const 2)) (call $emitw (local.get $s))    ;; GETARG S
+    (call $emitw (i32.const 27)))                              ;; SUMVAL -> unwrapped value
+
+  (func $c_postfix
     (call $c_primary)
+    (block $pe
+      (loop $pl
+        (br_if $pe (i32.ne (call $tk (global.get $tp)) (i32.const 28)))   ;; '?'
+        (call $adv)
+        (call $c_apply_try)
+        (br $pl))))
+
+  (func $c_mul
+    (call $c_postfix)
     (block $me
       (loop $ml
         (if (i32.eq (call $tk (global.get $tp)) (i32.const 17))   ;; '*'
-          (then (call $adv) (call $c_primary) (call $emitw (i32.const 11)) (br $ml)))
+          (then (call $adv) (call $c_postfix) (call $emitw (i32.const 11)) (br $ml)))
         (if (i32.eq (call $tk (global.get $tp)) (i32.const 18))   ;; '/'
-          (then (call $adv) (call $c_primary) (call $emitw (i32.const 12)) (br $ml)))
+          (then (call $adv) (call $c_postfix) (call $emitw (i32.const 12)) (br $ml)))
         (if (i32.eq (call $tk (global.get $tp)) (i32.const 26))   ;; '%'
-          (then (call $adv) (call $c_primary) (call $emitw (i32.const 24)) (br $ml)))
+          (then (call $adv) (call $c_postfix) (call $emitw (i32.const 24)) (br $ml)))
         (br $me))))
 
   (func $c_add
@@ -547,6 +632,102 @@
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 25)) (then (call $adv) (call $c_add) (call $emitw (i32.const 23)))))           ;; >
 
   (func $c_expr (call $c_cmp))
+
+  ;; '_' wildcard pattern?  (off is an absolute source address)
+  (func $is_wild (param $off i32) (param $len i32) (result i32)
+    (if (i32.ne (local.get $len) (i32.const 1)) (then (return (i32.const 0))))
+    (return (i32.eq (i32.load8_u (local.get $off)) (i32.const 95))))   ;; '_'
+
+  ;; type NAME = | V1 | V2(T) | ...   (registers each variant name -> tag, declaration order)
+  (func $c_type
+    (local $voff i32) (local $vlen i32) (local $tag i32)
+    (call $adv)   ;; 'type'
+    (call $adv)   ;; type name (not stored; type names are skipped where used)
+    (if (i32.eq (call $tk (global.get $tp)) (i32.const 19)) (then (call $adv)))   ;; '='
+    (local.set $tag (i32.const 0))
+    (block $done
+      (loop $vl
+        (br_if $done (i32.ne (call $tk (global.get $tp)) (i32.const 27)))   ;; '|' precedes each variant; absence ends the type
+        (call $adv)                                                          ;; '|'
+        (br_if $done (i32.ne (call $tk (global.get $tp)) (i32.const 1)))     ;; need a variant name
+        (local.set $voff (call $ta (global.get $tp)))
+        (local.set $vlen (call $tb (global.get $tp)))
+        (call $adv)
+        (call $variant_add (local.get $voff) (local.get $vlen) (local.get $tag))
+        (local.set $tag (i32.add (local.get $tag) (i32.const 1)))
+        (if (i32.eq (call $tk (global.get $tp)) (i32.const 3))   ;; optional '(' Type ')'
+          (then (call $adv) (call $skip_type)
+                (if (i32.eq (call $tk (global.get $tp)) (i32.const 4)) (then (call $adv)))))
+        (br $vl))))
+
+  ;; match SCRUT { PAT -> BODY ... }   (PAT = Name | Name(bind) | _)
+  (func $c_match
+    (local $s i32) (local $jz i32) (local $endchain i32) (local $tag i32)
+    (local $poff i32) (local $plen i32) (local $boff i32) (local $blen i32)
+    (local $vslot i32) (local $havebind i32) (local $next i32)
+    (call $adv)                       ;; 'match'
+    (call $c_expr)                    ;; scrutinee -> stack
+    (local.set $s (call $tmp_local))
+    (call $emitw (i32.const 14)) (call $emitw (local.get $s))   ;; SETLOCAL S
+    (call $adv)                       ;; '{'
+    (local.set $endchain (i32.const -1))
+    (block $arms_done
+      (loop $arms
+        (br_if $arms_done (i32.eq (call $tk (global.get $tp)) (i32.const 6)))    ;; '}'
+        (br_if $arms_done (i32.eq (call $tk (global.get $tp)) (i32.const 14)))   ;; SAFETY: EOF
+        (local.set $jz (i32.const -1))
+        (local.set $havebind (i32.const 0))
+        (if (i32.eq (call $tk (global.get $tp)) (i32.const 1))
+          (then
+            (local.set $poff (call $ta (global.get $tp)))
+            (local.set $plen (call $tb (global.get $tp)))
+            (call $adv)
+            (if (call $is_wild (local.get $poff) (local.get $plen))
+              (then)   ;; wildcard: matches anything, no dispatch
+              (else
+                (local.set $tag (call $variant_find (local.get $poff) (local.get $plen)))
+                (if (i32.lt_s (local.get $tag) (i32.const 0))
+                  (then (call $err_add (i32.const 3) (local.get $poff) (local.get $plen)) (local.set $tag (i32.const 0))))
+                (if (i32.eq (call $tk (global.get $tp)) (i32.const 3))   ;; binding: Name(bind)
+                  (then
+                    (call $adv)
+                    (local.set $boff (call $ta (global.get $tp)))
+                    (local.set $blen (call $tb (global.get $tp)))
+                    (call $adv)   ;; bind name (or '_')
+                    (call $adv)   ;; ')'
+                    (if (call $is_wild (local.get $boff) (local.get $blen))
+                      (then)
+                      (else (local.set $havebind (i32.const 1))))))
+                (call $emitw (i32.const 2)) (call $emitw (local.get $s))      ;; GETARG S
+                (call $emitw (i32.const 26))                                  ;; SUMTAG
+                (call $emitw (i32.const 1)) (call $emitw (local.get $tag))    ;; PUSH tag
+                (call $emitw (i32.const 19))                                  ;; EQ
+                (call $emitw (i32.const 6)) (local.set $jz (global.get $emit)) (call $emitw (i32.const 0))   ;; JZ -> next arm
+                (if (local.get $havebind)
+                  (then
+                    (local.set $vslot (i32.add (global.get $nparam) (global.get $nlocal)))
+                    (call $local_add (local.get $boff) (local.get $blen))
+                    (call $emitw (i32.const 2)) (call $emitw (local.get $s))   ;; GETARG S
+                    (call $emitw (i32.const 27))                               ;; SUMVAL
+                    (call $emitw (i32.const 14)) (call $emitw (local.get $vslot)))))))   ;; SETLOCAL bind
+          (else
+            (call $err_add (i32.const 3) (call $ta (global.get $tp)) (call $tb (global.get $tp)))
+            (call $adv)))
+        (call $adv)            ;; '->'
+        (call $c_expr)         ;; arm body -> value (or Unit)
+        (call $emitw (i32.const 7))                          ;; JMP -> end (chained)
+        (call $emitw (local.get $endchain))                  ;; operand = prev chain head (placeholder)
+        (local.set $endchain (i32.sub (global.get $emit) (i32.const 1)))
+        (if (i32.ge_s (local.get $jz) (i32.const 0)) (then (call $patch (local.get $jz) (global.get $emit))))
+        (br $arms)))
+    (block $pdone   ;; backpatch every arm's end-jump to here
+      (loop $pl
+        (br_if $pdone (i32.lt_s (local.get $endchain) (i32.const 0)))
+        (local.set $next (call $codew (local.get $endchain)))
+        (call $patch (local.get $endchain) (global.get $emit))
+        (local.set $endchain (local.get $next))
+        (br $pl)))
+    (if (i32.eq (call $tk (global.get $tp)) (i32.const 6)) (then (call $adv))))   ;; consume '}'
 
   (func $c_if
     (local $jz i32) (local $jmp i32)
@@ -665,18 +846,26 @@
     (local.set $reservefix (global.get $emit)) (call $emitw (i32.const 0))
     (call $c_block)
     (call $patch (local.get $reservefix) (i32.add (global.get $nparam) (global.get $nlocal)))
-    (if (local.get $ismain) (then (call $emitw (i32.const 0)))))   ;; HALT after main
+    ;; terminator: main halts; every other function gets an implicit `return Unit` so a
+    ;; body that falls through (e.g. a void fn ending in a statement) cannot run into the
+    ;; next function's code. Unreachable for bodies that already end in `return`.
+    (if (local.get $ismain)
+      (then (call $emitw (i32.const 0)))                                          ;; HALT
+      (else (call $emitw (i32.const 1)) (call $emitw (i32.const 0)) (call $emitw (i32.const 9)))))   ;; PUSH 0; RET
 
   (func $c_program
     (block $done
       (loop $L
         (br_if $done (i32.eq (call $tk (global.get $tp)) (i32.const 14)))   ;; EOF
         (br_if $done (i32.ge_u (global.get $tp) (global.get $ntok)))        ;; SAFETY: never read past the token stream
-        (if (call $kw_is (global.get $tp) (i32.const 52000) (i32.const 2))  ;; top level must be a 'fn'
-          (then (call $c_fn))
+        (if (call $kw_is (global.get $tp) (i32.const 52150) (i32.const 4))   ;; 'type' declaration
+          (then (call $c_type))
           (else
-            (call $err_add (i32.const 3) (call $ta (global.get $tp)) (call $tb (global.get $tp)))   ;; expected 'fn'
-            (call $adv)))                                                   ;; skip stray token -> progress
+            (if (call $kw_is (global.get $tp) (i32.const 52000) (i32.const 2))   ;; 'fn'
+              (then (call $c_fn))
+              (else
+                (call $err_add (i32.const 3) (call $ta (global.get $tp)) (call $tb (global.get $tp)))   ;; expected 'type' or 'fn'
+                (call $adv)))))                                              ;; skip stray token -> progress
         (br $L))))
 
   ;; ---------- runtime helpers ----------
@@ -811,6 +1000,23 @@
         (if (i32.eq (local.get $op) (i32.const 24)) (then           ;; MOD
           (local.set $bb (call $opop)) (local.set $a (call $opop))
           (call $opush (i64.rem_s (local.get $a) (local.get $bb))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 25)) (then           ;; MKSUM tag: pop payload -> push sum cell {tag@+0, payload@+8}
+          (local.set $target (call $codew (global.get $pc)))
+          (global.set $pc (i32.add (global.get $pc) (i32.const 1)))
+          (local.set $t (call $opop))                              ;; payload
+          (br_if $halt (i32.gt_u (i32.add (global.get $hp) (i32.const 16)) (i32.const 524288)))   ;; SAFETY: heap bound
+          (local.set $entry (call $halloc (i32.const 16)))         ;; $entry reused as cell ptr
+          (i32.store (local.get $entry) (local.get $target))       ;; tag
+          (i64.store (i32.add (local.get $entry) (i32.const 8)) (local.get $t))   ;; payload
+          (call $opush (i64.extend_i32_u (local.get $entry)))
+          (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 26)) (then           ;; SUMTAG: pop sum ptr -> push tag
+          (call $opush (i64.extend_i32_u (i32.load (i32.wrap_i64 (call $opop))))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 27)) (then           ;; SUMVAL: pop sum ptr -> push payload
+          (call $opush (i64.load (i32.add (i32.wrap_i64 (call $opop)) (i32.const 8)))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 28)) (then           ;; TEXTEQ: pop b, pop a (Text ptrs) -> push 0/1
+          (local.set $bb (call $opop)) (local.set $a (call $opop))
+          (call $opush (i64.extend_i32_u (call $texteq (i32.wrap_i64 (local.get $a)) (i32.wrap_i64 (local.get $bb))))) (br $loop)))
         (if (i32.eq (local.get $op) (i32.const 10)) (then (call $print_i64 (call $opop)) (br $loop)))
         (br $halt))))
 
@@ -825,6 +1031,9 @@
     (global.set $emit (i32.const 0)) (global.set $nsym (i32.const 0))
     (global.set $nfixup (i32.const 0)) (global.set $nerr (i32.const 0)) (global.set $main_entry (i32.const 0))
     (global.set $hp (i32.const 100000))   ;; literals materialize from here; run continues above them
+    (global.set $nvariant (i32.const 0))   ;; built-in Result variants: ok=tag 0, err=tag 1
+    (call $variant_add (i32.const 52180) (i32.const 2) (i32.const 0))
+    (call $variant_add (i32.const 52190) (i32.const 3) (i32.const 1))
     (call $lex (local.get $srclen))
     (global.set $tp (i32.const 0))
     (call $c_program)

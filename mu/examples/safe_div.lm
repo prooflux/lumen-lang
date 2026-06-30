@@ -10,9 +10,9 @@ fn checked_div(a: Int, b: Int) -> Result[Int, DivError] {
 
 fn show(r: Result[Int, DivError], console: Console) -> Unit {
   match r {
-    ok(v)  -> console.print(text_concat("ok ", int_to_text(v)))
+    ok(v)  -> console.print(text_concat(text_concat("ok ", int_to_text(v)), "\n"))
     err(e) -> match e {
-                DivByZero -> console.print("div by zero")
+                DivByZero -> console.print("div by zero\n")
               }
   }
 }

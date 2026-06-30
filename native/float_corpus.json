@@ -1,0 +1,101 @@
+[
+  {
+    "name": "float_literal_arith",
+    "source": "fn main(c: Console) -> Unit {\n  let a: Float = 3.25\n  let b: Float = 1.75\n  c.print_int(round((a + b) * (a - b) * 100.0))\n}\n",
+    "goldenStdout": "750\n",
+    "features": [
+      "float"
+    ]
+  },
+  {
+    "name": "int_to_float",
+    "source": "fn main(c: Console) -> Unit {\n  let n: Int = 7\n  let f: Float = to_float(n)\n  c.print_int(round(f * 1000.0))\n}\n",
+    "goldenStdout": "7000\n",
+    "features": [
+      "float"
+    ]
+  },
+  {
+    "name": "float_to_int_round",
+    "source": "fn main(c: Console) -> Unit {\n  c.print_int(to_int(9.99))\n  c.print_int(round(9.99))\n  c.print_int(to_int(-9.99))\n  c.print_int(round(-9.5))\n}\n",
+    "goldenStdout": "9\n10\n-9\n-9\n",
+    "features": [
+      "float"
+    ]
+  },
+  {
+    "name": "sqrt",
+    "source": "fn main(c: Console) -> Unit {\n  c.print_int(round(sqrt(2.0) * 1000000.0))\n}\n",
+    "goldenStdout": "1414214\n",
+    "features": [
+      "float",
+      "math"
+    ]
+  },
+  {
+    "name": "exp",
+    "source": "fn main(c: Console) -> Unit {\n  c.print_int(round(exp(1.0) * 1000000.0))\n}\n",
+    "goldenStdout": "2718282\n",
+    "features": [
+      "float",
+      "math"
+    ]
+  },
+  {
+    "name": "ln",
+    "source": "fn main(c: Console) -> Unit {\n  c.print_int(round(ln(exp(3.0)) * 1000000.0))\n}\n",
+    "goldenStdout": "3000000\n",
+    "features": [
+      "float",
+      "math"
+    ]
+  },
+  {
+    "name": "pow",
+    "source": "fn main(c: Console) -> Unit {\n  c.print_int(round(pow(1.05, 10.0) * 1000000.0))\n}\n",
+    "goldenStdout": "1628895\n",
+    "features": [
+      "float",
+      "math"
+    ]
+  },
+  {
+    "name": "float_array_cashflow_pv",
+    "source": "fn main(c: Console) -> Unit {\n  let cf = array(3)\n  aset(cf, 0, 100.0)\n  aset(cf, 1, 100.0)\n  aset(cf, 2, 100.0)\n  let r: Float = 0.05\n  var pv: Float = 0.0\n  var i: Int = 0\n  while i < alen(cf) {\n    let t: Float = to_float(i + 1)\n    pv = pv + aget(cf, i) / pow(1.0 + r, t)\n    i = i + 1\n  }\n  c.print_int(round(pv * 100.0))\n}\n",
+    "goldenStdout": "27232\n",
+    "features": [
+      "float",
+      "math",
+      "array"
+    ]
+  },
+  {
+    "name": "record_struct_pv",
+    "source": "type Cf = { amt: Float, t: Float }\n\nfn pv1(z: Cf, r: Float) -> Float {\n  return z.amt / pow(1.0 + r, z.t)\n}\n\nfn main(c: Console) -> Unit {\n  let x = Cf { amt: 100.0, t: 2.0 }\n  c.print_int(round(pv1(x, 0.05) * 100.0))\n}\n",
+    "goldenStdout": "9070\n",
+    "features": [
+      "float",
+      "math",
+      "record"
+    ]
+  },
+  {
+    "name": "black_scholes_call_scalar",
+    "source": "fn norm_cdf(x: Float) -> Float {\n  if x < 0.0 {\n    return 1.0 - norm_cdf(-x)\n  }\n  let k: Float = 1.0 / (1.0 + 0.2316419 * x)\n  let poly: Float = k * (0.319381530 + k * (-0.356563782 + k * (1.781477937 + k * (-1.821255978 + k * 1.330274429))))\n  let pdf: Float = (1.0 / sqrt(2.0 * 3.14159265358979)) * exp(-(x * x) / 2.0)\n  return 1.0 - pdf * poly\n}\n\nfn bs_call(s: Float, k: Float, r: Float, t: Float, vol: Float) -> Float {\n  let d1: Float = (ln(s / k) + (r + vol * vol / 2.0) * t) / (vol * sqrt(t))\n  let d2: Float = d1 - vol * sqrt(t)\n  return s * norm_cdf(d1) - k * exp(-r * t) * norm_cdf(d2)\n}\n\nfn main(c: Console) -> Unit {\n  let price: Float = bs_call(100.0, 100.0, 0.05, 1.0, 0.2)\n  c.print_int(round(price * 10000.0))\n}\n",
+    "goldenStdout": "104506\n",
+    "features": [
+      "float",
+      "math"
+    ]
+  },
+  {
+    "name": "black_scholes_call_record",
+    "source": "type Opt = { s: Float, k: Float, r: Float, t: Float, vol: Float }\n\nfn norm_cdf(x: Float) -> Float {\n  if x < 0.0 {\n    return 1.0 - norm_cdf(-x)\n  }\n  let k: Float = 1.0 / (1.0 + 0.2316419 * x)\n  let poly: Float = k * (0.319381530 + k * (-0.356563782 + k * (1.781477937 + k * (-1.821255978 + k * 1.330274429))))\n  let pdf: Float = (1.0 / sqrt(2.0 * 3.14159265358979)) * exp(-(x * x) / 2.0)\n  return 1.0 - pdf * poly\n}\n\nfn bs_call_rec(o: Opt) -> Float {\n  let d1: Float = (ln(o.s / o.k) + (o.r + o.vol * o.vol / 2.0) * o.t) / (o.vol * sqrt(o.t))\n  let d2: Float = d1 - o.vol * sqrt(o.t)\n  return o.s * norm_cdf(d1) - o.k * exp(-o.r * o.t) * norm_cdf(d2)\n}\n\nfn main(c: Console) -> Unit {\n  let opt = Opt { s: 100.0, k: 100.0, r: 0.05, t: 1.0, vol: 0.2 }\n  let price: Float = bs_call_rec(opt)\n  c.print_int(round(price * 10000.0))\n}\n",
+    "goldenStdout": "104506\n",
+    "features": [
+      "float",
+      "math",
+      "record"
+    ]
+  }
+]

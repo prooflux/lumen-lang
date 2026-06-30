@@ -8,8 +8,8 @@ import fs from 'node:fs';
 import wabtInit from 'wabt';
 
 export const SRC_BASE = 20000;
-export const SRC_CAPACITY = 10000;   // SRC region is [20000,30000); a longer source corrupts the keyword table at 52000
-export const DIAG_BASE = 90000;   // compile-error records: (code, name_off, name_len) x i32
+export const SRC_CAPACITY = 10000;   // SRC region is [20000,30000); a longer source overruns into the TOKENS region at 30000
+export const DIAG_BASE = 166000;   // compile-error records: (code, name_off, name_len) x i32
 export const CODE_BASE = 11328;   // emitted IR words
 
 export const OPS = {0:'HALT',1:'PUSH',2:'GETARG',3:'ADD',4:'SUB',5:'LT',6:'JZ',7:'JMP',8:'CALL',

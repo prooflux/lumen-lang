@@ -24,6 +24,7 @@ fn oplen(op: Int) -> Int {
   if op == 8 { return 2 }
   if op == 13 { return 1 }
   if op == 14 { return 1 }
+  if op == 29 { return 2 }
   return 0
 }
 
@@ -34,6 +35,15 @@ fn arith(c: Console, d: Int, op: Text) -> Unit {
 }
 fn cmp(c: Console, d: Int, op: Text) -> Unit {
   sl(c, d - 2) c.print("=(") sl(c, d - 2) c.print(op) sl(c, d - 1) c.print(")?1:0;\n")
+}
+fn farith(c: Console, d: Int, op: Text) -> Unit {
+  sl(c, d - 2) c.print("=d2l(l2d(") sl(c, d - 2) c.print(")") c.print(op) c.print("l2d(") sl(c, d - 1) c.print("));\n")
+}
+fn fcmp(c: Console, d: Int, op: Text) -> Unit {
+  sl(c, d - 2) c.print("=(l2d(") sl(c, d - 2) c.print(")") c.print(op) c.print("l2d(") sl(c, d - 1) c.print("))?1:0;\n")
+}
+fn fun1(c: Console, d: Int, g: Text) -> Unit {
+  sl(c, d - 1) c.print("=d2l(") c.print(g) c.print("(l2d(") sl(c, d - 1) c.print(")));\n")
 }
 
 fn scan_arity() -> Unit {
@@ -105,6 +115,30 @@ fn emit_op(c: Console, pc: Int, d: Int) -> Int {
     c.print(");\n")
     return d - argc + 1
   }
+  if op == 29 { sl(c, d) c.print("=(int64_t)(((uint64_t)(uint32_t)") num(c, ir_word(pc + 1)) c.print(")|((uint64_t)(uint32_t)") num(c, ir_word(pc + 2)) c.print("<<32));\n") return d + 1 }
+  if op == 30 { sl(c, d - 1) c.print("=d2l((double)") sl(c, d - 1) c.print(");\n") return d }
+  if op == 31 { sl(c, d - 2) c.print("=d2l((double)") sl(c, d - 2) c.print(");\n") return d }
+  if op == 32 { farith(c, d, "+") return d - 1 }
+  if op == 33 { farith(c, d, "-") return d - 1 }
+  if op == 34 { farith(c, d, "*") return d - 1 }
+  if op == 35 { farith(c, d, "/") return d - 1 }
+  if op == 36 { fcmp(c, d, "<")  return d - 1 }
+  if op == 37 { fcmp(c, d, "<=") return d - 1 }
+  if op == 38 { fcmp(c, d, ">")  return d - 1 }
+  if op == 39 { fcmp(c, d, ">=") return d - 1 }
+  if op == 40 { fcmp(c, d, "==") return d - 1 }
+  if op == 41 { fcmp(c, d, "!=") return d - 1 }
+  if op == 42 { sl(c, d - 1) c.print("=f2i_sat(l2d(") sl(c, d - 1) c.print("));\n") return d }
+  if op == 43 { sl(c, d - 1) c.print("=f2i_sat(floor(l2d(") sl(c, d - 1) c.print(")+0.5));\n") return d }
+  if op == 44 { fun1(c, d, "sqrt")  return d }
+  if op == 45 { fun1(c, d, "fabs")  return d }
+  if op == 46 { fun1(c, d, "f_exp") return d }
+  if op == 47 { fun1(c, d, "f_ln")  return d }
+  if op == 48 { sl(c, d - 2) c.print("=d2l(f_pow(l2d(") sl(c, d - 2) c.print("),l2d(") sl(c, d - 1) c.print(")));\n") return d - 1 }
+  if op == 49 { sl(c, d - 1) c.print("=lm_anew(") sl(c, d - 1) c.print(");\n") return d }
+  if op == 50 { sl(c, d - 2) c.print("=lm_aget(") sl(c, d - 2) c.print(",") sl(c, d - 1) c.print(");\n") return d - 1 }
+  if op == 51 { c.print("lm_aset(") sl(c, d - 3) c.print(",") sl(c, d - 2) c.print(",") sl(c, d - 1) c.print(");\n") return d - 3 }
+  if op == 52 { sl(c, d - 1) c.print("=lm_alen(") sl(c, d - 1) c.print(");\n") return d }
   c.print("\n#error unsupported ") num(c, op) c.print("\n")
   return d
 }
@@ -138,7 +172,8 @@ fn emit_bodies(c: Console) -> Unit {
 
 fn main(c: Console) -> Unit {
   scan_arity()
-  c.print("#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\nstatic void pic(int64_t v){uint64_t u; int n; char b[24];\nif(v<0){putchar(45);u=0-(uint64_t)v;}else{u=(uint64_t)v;}\nif(u==0){putchar(48);putchar(10);return;}\nn=0; while(u!=0){b[n]=(char)(48+(int)(u%10));n=n+1;u=u/10;}\nwhile(n!=0){n=n-1;putchar((int)b[n]);} putchar(10);}\n")
+  c.print("#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <math.h>\n#include <string.h>\nstatic void pic(int64_t v){uint64_t u; int n; char b[24];\nif(v<0){putchar(45);u=0-(uint64_t)v;}else{u=(uint64_t)v;}\nif(u==0){putchar(48);putchar(10);return;}\nn=0; while(u!=0){b[n]=(char)(48+(int)(u%10));n=n+1;u=u/10;}\nwhile(n!=0){n=n-1;putchar((int)b[n]);} putchar(10);}\n")
+  c.print("static double l2d(int64_t b){double d; memcpy(&d,&b,8); return d;}\nstatic int64_t d2l(double d){int64_t b; memcpy(&b,&d,8); return b;}\nstatic int64_t f2i_sat(double x){if(isnan(x))return 0; if(x>=9223372036854775808.0)return INT64_MAX; if(x< -9223372036854775808.0)return INT64_MIN; return (int64_t)x;}\nstatic double f_exp(double x){int64_t k=f2i_sat(rint(x/0.6931471805599453)); double r=x-(double)k*0.6931471805599453; double sum=1.0,term=1.0; for(int i=1;i<=16;i++){term=term*r/(double)i; sum=sum+term;} return sum*l2d((int64_t)(((uint64_t)(k+1023))<<52));}\nstatic double f_ln(double x){if(x<=0.0)return 0.0; int64_t bits=d2l(x); int64_t e=(int64_t)(((uint64_t)bits>>52)&0x7FF)-1023; double m=l2d((bits&0xFFFFFFFFFFFFFLL)|((int64_t)1023<<52)); if(m>1.4142135623730951){m=m*0.5; e=e+1;} double s=(m-1.0)/(m+1.0),s2=s*s,term=s,sum=s; for(int i=3;i<=31;i+=2){term=term*s2; sum=sum+term/(double)i;} return (double)e*0.6931471805599453+2.0*sum;}\nstatic double f_pow(double x,double y){return f_exp(y*f_ln(x));}\n#define AHEAP_CAP (1<<20)\nstatic int64_t AHEAP[AHEAP_CAP];\nstatic int64_t AHP=0;\nstatic int64_t lm_anew(int64_t n){if(n<0)n=0; if(AHP+1+n>AHEAP_CAP)exit(1); int64_t h=AHP; AHEAP[h]=n; for(int64_t i=0;i<n;i++)AHEAP[h+1+i]=0; AHP=AHP+1+n; return h;}\nstatic int64_t lm_aget(int64_t a,int64_t i){int64_t len=AHEAP[a]; if(i<0||i>=len)return 0; return AHEAP[a+1+i];}\nstatic void lm_aset(int64_t a,int64_t i,int64_t x){int64_t len=AHEAP[a]; if(i<0||i>=len)return; AHEAP[a+1+i]=x;}\nstatic int64_t lm_alen(int64_t a){return AHEAP[a];}\n")
   var pc = 0
   while pc < ir_len() {
     let op = ir_word(pc)

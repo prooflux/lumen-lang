@@ -90,7 +90,9 @@ export async function buildAndRunFn(src, opt = '-O2') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-fn-'));
   const cfile = path.join(dir, 'p.c'), bin = path.join(dir, 'p');
   fs.writeFileSync(cfile, csrc);
-  try { execFileSync('clang', [opt, '-o', bin, cfile], { stdio: ['ignore', 'ignore', 'pipe'] }); }
+  // -ffp-contract=off -fno-fast-math: the transcribed f_exp/f_ln/f_pow reproduce the interpreter's
+  // bits only with no FMA contraction and default (ties-to-even) rounding. Never -Ofast.
+  try { execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', opt, '-o', bin, cfile], { stdio: ['ignore', 'ignore', 'pipe'] }); }
   catch (e) { throw new Error(`clang failed: ${String(e.stderr || e.message).slice(0, 300)}`); }
   let stdout = '', exit = 0;
   try { stdout = execFileSync(bin, { encoding: 'utf8' }); }

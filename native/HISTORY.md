@@ -10,6 +10,49 @@ bit-identical to it).
 
 ---
 
+## 2026-06-30-1936 — v3: float + array + record native codegen (usable for pricing; honest on speed)
+
+### Landed
+1. **Real token-region resize (point 3), not the 1665 stopgap.** Grew the TOKENS region 1666->8000
+   slots by shifting the `SYMBOLS..DIAG` block +76000 (a single boundary-safe numeric rule on
+   `i32.const N` for 50000<=N<=100000, replacing the spec's 11 hand-edits and provably never touching
+   the 6-digit page-9 scratch at 524288). `$hp` 100000->176000 (top stays 524288); `compiler_core`
+   `DIAG_BASE` 90000->166000; cap guard 1665->7999. Gate: seed 18/18 + 102/102 basics + 7/7 safety +
+   perf PASS; native scalar 11/11 bit-identical, v2 still ~108% of hand-C. Zero regression.
+
+2. **`emit_fn.lm` v3 — float opcodes 29-48 + array opcodes 49-52.** `oplen` FPUSH(2-word) entry; three
+   tiny Lumen helpers (`farith`/`fcmp`/`fun1`) collapsing 18 of 24 arms; the 24 dispatch arms; and a
+   one-`c.print` C runtime block (l2d/d2l/f2i_sat + the transcribed `f_exp`/`f_ln`/`f_pow` series +
+   an untyped array heap with lm_anew/aget/aset/alen). A whole string literal is ONE seed token, so the
+   runtime block is ~O(1) tokens. **Records need zero new codegen** — they lower to ANEW/ASET/AGET.
+   Determinism flags added to the clang call (`-ffp-contract=off -fno-fast-math`, never `-Ofast`).
+
+3. **Float gate (`native_float_test.mjs`).** 11/11 programs **golden == interpreter == native**,
+   byte-for-byte, including BOTH Black-Scholes variants (scalar + record, price 10.4506). Floats match
+   by the SHARED truncated series, not libm — the transcription is bit-exact (the determinism risk
+   `float_semantics.md` flagged is now a passing gate, not a hope).
+
+### Honest speed result (the headline did NOT land for float; it did for scalar)
+Black-Scholes, 2M evals, clang -O3 + determinism flags:
+- native (emit_fn.lm) **18.1M prices/sec** = **74% of identical-algorithm hand-C** (24.4M), **21% of
+  hand-C-with-libm** (85.5M). The native BS output is bit-identical to the truncated-series C
+  (`2165282847`) across all 2M accumulated prices — the lowering is correct, just not yet fast.
+- **Two findings that correct the spec's optimism:** (a) modern libm `exp/log` is ~3.5x FASTER than the
+  16-term scalar series, so "truncated series beats libm" is empirically false on this machine; (b) the
+  per-function lowering that beats C for ints (`int64_t` IS the natural type, 108%) is only 74% for
+  floats because every float value lives as `int64_t` bits in `s[256]` and crosses the ABI in integer
+  registers, forcing GPR<->FPR shuffling that clang can't elide.
+
+### Diagnosed next step (scoped, not faked)
+"Float beats C" needs **type-tracked slots**: emit `double` locals/params for float-typed slots instead
+of reinterpreting through `int64_t`. Blocker: `AGET` returns an untyped array cell (int-or-float bits),
+so clean typing needs the front-end to carry per-slot types into the IR (the IR is currently untyped at
+the opcode boundary). That is a real feature with its own gate, not this commit. Until then the honest
+claim is: **Lumen native float/array/record pricing is correct, deterministic, and usable (bit-identical
+to the oracle); it matches C's algorithm at 74% and is not yet faster than C on floats.**
+
+---
+
 ## 2026-06-30-1857 — Root-caused and fixed the else-if shadowing bug
 
 Root cause: `$local_find` in `lumenc.wat` scanned the locals table oldest-first and returned

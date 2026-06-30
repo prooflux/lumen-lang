@@ -28,8 +28,20 @@ target on the machine that exists today). Build log: [`../native/HISTORY.md`](..
   first declaration's slot instead of the current branch's — a real correctness bug, not just
   the `optimize.lm` workaround that exposed it. `optimize.lm` now uses the natural `else if`
   form (the workaround is gone).
-- **Not done (honest):** full `lumenc.lm` self-host (multi-week; needs the real token-region
-  RESIZE, ~15 interlocking offsets, beyond the 1665 region max); v2 float/heap emit (M2);
+- **Token-region RESIZE done (real fix, point 3).** TOKENS grown 1666->8000 slots (cap 1665->7999)
+  by shifting `SYMBOLS..DIAG` +76000; `$hp` 100000->176000; `compiler_core` `DIAG_BASE` ->166000.
+  Seed + native scalar gates green, zero regression. This unblocked v3 and is a down-payment on
+  self-host's capacity walls.
+- **`emit_fn.lm` v3 — float (29-48) + array (49-52), M2 codegen, gated bit-identical.** 11/11
+  float/array/record programs `golden==interpreter==native` byte-for-byte, BOTH Black-Scholes variants
+  included; records need zero new codegen. Floats match by the SHARED transcribed `f_exp/f_ln/f_pow`
+  series (not libm), so the determinism risk is now a passing gate.
+- **Honest speed (M2 not yet "beats C" for float):** native BS = **74% of identical-algorithm hand-C,
+  21% of libm-C** (modern libm `exp/log` is ~3.5x faster than the 16-term series; the int64 value-stack
+  forces GPR<->FPR churn on floats). Scalar/int still ~108% of C. Closing the float gap needs
+  type-tracked `double` slots, blocked on untyped `AGET` -> front-end must carry per-slot types into the
+  IR. Scoped as the next milestone, not faked.
+- **Not done (honest):** full `lumenc.lm` self-host (multi-week); type-tracked float slots (above);
   ditching clang (M4).
 
 ## The goal, stated without hedging
@@ -100,9 +112,10 @@ assembler+linker — removing even `as`/`ld`. The kernel/loader is the floor nob
   by `$run`). Diff-green 11/11 scalar; ≈19× the interpreter.
 - **M1.5. Optimizer Pass A — next.** `optimize.lm` jump-threading (length-preserving), proving
   the Lumen-owned `optimize → interpret → diff` loop.
-- **M2. Heap + runtime.** Extend `emit.lm`: text/heap (15–18,28), sum (25–27), float (29–48,
-  transcribing the seed's EXACT non-libm `f_exp`/`f_ln`/`f_pow` series — libm diverges), arrays
-  (49–52). Diff-green on all conformance; floats bit-identical (top risk).
+- **M2. Heap + runtime — float (29–48) + arrays (49–52) DONE in `emit_fn.lm` v3** (diff-green 11/11,
+  floats bit-identical via the transcribed non-libm series; records free). **Pending:** text/heap
+  (15–18,28), sum (25–27), and type-tracked `double` slots so float pricing beats C (currently 74% of
+  identical-algorithm C — see Landed-so-far).
 - **M3. Ahead-of-time single binary.** Standalone exe, no node/interpreter; no networked package
   manager, no network at build (Rule 7). clang still the assistant.
 - **M4. Ditch the assistant.** `emit.lm` emits LLVM-IR then ARM64 asm directly; clang/LLVM out

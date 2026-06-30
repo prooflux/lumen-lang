@@ -1,0 +1,6 @@
+fn main(c: Console) -> Unit {
+  store32(524288, 7)
+  c.print_int(load32(524288))
+  store8(524300, 65)
+  c.print_int(load8(524300))
+}

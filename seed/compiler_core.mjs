@@ -8,13 +8,15 @@ import fs from 'node:fs';
 import wabtInit from 'wabt';
 
 export const SRC_BASE = 20000;
+export const SRC_CAPACITY = 10000;   // SRC region is [20000,30000); a longer source corrupts the keyword table at 52000
 export const DIAG_BASE = 90000;   // compile-error records: (code, name_off, name_len) x i32
 export const CODE_BASE = 11328;   // emitted IR words
 
 export const OPS = {0:'HALT',1:'PUSH',2:'GETARG',3:'ADD',4:'SUB',5:'LT',6:'JZ',7:'JMP',8:'CALL',
   9:'RET',10:'PRINTINT',11:'MUL',12:'DIV',13:'RESERVE',14:'SETLOCAL',15:'MKTEXT',
   16:'PRINTTEXT',17:'CONCAT',18:'INT2TEXT',19:'EQ',20:'NE',21:'LE',22:'GE',23:'GT',24:'MOD',
-  25:'MKSUM',26:'SUMTAG',27:'SUMVAL',28:'TEXTEQ'};
+  25:'MKSUM',26:'SUMTAG',27:'SUMVAL',28:'TEXTEQ',
+  53:'LOAD32',54:'STORE32',55:'LOAD8',56:'STORE8'};   // raw-memory keystone (self-host + native emitter/optimizer)
 const ONE_OPERAND = new Set([1,2,6,7,13,14,15,25]);
 
 // Create a warm compiler. `await createCompiler()` once, reuse forever.
@@ -32,6 +34,8 @@ export async function createCompiler() {
 
   function loadSource(source) {
     const bytes = Buffer.from(source, 'utf8');
+    if (bytes.length > SRC_CAPACITY)   // guard: a too-long source would overrun SRC and corrupt the keyword table (silent, in a warm daemon)
+      throw new Error(`source ${bytes.length}B exceeds SRC capacity ${SRC_CAPACITY}B (raise the memory map before self-hosting lumenc.lm)`);
     new Uint8Array(ex.mem.buffer, SRC_BASE, bytes.length).set(bytes);
     return bytes.length;
   }

@@ -1,0 +1,167 @@
+# emit.lm - the Lumen-owned IR -> native C translator (scalar/control/calls subset, opcodes 0..24).
+#
+# This is the answer to "can Lumen translate itself into a native binary": the translation
+# is THIS Lumen program, run by Lumen (the seed today, the self-hosted lumenc.lm later).
+# It reads the compiled IR straight out of memory via the load32 keystone (opcodes 53..56)
+# and prints C to stdout. The disposable driver (pipeline.mjs) injects the IR into page-9
+# scratch, runs this program, captures the C, and hands it to clang -O2/-O3 (the scoped
+# assistant). No 3rd language does the translating; clang is only the assembler/optimizer.
+#
+# Memory contract (driver injects, AFTER compiling this file, into page-9 scratch):
+#   load32(524288)        = ir_len  (total IR words)
+#   load32(524292)        = main_entry (word index where execution starts)
+#   load32(524296 + i*4)  = IR word i
+# The emitted C uses computed goto (clang/GCC labels-as-values); one C label per IR word.
+# No double-quote chars anywhere (Lumen string literals cannot hold them): the emitted C
+# uses angle-bracket includes and integer char codes in the print helper.
+# Lumen-mu notes honored: 'return' always takes an expression (no bare return); reassigned
+# counters are 'var'; branches use if/else-if chains.
+
+fn hdr() -> Int { return 524288 }
+fn ir_len() -> Int { return load32(hdr()) }
+fn ir_main() -> Int { return load32(hdr() + 4) }
+fn ir_word(i: Int) -> Int { return load32(hdr() + 8 + i * 4) }
+
+# operand words that follow each opcode in the stream (scalar subset)
+fn oplen(op: Int) -> Int {
+  if op == 1 { return 1 }
+  if op == 2 { return 1 }
+  if op == 6 { return 1 }
+  if op == 7 { return 1 }
+  if op == 8 { return 2 }
+  if op == 13 { return 1 }
+  if op == 14 { return 1 }
+  return 0
+}
+
+fn num(c: Console, n: Int) -> Unit { c.print(int_to_text(n)) }
+
+fn emit_prologue(c: Console) -> Unit {
+  c.print("#include <stdint.h>\n")
+  c.print("#include <stdio.h>\n")
+  c.print("#include <stdlib.h>\n")
+  c.print("static int64_t S[1048576];\n")
+  c.print("static void* RA[200000];\n")
+  c.print("static int AB[200000];\n")
+  c.print("static int sp;\n")
+  c.print("static int csp;\n")
+  c.print("static int ab;\n")
+  c.print("static void pic(int64_t v){\n")
+  c.print("uint64_t u; int n; char b[24];\n")
+  c.print("if(v<0){putchar(45);u=0-(uint64_t)v;}else{u=(uint64_t)v;}\n")
+  c.print("if(u==0){putchar(48);putchar(10);return;}\n")
+  c.print("n=0; while(u!=0){b[n]=(char)(48+(int)(u%10));n=n+1;u=u/10;}\n")
+  c.print("while(n!=0){n=n-1;putchar((int)b[n]);}\n")
+  c.print("putchar(10);\n")
+  c.print("}\n")
+  c.print("int main(void){\n")
+  c.print("void* Ltab[")
+  num(c, ir_len())
+  c.print("];\n")
+  c.print("setvbuf(stdout,0,_IONBF,0);\n")
+}
+
+# pass 1: Ltab[pc] = &&L<pc> for every instruction start, then jump to the entry
+fn emit_ltab(c: Console) -> Unit {
+  var pc = 0
+  while pc < ir_len() {
+    c.print("Ltab[")
+    num(c, pc)
+    c.print("]=&&L")
+    num(c, pc)
+    c.print(";\n")
+    pc = pc + 1 + oplen(ir_word(pc))
+  }
+  c.print("sp=0; csp=0; ab=0;\n")
+  c.print("goto *Ltab[")
+  num(c, ir_main())
+  c.print("];\n")
+}
+
+# pass 2: one labelled C statement per IR word (mirrors the $run dispatch exactly)
+fn emit_op(c: Console, pc: Int) -> Unit {
+  let op = ir_word(pc)
+  c.print("L")
+  num(c, pc)
+  c.print(": ")
+  if op == 0 {
+    c.print("return 0;\n")
+  } else if op == 1 {
+    c.print("S[sp]=")
+    num(c, ir_word(pc + 1))
+    c.print(";sp=sp+1;\n")
+  } else if op == 2 {
+    c.print("S[sp]=S[ab+")
+    num(c, ir_word(pc + 1))
+    c.print("];sp=sp+1;\n")
+  } else if op == 3 {
+    c.print("sp=sp-1;S[sp-1]=(int64_t)((uint64_t)S[sp-1]+(uint64_t)S[sp]);\n")
+  } else if op == 4 {
+    c.print("sp=sp-1;S[sp-1]=(int64_t)((uint64_t)S[sp-1]-(uint64_t)S[sp]);\n")
+  } else if op == 5 {
+    c.print("sp=sp-1;S[sp-1]=(S[sp-1]<S[sp])?1:0;\n")
+  } else if op == 6 {
+    c.print("sp=sp-1;if(S[sp]==0)goto *Ltab[")
+    num(c, ir_word(pc + 1))
+    c.print("];\n")
+  } else if op == 7 {
+    c.print("goto *Ltab[")
+    num(c, ir_word(pc + 1))
+    c.print("];\n")
+  } else if op == 8 {
+    c.print("RA[csp]=Ltab[")
+    num(c, pc + 3)
+    c.print("];AB[csp]=ab;csp=csp+1;ab=sp-")
+    num(c, ir_word(pc + 2))
+    c.print(";goto *Ltab[")
+    num(c, ir_word(pc + 1))
+    c.print("];\n")
+  } else if op == 9 {
+    c.print("{int64_t r=S[sp-1];sp=ab;S[sp]=r;sp=sp+1;csp=csp-1;ab=AB[csp];goto *RA[csp];}\n")
+  } else if op == 10 {
+    c.print("sp=sp-1;pic(S[sp]);\n")
+  } else if op == 11 {
+    c.print("sp=sp-1;S[sp-1]=(int64_t)((uint64_t)S[sp-1]*(uint64_t)S[sp]);\n")
+  } else if op == 12 {
+    c.print("sp=sp-1;if(S[sp]==0||(S[sp]==-1&&S[sp-1]==INT64_MIN)){fflush(stdout);abort();}S[sp-1]=S[sp-1]/S[sp];\n")
+  } else if op == 13 {
+    c.print("while(sp<ab+")
+    num(c, ir_word(pc + 1))
+    c.print("){S[sp]=0;sp=sp+1;}\n")
+  } else if op == 14 {
+    c.print("sp=sp-1;S[ab+")
+    num(c, ir_word(pc + 1))
+    c.print("]=S[sp];\n")
+  } else if op == 19 {
+    c.print("sp=sp-1;S[sp-1]=(S[sp-1]==S[sp])?1:0;\n")
+  } else if op == 20 {
+    c.print("sp=sp-1;S[sp-1]=(S[sp-1]!=S[sp])?1:0;\n")
+  } else if op == 21 {
+    c.print("sp=sp-1;S[sp-1]=(S[sp-1]<=S[sp])?1:0;\n")
+  } else if op == 22 {
+    c.print("sp=sp-1;S[sp-1]=(S[sp-1]>=S[sp])?1:0;\n")
+  } else if op == 23 {
+    c.print("sp=sp-1;S[sp-1]=(S[sp-1]>S[sp])?1:0;\n")
+  } else if op == 24 {
+    c.print("sp=sp-1;if(S[sp]==0||(S[sp]==-1&&S[sp-1]==INT64_MIN)){fflush(stdout);abort();}S[sp-1]=S[sp-1]%S[sp];\n")
+  } else {
+    c.print("\n#error emit.lm: unsupported opcode ")
+    num(c, op)
+    c.print("\n")
+  }
+}
+
+fn emit_body(c: Console) -> Unit {
+  var pc = 0
+  while pc < ir_len() {
+    emit_op(c, pc)
+    pc = pc + 1 + oplen(ir_word(pc))
+  }
+  c.print("return 0;\n}\n")
+}
+
+fn main(c: Console) -> Unit {
+  emit_prologue(c)
+  emit_ltab(c)
+  emit_body(c)
+}

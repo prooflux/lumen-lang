@@ -22,6 +22,7 @@ const cases = [
   ['../mu/examples/sum_loop.lm', '55\n'],
   ['../mu/examples/safe_div.lm', 'ok 4\ndiv by zero\n'],
   ['../mu/examples/propagate.lm', '9\n'],
+  ['native/test_load32.lm', '7\n65\n'],   // raw-memory keystone: store32/load32 + store8/load8 round-trip
 ];
 
 const wabt = await wabtInit();

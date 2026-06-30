@@ -1,0 +1,11 @@
+{
+  "name": "lumen-native",
+  "private": true,
+  "type": "module",
+  "description": "Lumen-owned native backend: emit.lm (Lumen IR->C translator), optimize.lm, the diff harness, and the disposable driver.",
+  "scripts": {
+    "diff": "node native_diff.mjs",
+    "bench": "node native_bench.mjs"
+  },
+  "devDependencies": { "wabt": "^1.0.36" }
+}

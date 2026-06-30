@@ -44,16 +44,26 @@ clean-room oracle that agrees with the textbook). The IN-CODE ops/sec win is NOT
 delivered and is exactly what the native backend below provides; until then, value
 the oracle for independence, not raw throughput.
 
-## Remaining
+## Native backend — started (Lumen-owned; full plan in `NATIVE_BACKEND_PLAN.md`)
 
-**Native backend** (roadmap Phase 4: Cranelift for debug, LLVM for release) — full plan in `NATIVE_BACKEND_PLAN.md`:
-   compile the existing IR to machine code. This is the piece that makes "faster
-   ops/sec than Python" fully true for scalar/custom math. It is a multi-week
-   subsystem, not a seed edit, and is NOT completable in a single session. Until it
-   lands the engine is the bootstrap interpreter: correct and good for an oracle,
-   but it will not beat numpy/BLAS on vectorized math. Concrete first step: lower the
-   IR opcode stream to Cranelift IR behind the same `run` entry point, keeping the
-   interpreter as the reference and diffing the two for every conformance program.
+Architecture ruling (2026-06-30): the IR->native TRANSLATION is itself a Lumen program
+(`native/emit.lm`), run by Lumen; clang is a scoped, deletion-clocked assistant; a Lumen
+optimizer carries the speed; the self-hosted compiler is the foundation it plugs into.
+Cranelift is superseded (no host rust; clang reaches the same LLVM target today).
+
+**Landed this session (gated bit-identical to the interpreter oracle):**
+- Keystone: raw-memory opcodes `load32/store32/load8/store8` (53..56) + bounds-checked loader
+  (conformance 18/18, perf PASS) — the single unblock for self-host, native emit, and optimizer.
+- `native/emit.lm` (the IR->C translator, in Lumen) + driver + diff harness + bench. Scalar
+  core (opcodes 0..24) is **11/11 diff-green** and runs `fib` at **~19x the interpreter
+  (231M vs 12.3M calls/sec), ~21% of hand-written C**. First proof Lumen translates its own IR
+  to a native binary, no 3rd language in the translation.
+
+**Remaining (multi-week):** the Lumen optimizer `optimize.lm` (next; closes the gap to C);
+float/heap emit (M2, floats must transcribe the seed's exact non-libm series); a single AOT
+binary (M3); ditching clang via direct LLVM-IR/asm emission (M4); and the headline spine —
+repairing `lumenc.lm` so Lumen genuinely self-hosts (SRC overflow now guarded; capacity walls
+and full language parity remain). The bootstrap interpreter stays the reference oracle forever.
 
 ## Known follow-ups
 - A float-aware `print_float` / `float_to_text` (today floats are output by scaling

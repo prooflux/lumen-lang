@@ -69,6 +69,10 @@
   (data (i32.const 52330) "aget")
   (data (i32.const 52340) "aset")
   (data (i32.const 52350) "alen")
+  (data (i32.const 52360) "load32")
+  (data (i32.const 52370) "store32")
+  (data (i32.const 52380) "load8")
+  (data (i32.const 52390) "store8")
 
   (global $osp     (mut i32) (i32.const 0))
   (global $csp     (mut i32) (i32.const 0))
@@ -811,6 +815,14 @@
               (then (call $emitw (i32.const 51)) (global.set $ety (i32.const 0)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52350) (i32.const 4))   ;; alen(a) -> Int
               (then (call $emitw (i32.const 52)) (global.set $ety (i32.const 0)) (return)))
+            (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52360) (i32.const 6))   ;; load32(addr) -> Int (raw mem, sign-ext)
+              (then (call $emitw (i32.const 53)) (global.set $ety (i32.const 0)) (return)))
+            (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52370) (i32.const 7))   ;; store32(addr,val) -> Unit
+              (then (call $emitw (i32.const 54)) (global.set $ety (i32.const 0)) (return)))
+            (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52380) (i32.const 5))   ;; load8(addr) -> Int (byte, zero-ext)
+              (then (call $emitw (i32.const 55)) (global.set $ety (i32.const 0)) (return)))
+            (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52390) (i32.const 6))   ;; store8(addr,val) -> Unit
+              (then (call $emitw (i32.const 56)) (global.set $ety (i32.const 0)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52100) (i32.const 11))   ;; int_to_text(x)
               (then (call $emitw (i32.const 18)) (global.set $ety (i32.const 0)) (return)))   ;; INT2TEXT
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 52120) (i32.const 11))   ;; text_concat(a,b)
@@ -1510,6 +1522,17 @@
           (br $loop)))
         (if (i32.eq (local.get $op) (i32.const 52)) (then           ;; ALEN: pop a -> push len
           (call $opush (i64.extend_i32_u (i32.load (i32.wrap_i64 (call $opop))))) (br $loop)))
+        ;; ---- raw memory (the self-host keystone): unchecked load/store, how a Lumen compiler reaches its own memory map ----
+        (if (i32.eq (local.get $op) (i32.const 53)) (then           ;; LOAD32 addr -> i32 sign-extended (PUSH immediates round-trip)
+          (call $opush (i64.extend_i32_s (i32.load (i32.wrap_i64 (call $opop))))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 54)) (then           ;; STORE32 addr val -> Unit (pops val then addr)
+          (local.set $t (call $opop)) (local.set $a (call $opop))
+          (i32.store (i32.wrap_i64 (local.get $a)) (i32.wrap_i64 (local.get $t))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 55)) (then           ;; LOAD8 addr -> byte zero-extended
+          (call $opush (i64.extend_i32_u (i32.load8_u (i32.wrap_i64 (call $opop))))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 56)) (then           ;; STORE8 addr val -> Unit (pops val then addr)
+          (local.set $t (call $opop)) (local.set $a (call $opop))
+          (i32.store8 (i32.wrap_i64 (local.get $a)) (i32.wrap_i64 (local.get $t))) (br $loop)))
         (if (i32.eq (local.get $op) (i32.const 10)) (then (call $print_i64 (call $opop)) (br $loop)))
         (br $halt))))
 

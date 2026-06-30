@@ -38,6 +38,19 @@ eq('ge less',  runMain('c.print_int(3 >= 7)'), '0\n');
 eq('eq equal', runMain('c.print_int(5 == 5)'), '1\n');
 eq('ne differ', runMain('c.print_int(5 != 6)'), '1\n');
 
+// ---- logical operators: and / or, short-circuit, precedence ----
+eq('and both true',   runMain('c.print_int(1 == 1 and 2 == 2)'), '1\n');
+eq('and left false',  runMain('c.print_int(1 == 2 and 2 == 2)'), '0\n');
+eq('and right false', runMain('c.print_int(1 == 1 and 2 == 3)'), '0\n');
+eq('or left true',    runMain('c.print_int(1 == 1 or 2 == 3)'), '1\n');
+eq('or right true',   runMain('c.print_int(1 == 2 or 3 == 3)'), '1\n');
+eq('or both false',   runMain('c.print_int(1 == 2 or 3 == 4)'), '0\n');
+eq('and binds tighter than or', runMain('c.print_int(1 == 2 and 1 == 1 or 1 == 1)'), '1\n');
+eq('and lower than comparison', runMain('c.print_int(3 < 5 and 5 < 9)'), '1\n');
+eq('or short-circuits past a trapping rhs',  runMain('c.print_int(1 == 1 or 1 / 0 == 0)'), '1\n');
+eq('and short-circuits past a trapping rhs', runMain('c.print_int(1 == 2 and 1 / 0 == 0)'), '0\n');
+eq('compound condition in if', runFull('fn in_range(x: Int, lo: Int, hi: Int) -> Int {\n  if x >= lo and x <= hi { return 1 }\n  return 0\n}\nfn main(c: Console) -> Unit {\n  c.print_int(in_range(5, 1, 10))\n  c.print_int(in_range(99, 1, 10))\n}\n'), '1\n0\n');
+
 // ---- locals: let, multiple lets, var reassignment ----
 eq('let binding', runMain('let x = 5\n  c.print_int(x + 1)'), '6\n');
 eq('two lets',    runMain('let a = 3\n  let b = 4\n  c.print_int(a * b)'), '12\n');

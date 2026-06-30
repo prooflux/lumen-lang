@@ -53,6 +53,8 @@
   (data (i32.const 52170) "text_eq")
   (data (i32.const 52180) "ok")
   (data (i32.const 52190) "err")
+  (data (i32.const 52200) "and")
+  (data (i32.const 52210) "or")
 
   (global $osp     (mut i32) (i32.const 0))
   (global $csp     (mut i32) (i32.const 0))
@@ -639,7 +641,43 @@
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 24)) (then (call $adv) (call $c_add) (call $emitw (i32.const 22)) (return)))   ;; >=
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 25)) (then (call $adv) (call $c_add) (call $emitw (i32.const 23)))))           ;; >
 
-  (func $c_expr (call $c_cmp))
+  ;; logical 'and' (short-circuit): a and b  ==  if a is false, 0, else b
+  (func $c_and
+    (local $jz i32) (local $jmp i32)
+    (call $c_cmp)
+    (block $ae
+      (loop $al
+        (if (call $kw_is (global.get $tp) (i32.const 52200) (i32.const 3))   ;; 'and'
+          (then
+            (call $adv)
+            (call $emitw (i32.const 6)) (local.set $jz (global.get $emit)) (call $emitw (i32.const 0))   ;; JZ -> false (pops lhs)
+            (call $c_cmp)                                                      ;; rhs is the result when lhs is true
+            (call $emitw (i32.const 7)) (local.set $jmp (global.get $emit)) (call $emitw (i32.const 0))  ;; JMP -> end
+            (call $patch (local.get $jz) (global.get $emit))
+            (call $emitw (i32.const 1)) (call $emitw (i32.const 0))            ;; false: PUSH 0
+            (call $patch (local.get $jmp) (global.get $emit))
+            (br $al)))
+        (br $ae))))
+
+  ;; logical 'or' (short-circuit): a or b  ==  if a is true, 1, else b
+  (func $c_or
+    (local $jz i32) (local $jmp i32)
+    (call $c_and)
+    (block $oe
+      (loop $ol
+        (if (call $kw_is (global.get $tp) (i32.const 52210) (i32.const 2))   ;; 'or'
+          (then
+            (call $adv)
+            (call $emitw (i32.const 6)) (local.set $jz (global.get $emit)) (call $emitw (i32.const 0))   ;; JZ -> eval rhs (pops lhs)
+            (call $emitw (i32.const 1)) (call $emitw (i32.const 1))            ;; lhs true: PUSH 1
+            (call $emitw (i32.const 7)) (local.set $jmp (global.get $emit)) (call $emitw (i32.const 0))  ;; JMP -> end
+            (call $patch (local.get $jz) (global.get $emit))
+            (call $c_and)                                                     ;; rhs is the result when lhs is false
+            (call $patch (local.get $jmp) (global.get $emit))
+            (br $ol)))
+        (br $oe))))
+
+  (func $c_expr (call $c_or))
 
   ;; '_' wildcard pattern?  (off is an absolute source address)
   (func $is_wild (param $off i32) (param $len i32) (result i32)

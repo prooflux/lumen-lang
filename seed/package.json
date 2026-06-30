@@ -11,6 +11,7 @@
     "conformance": "node test.mjs",
     "safety": "node safety.mjs",
     "loop": "node loop_test.mjs",
+    "perf": "node perf.mjs",
     "serve": "node lumend.mjs",
     "mcp": "node lumen_mcp.mjs"
   },

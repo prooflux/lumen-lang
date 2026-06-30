@@ -10,6 +10,47 @@ bit-identical to it).
 
 ---
 
+## 2026-06-30 (later) — The Lumen optimizer (point 2) + per-function emitter that BEATS C
+
+### Landed
+1. **`optimize.lm` — the first Lumen-owned IR optimizer pass (point 2).** Jump-to-jump
+   threading, written in Lumen, reading/writing the IR via the load32/store32 keystone.
+   Length-preserving, so bit-identity holds by construction. Gate (`optimize_diff.mjs`):
+   `interpret(optimize(IR)) == interpret(IR)` byte-for-byte on 11 scalar programs + a
+   synthetic jump-chain the pass collapses (4->6), **12/12**. `pipeline.mjs` gained
+   `optimizeIR` and `runIR`. This is the speed engine that makes ditching clang (M4)
+   performance-credible.
+
+2. **`emit_fn.lm` — v2 per-function emitter that MATCHES/BEATS hand-written C.** v1's
+   goto-threaded VM hit ~22% of hand-C because dynamic stack indexing defeats clang's
+   register allocator. v2 lowers each Lumen function to a REAL C function whose value-stack
+   slots use COMPILE-TIME-CONSTANT indices (scheduled at emit time by tracking stack depth),
+   so clang -O3 register-allocates and inlines. Result on `fib(40)` (compute rate, clang -O3,
+   spawn-subtracted): interpreter 12M -> v1 237M (22% of C) -> **v2 1186M calls/sec = ~110% of
+   hand-written C (≈99x the interpreter).** **11/11 scalar programs bit-identical** to the
+   interpreter oracle. The translation is still 100% Lumen; clang only assembles.
+
+3. **Token-capacity wall raised (point 3 / self-host).** `emit_fn.lm` is a bigger Lumen
+   program and hit the seed's 1600-token lexer cap. Raised it to the TOKENS region's true
+   capacity (1665; index 1664 ends at 49980 < SYMBOLS@50000) — a safe, non-regressing
+   wall-raise (seed suite 101/101+18/18+7/7+13/13, perf PASS). `emit_fn.lm` kept lean (1509
+   tokens) by minimizing `c.print` call count (each call ~6 tokens regardless of string
+   length) and supporting exactly the opcodes the scalar corpus uses (0..11,13,14,19,21,24).
+
+### Bug found via the loop (Rule-5 hazard, worked around, fix pending)
+`if a {} else if b {}` FOLLOWED BY more statements in the same block silently miscompiles in
+the current seed (the trailing statements are mis-placed) — it made `optimize.lm`'s threading
+silently never fire. Worked around with a single-`if` flag form (and `emit_fn.lm` avoids
+else-if entirely via sequential `if .. return`). Captured for a seed fix.
+
+### Honest status
+"Beat C in speed" is met for the scalar/control/calls core (≈110% of hand-C, bit-identical).
+Still pending (multi-week): the token-region RESIZE for the full opcode set + `lumenc.lm`
+self-host (the 1665 cap is the region max; a real resize needs ~15 interlocking offsets);
+float/heap emit in v2 (M2); ditching clang (M4). Reference oracle stays the interpreter.
+
+---
+
 ## 2026-06-30 — Keystone + the first Lumen-owned native wedge (scalar core)
 
 **Question that drove it:** "Can Lumen translate itself into a native binary — run by Lumen,

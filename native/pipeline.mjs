@@ -22,6 +22,8 @@ const wabt = await wabtInit();
 const wat = fs.readFileSync(new URL('../seed/lumenc.wat', import.meta.url), 'utf8');
 const binary = wabt.parseWat('lumenc.wat', wat).toBinary({}).buffer;
 const EMIT_SRC = fs.readFileSync(new URL('./emit.lm', import.meta.url), 'utf8');
+const EMIT_FN_SRC = fs.readFileSync(new URL('./emit_fn.lm', import.meta.url), 'utf8');
+const OPT_SRC = fs.readFileSync(new URL('./optimize.lm', import.meta.url), 'utf8');
 
 async function freshInstance() {
   let out = '';
@@ -62,6 +64,66 @@ export async function emitC(words, main) {
   I.resetOut();
   if (I.ex.set_fuel_max) I.ex.set_fuel_max(4000000000n);
   I.ex.run(I.ex.dbg_main());
+  return I.getOut();
+}
+
+// run a chosen emitter .lm (Lumen) over an injected IR snapshot -> emitted C source text
+async function emitWith(emitterSrc, words, main) {
+  const I = await freshInstance();
+  const len = writeSrc(I, emitterSrc);
+  I.ex.compile(len);
+  if (I.ex.dbg_nerr() > 0) throw new Error(`emitter compile: ${I.ex.dbg_nerr()} error(s)`);
+  const m32 = new Int32Array(I.ex.mem.buffer);
+  m32[SCRATCH / 4] = words.length;
+  m32[SCRATCH / 4 + 1] = main;
+  for (let i = 0; i < words.length; i++) m32[SCRATCH / 4 + 2 + i] = words[i];
+  I.resetOut();
+  if (I.ex.set_fuel_max) I.ex.set_fuel_max(4000000000n);
+  I.ex.run(I.ex.dbg_main());
+  return I.getOut();
+}
+
+// v2 per-function emitter (emit_fn.lm) - the "beat C" lowering
+export async function buildAndRunFn(src, opt = '-O2') {
+  const { words, main } = await compileToIR(src);
+  const csrc = await emitWith(EMIT_FN_SRC, words, main);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-fn-'));
+  const cfile = path.join(dir, 'p.c'), bin = path.join(dir, 'p');
+  fs.writeFileSync(cfile, csrc);
+  try { execFileSync('clang', [opt, '-o', bin, cfile], { stdio: ['ignore', 'ignore', 'pipe'] }); }
+  catch (e) { throw new Error(`clang failed: ${String(e.stderr || e.message).slice(0, 300)}`); }
+  let stdout = '', exit = 0;
+  try { stdout = execFileSync(bin, { encoding: 'utf8' }); }
+  catch (e) { stdout = e.stdout ? e.stdout.toString() : ''; exit = typeof e.status === 'number' ? e.status : 1; }
+  return { stdout, exit, csrc };
+}
+
+// run optimize.lm (Lumen) over an injected IR snapshot -> { words: optimized IR (copy), changed }
+export async function optimizeIR(words, main) {
+  const I = await freshInstance();
+  const len = writeSrc(I, OPT_SRC);
+  I.ex.compile(len);
+  if (I.ex.dbg_nerr() > 0) throw new Error(`optimize.lm compile: ${I.ex.dbg_nerr()} error(s)`);
+  const m32 = new Int32Array(I.ex.mem.buffer);
+  m32[SCRATCH / 4] = words.length;
+  m32[SCRATCH / 4 + 1] = main;
+  for (let i = 0; i < words.length; i++) m32[SCRATCH / 4 + 2 + i] = words[i];
+  if (I.ex.set_fuel_max) I.ex.set_fuel_max(4000000000n);
+  I.ex.run(I.ex.dbg_main());
+  const out = new Int32Array(words.length);
+  for (let i = 0; i < words.length; i++) out[i] = m32[SCRATCH / 4 + 2 + i];
+  const changed = m32[SCRATCH / 4 + 1];   // optimize.lm wrote the threaded-jump count here
+  return { words: out, changed };
+}
+
+// execute a raw IR word array directly through the interpreter (no recompile) -> stdout
+// (scalar/control/calls only: the heap pointer is not initialized without a compile pass)
+export async function runIR(words, main) {
+  const I = await freshInstance();
+  new Int32Array(I.ex.mem.buffer, CODE_BASE, words.length).set(words);
+  I.resetOut();
+  if (I.ex.set_fuel_max) I.ex.set_fuel_max(4000000000n);
+  I.ex.run(main);
   return I.getOut();
 }
 

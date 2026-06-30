@@ -1,0 +1,150 @@
+# emit_fn.lm - the Lumen-owned IR -> native C translator, v2: PER-FUNCTION lowering (beat C).
+#
+# v1 (emit.lm) emits a goto-threaded VM with a runtime value stack -> ~22% of hand-C (dynamic
+# stack indexing defeats clang's register allocator). v2 lowers each Lumen function to a REAL C
+# function whose value-stack slots use COMPILE-TIME-CONSTANT indices (s[0], s[1], ... scheduled
+# at emit time by tracking stack depth), so clang -O3 register-allocates and inlines -> matches
+# or beats hand-written C. Translation is 100% Lumen (run by the seed via the load32 keystone);
+# clang only assembles. Kept lean (few c.print calls, each ~6 tokens) to fit the seed token cap;
+# supports the scalar/control/calls opcodes the conformance corpus uses (0..11,13,14,19,21,24).
+# Reads injected IR: load32(524288)=ir_len, load32(524292)=main, load32(524296+i*4)=word i.
+
+fn hdr() -> Int { return 524288 }
+fn ir_len() -> Int { return load32(hdr()) }
+fn ir_main() -> Int { return load32(hdr() + 4) }
+fn ir_word(i: Int) -> Int { return load32(hdr() + 8 + i * 4) }
+fn arity_base() -> Int { return 560000 }
+fn arity_of(e: Int) -> Int { return load32(arity_base() + e * 4) }
+
+fn oplen(op: Int) -> Int {
+  if op == 1 { return 1 }
+  if op == 2 { return 1 }
+  if op == 6 { return 1 }
+  if op == 7 { return 1 }
+  if op == 8 { return 2 }
+  if op == 13 { return 1 }
+  if op == 14 { return 1 }
+  return 0
+}
+
+fn num(c: Console, n: Int) -> Unit { c.print(int_to_text(n)) }
+fn sl(c: Console, k: Int) -> Unit { c.print("s[") num(c, k) c.print("]") }
+fn arith(c: Console, d: Int, op: Text) -> Unit {
+  sl(c, d - 2) c.print("=(int64_t)((uint64_t)") sl(c, d - 2) c.print(op) c.print("(uint64_t)") sl(c, d - 1) c.print(");\n")
+}
+fn cmp(c: Console, d: Int, op: Text) -> Unit {
+  sl(c, d - 2) c.print("=(") sl(c, d - 2) c.print(op) sl(c, d - 1) c.print(")?1:0;\n")
+}
+
+fn scan_arity() -> Unit {
+  var pc = 0
+  while pc < ir_len() {
+    let op = ir_word(pc)
+    if op == 8 { store32(arity_base() + ir_word(pc + 1) * 4, ir_word(pc + 2)) }
+    pc = pc + 1 + oplen(op)
+  }
+}
+
+fn emit_sig(c: Console, pc: Int) -> Unit {
+  let arity = arity_of(pc)
+  c.print("static int64_t f") num(c, pc) c.print("(")
+  var j = 0
+  while j < arity {
+    if j > 0 { c.print(",") }
+    c.print("int64_t p") num(c, j)
+    j = j + 1
+  }
+  c.print(")")
+}
+
+fn emit_header(c: Console, pc: Int) -> Unit {
+  let fs = ir_word(pc + 1)
+  let arity = arity_of(pc)
+  var fsd = fs
+  if fsd < 1 { fsd = 1 }
+  emit_sig(c, pc)
+  c.print("{int64_t F[") num(c, fsd) c.print("]; int64_t s[256];\n")
+  var j = 0
+  while j < arity {
+    c.print("F[") num(c, j) c.print("]=p") num(c, j) c.print(";\n")
+    j = j + 1
+  }
+  c.print("{int _i; for(_i=") num(c, arity) c.print(";_i<") num(c, fs) c.print(";_i=_i+1){F[_i]=0;}}\n")
+}
+
+fn emit_op(c: Console, pc: Int, d: Int) -> Int {
+  let op = ir_word(pc)
+  if op == 0 { c.print("exit(0);\n") return d }
+  if op == 1 { sl(c, d) c.print("=") num(c, ir_word(pc + 1)) c.print(";\n") return d + 1 }
+  if op == 2 { sl(c, d) c.print("=F[") num(c, ir_word(pc + 1)) c.print("];\n") return d + 1 }
+  if op == 3 { arith(c, d, "+") return d - 1 }
+  if op == 4 { arith(c, d, "-") return d - 1 }
+  if op == 11 { arith(c, d, "*") return d - 1 }
+  if op == 5 { cmp(c, d, "<") return d - 1 }
+  if op == 19 { cmp(c, d, "==") return d - 1 }
+  if op == 21 { cmp(c, d, "<=") return d - 1 }
+  if op == 6 { c.print("if(") sl(c, d - 1) c.print("==0)goto L") num(c, ir_word(pc + 1)) c.print(";\n") return d - 1 }
+  if op == 7 { c.print("goto L") num(c, ir_word(pc + 1)) c.print(";\n") return d }
+  if op == 9 { c.print("return ") sl(c, d - 1) c.print(";\n") return d }
+  if op == 10 { c.print("pic(") sl(c, d - 1) c.print(");\n") return d - 1 }
+  if op == 14 { c.print("F[") num(c, ir_word(pc + 1)) c.print("]=") sl(c, d - 1) c.print(";\n") return d - 1 }
+  if op == 24 {
+    c.print("if(") sl(c, d - 1) c.print("==0){fflush(stdout);abort();}") sl(c, d - 2) c.print("=") sl(c, d - 2) c.print("%") sl(c, d - 1) c.print(";\n")
+    return d - 1
+  }
+  if op == 8 {
+    let entry = ir_word(pc + 1)
+    let argc = ir_word(pc + 2)
+    sl(c, d - argc) c.print("=f") num(c, entry) c.print("(")
+    var j = 0
+    while j < argc {
+      if j > 0 { c.print(",") }
+      sl(c, d - argc + j)
+      j = j + 1
+    }
+    c.print(");\n")
+    return d - argc + 1
+  }
+  c.print("\n#error unsupported ") num(c, op) c.print("\n")
+  return d
+}
+
+fn emit_bodies(c: Console) -> Unit {
+  var pc = 0
+  var first = 1
+  var d = 0
+  var resetnext = 0
+  while pc < ir_len() {
+    let op = ir_word(pc)
+    if op == 13 {
+      if first == 0 { c.print("return 0;}\n") }
+      first = 0
+      emit_header(c, pc)
+      d = 0
+      resetnext = 0
+      pc = pc + 2
+    } else {
+      if resetnext == 1 { d = 0 resetnext = 0 }
+      c.print("L") num(c, pc) c.print(": ")
+      d = emit_op(c, pc, d)
+      if op == 0 { resetnext = 1 }
+      if op == 7 { resetnext = 1 }
+      if op == 9 { resetnext = 1 }
+      pc = pc + 1 + oplen(op)
+    }
+  }
+  if first == 0 { c.print("return 0;}\n") }
+}
+
+fn main(c: Console) -> Unit {
+  scan_arity()
+  c.print("#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\nstatic void pic(int64_t v){uint64_t u; int n; char b[24];\nif(v<0){putchar(45);u=0-(uint64_t)v;}else{u=(uint64_t)v;}\nif(u==0){putchar(48);putchar(10);return;}\nn=0; while(u!=0){b[n]=(char)(48+(int)(u%10));n=n+1;u=u/10;}\nwhile(n!=0){n=n-1;putchar((int)b[n]);} putchar(10);}\n")
+  var pc = 0
+  while pc < ir_len() {
+    let op = ir_word(pc)
+    if op == 13 { emit_sig(c, pc) c.print(";\n") }
+    pc = pc + 1 + oplen(op)
+  }
+  c.print("int main(void){setvbuf(stdout,0,_IONBF,0);f") num(c, ir_main()) c.print("();return 0;}\n")
+  emit_bodies(c)
+}

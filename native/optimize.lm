@@ -1,0 +1,88 @@
+# optimize.lm - the first Lumen-owned IR optimizer pass (point 2: a Lumen optimizer that
+# carries the speed so dropping clang stays performance-credible).
+#
+# Pass A: jump-to-jump threading. A JZ/JMP whose target is itself a JMP is rewritten to jump
+# straight to the final destination, collapsing JMP chains. LENGTH-PRESERVING (only operands
+# change), so targets stay absolute word indices and bit-identity is preserved by construction:
+# control flow is a pure function of pc, JMP has stack-effect 0, so reaching the chain's
+# terminus directly is observably identical.
+#
+# It is a Lumen program, run by Lumen: it reads the IR from page-9 scratch via load32 and
+# rewrites operands in place via store32 (the keystone). The driver (pipeline.mjs) injects the
+# IR, runs this, reads the rewritten IR back, and the gate checks interpret(out) == interpret(in)
+# byte-for-byte on the whole corpus.
+#
+# Memory contract (same as emit.lm):
+#   load32(524288)        = ir_len
+#   load32(524292)        = main_entry
+#   load32(524296 + i*4)  = IR word i   (store32 to rewrite)
+
+fn hdr() -> Int { return 524288 }
+fn ir_len() -> Int { return load32(hdr()) }
+fn ir_word(i: Int) -> Int { return load32(hdr() + 8 + i * 4) }
+fn set_word(i: Int, v: Int) -> Unit { store32(hdr() + 8 + i * 4, v) }
+
+fn oplen(op: Int) -> Int {
+  if op == 1 { return 1 }
+  if op == 2 { return 1 }
+  if op == 6 { return 1 }
+  if op == 7 { return 1 }
+  if op == 8 { return 2 }
+  if op == 13 { return 1 }
+  if op == 14 { return 1 }
+  if op == 15 { return 1 }
+  if op == 25 { return 1 }
+  if op == 29 { return 2 }
+  return 0
+}
+
+# follow a JMP chain from word index t to its final non-JMP destination (cycle-capped)
+fn chase(t: Int) -> Int {
+  var cur = t
+  var hops = 0
+  while hops < ir_len() {
+    if ir_word(cur) == 7 {
+      cur = ir_word(cur + 1)
+      hops = hops + 1
+    } else {
+      return cur
+    }
+  }
+  return cur
+}
+
+# JZ (6) and JMP (7) both carry a jump target as their operand
+fn is_jump(op: Int) -> Int {
+  if op == 6 { return 1 }
+  if op == 7 { return 1 }
+  return 0
+}
+
+# NOTE (seed friction, 2026-06-30): `if a {} else if b {}` FOLLOWED BY more statements in the
+# same block silently miscompiles in the current seed (the trailing statements are mis-placed),
+# so the threading never fired. The single-`if` flag form below is the correct workaround and is
+# clearer anyway. Captured as a seed bug to fix via the loop (it is a Rule-5 correctness hazard).
+fn optimize() -> Int {
+  var changed = 0
+  var pc = 0
+  while pc < ir_len() {
+    let op = ir_word(pc)
+    if is_jump(op) == 1 {
+      let t = ir_word(pc + 1)
+      let dst = chase(t)
+      if dst != t {
+        set_word(pc + 1, dst)
+        changed = changed + 1
+      }
+    }
+    pc = pc + 1 + oplen(op)
+  }
+  return changed
+}
+
+# report how many jumps were threaded by writing the count to the header's +4 slot
+# (the driver reads it back; main_entry is re-read from the original snapshot, not needed after run)
+fn main(c: Console) -> Unit {
+  let n = optimize()
+  store32(hdr() + 4, n)
+}

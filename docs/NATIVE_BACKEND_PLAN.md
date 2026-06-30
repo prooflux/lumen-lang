@@ -12,13 +12,21 @@ target on the machine that exists today). Build log: [`../native/HISTORY.md`](..
 - **Keystone — raw-memory opcodes `load32/store32/load8/store8` (53–56)** in the seed +
   bounds-checked source loader. Conformance 18/18, perf gate PASS. The single unblock for all
   three Lumen-owned tracks.
-- **`emit.lm` (the IR→C translator, in Lumen) + `pipeline.mjs` driver + `native_diff.mjs`
-  harness + `native_bench.mjs`.** The scalar/control/calls core (opcodes 0–24) is
-  **diff-green on 11/11 scalar programs** and runs `fib` at **≈19× the interpreter
-  (231M vs 12.3M calls/sec), ≈21% of hand-written C.** First proof Lumen translates its own IR
-  to a native binary, no 3rd language in the translation.
-- **Not done (honest):** full `lumenc.lm` self-host (multi-week); the Lumen optimizer
-  `optimize.lm` (next); float/heap emit (M2); ditching clang (M4).
+- **`emit.lm` v1 (the IR→C translator, in Lumen) + `pipeline.mjs` driver + `native_diff.mjs`
+  harness + `native_bench.mjs`.** Goto-threaded VM, scalar core: **11/11 bit-identical**,
+  ≈19× the interpreter, ≈22% of hand-C. First proof Lumen translates its own IR to native.
+- **`emit_fn.lm` v2 — per-function emitter that MATCHES/BEATS C.** Lowers each Lumen function
+  to a real C function with compile-time-constant stack slots, so clang -O3 register-allocates.
+  **11/11 bit-identical**; `fib(40)` at **≈1186M calls/sec = ~110% of hand-written C**
+  (≈99× the interpreter). The "beat C" goal, met for the scalar/control/calls core.
+- **`optimize.lm` — the first Lumen-owned IR optimizer (point 2).** Jump-threading, in Lumen,
+  via the keystone; length-preserving. Gate (`optimize_diff.mjs`):
+  `interpret(optimize(IR))==interpret(IR)` on 11 programs + a synthetic chain (4→6), **12/12**.
+- **Token-cap wall raised** 1600→1665 (region max) to fit v2 — a non-regressing point-3 step.
+- **Not done (honest):** full `lumenc.lm` self-host (multi-week; needs the real token-region
+  RESIZE, ~15 interlocking offsets, beyond the 1665 region max); v2 float/heap emit (M2);
+  ditching clang (M4). Also a found seed bug: `if/else-if + trailing statements` miscompiles
+  (Rule-5 hazard, worked around, fix pending).
 
 ## The goal, stated without hedging
 Compile the existing Lumen IR to native machine code that **matches or beats the fastest

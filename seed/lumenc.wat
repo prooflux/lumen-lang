@@ -490,7 +490,7 @@
     (local.set $i (i32.const 0)) (local.set $n (i32.const 0))
     (block $end
       (loop $L
-        (br_if $end (i32.ge_u (local.get $n) (i32.const 1600)))   ;; SAFETY: token-capacity guard (region holds ~1666)
+        (br_if $end (i32.ge_u (local.get $n) (i32.const 1665)))   ;; SAFETY: token-capacity guard (region [30000,50000) holds 1666; index 1665 ends at 49992 < SYMBOLS@50000)
         ;; skip whitespace and comments
         (block $skipped
           (loop $sk

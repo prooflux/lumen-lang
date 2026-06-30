@@ -46,7 +46,7 @@ the oracle for independence, not raw throughput.
 
 ## Remaining
 
-**Native backend** (roadmap Phase 4: Cranelift for debug, LLVM for release):
+**Native backend** (roadmap Phase 4: Cranelift for debug, LLVM for release) — full plan in `NATIVE_BACKEND_PLAN.md`:
    compile the existing IR to machine code. This is the piece that makes "faster
    ops/sec than Python" fully true for scalar/custom math. It is a multi-week
    subsystem, not a seed edit, and is NOT completable in a single session. Until it

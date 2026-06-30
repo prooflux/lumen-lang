@@ -46,6 +46,12 @@ eq('var reassignment', runMain('var i = 0\n  i = i + 10\n  c.print_int(i)'), '10
 // ---- control flow ----
 eq('if true branch',  runMain('if 1 < 2 { c.print_int(1) }'), '1\n');
 eq('if/else else branch', runMain('if 2 < 1 { c.print_int(1) } else { c.print_int(2) }'), '2\n');
+// else-if ladders
+const grade = 'fn grade(s: Int) -> Text {\n  if s >= 90 { return "A" }\n  else if s >= 80 { return "B" }\n  else if s >= 70 { return "C" }\n  else { return "F" }\n}\nfn main(c: Console) -> Unit {\n  c.print(grade(SCORE))\n}\n';
+eq('else-if: first branch',  runFull(grade.replace('SCORE', '95')), 'A');
+eq('else-if: middle branch', runFull(grade.replace('SCORE', '85')), 'B');
+eq('else-if: later branch',  runFull(grade.replace('SCORE', '72')), 'C');
+eq('else-if: final else',    runFull(grade.replace('SCORE', '40')), 'F');
 eq('while loop sums 1..5', runMain('var i = 1\n  var s = 0\n  while i <= 5 { s = s + i\n    i = i + 1 }\n  c.print_int(s)'), '15\n');
 
 // ---- functions: recursion, forward reference, multi-arg, mutual recursion ----

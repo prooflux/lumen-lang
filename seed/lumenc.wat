@@ -750,7 +750,9 @@
         (call $emitw (i32.const 7))            ;; JMP
         (local.set $jmp (global.get $emit)) (call $emitw (i32.const 0))
         (call $patch (local.get $jz) (global.get $emit))
-        (call $c_block)
+        (if (call $kw_is (global.get $tp) (i32.const 52010) (i32.const 2))   ;; 'else if' -> chain
+          (then (call $c_if))
+          (else (call $c_block)))
         (call $patch (local.get $jmp) (global.get $emit)))
       (else
         (call $patch (local.get $jz) (global.get $emit)))))

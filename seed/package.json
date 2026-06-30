@@ -6,7 +6,8 @@
   "description": "Lumen stage-0 WAT seed: a bytecode interpreter for the Lumen-mu IR. Disposable; discarded at the self-hosting fixpoint.",
   "scripts": {
     "start": "node run.mjs",
-    "test": "node test.mjs && node safety.mjs && node loop_test.mjs",
+    "test": "node basics.mjs && node test.mjs && node safety.mjs && node loop_test.mjs",
+    "basics": "node basics.mjs",
     "conformance": "node test.mjs",
     "safety": "node safety.mjs",
     "loop": "node loop_test.mjs",

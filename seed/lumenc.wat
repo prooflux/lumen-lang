@@ -474,7 +474,8 @@
         (if (i32.eq (local.get $c) (i32.const 124)) (then (local.set $val (i32.const 27))))  ;; '|' (sum-type variant separator)
         (if (i32.eq (local.get $c) (i32.const 63)) (then (local.set $val (i32.const 28))))   ;; '?' (try / error propagation)
         (if (i32.eq (local.get $c) (i32.const 61)) (then (local.set $val (i32.const 19))))   ;; '='
-        (call $tokset (local.get $n) (local.get $val) (i32.const 0) (i32.const 0))
+        ;; store the source position (addr, len 1) so an unexpected single-char token can be located + fixed
+        (call $tokset (local.get $n) (local.get $val) (i32.add (i32.const 20000) (local.get $i)) (i32.const 1))
         (local.set $n (i32.add (local.get $n) (i32.const 1)))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $L)))

@@ -1,85 +1,104 @@
 #!/usr/bin/env node
-// The Lumen CLI (stage-0). Compiles a Lumen-mu source file to IR and runs it.
+// The Lumen CLI (stage-0). One warm compiler; a token-cheap structured-diagnostic surface.
 //
-//   node lumen.mjs run   <file.lm>    compile and run, print program output
-//   node lumen.mjs check <file.lm>    compile only; report ok / number of IR words
-//   node lumen.mjs ir    <file.lm>    print the compiled IR (one instruction per line)
+//   lumen run    <file.lm>            compile and run, print program output
+//   lumen check  <file.lm>            compile only; human diagnostics, exit 0/1
+//   lumen check  <file.lm> --json     compile only; emit the structured Diagnostic stream as JSON
+//   lumen fix    <file.lm>            apply confident fixes, print the repaired source (--write to save)
+//   lumen ir     <file.lm>            print the compiled IR (one instruction per line)
+//   lumen explain <E0003>            explain a diagnostic code
+//   lumen serve  [socket]            run the warm compiler daemon (lumend) over a Unix socket
+//   lumen mcp                        run the MCP server (stdio) for an LLM client
 //
 // Requires wabt (a dev-only WAT assembler):  npm install   (once, in this directory)
 import fs from 'node:fs';
-import wabtInit from 'wabt';
-
-const SRC_BASE = 20000;
-const OPS = {0:'HALT',1:'PUSH',2:'GETARG',3:'ADD',4:'SUB',5:'LT',6:'JZ',7:'JMP',8:'CALL',
-  9:'RET',10:'PRINTINT',11:'MUL',12:'DIV',13:'RESERVE',14:'SETLOCAL',15:'MKTEXT',
-  16:'PRINTTEXT',17:'CONCAT',18:'INT2TEXT',19:'EQ',20:'NE',21:'LE',22:'GE',23:'GT',24:'MOD'};
-const ONE_OPERAND = new Set([1,2,6,7,13,14,15]);
+import { explain, SCHEMA_VERSION } from './diagnostics.mjs';
 
 function usage() {
-  console.error('usage: lumen <run|check|ir> <file.lm>');
+  console.error('usage: lumen <run|check|fix|ir|explain|serve|mcp> [file.lm|CODE|socket] [--json] [--write]');
   process.exit(2);
 }
 
-const [, , cmd, file] = process.argv;
-if (!cmd || !file) usage();
-if (!['run', 'check', 'ir'].includes(cmd)) usage();
+const argv = process.argv.slice(2);
+const cmd = argv[0];
+const flags = new Set(argv.filter(a => a.startsWith('--')));
+const positionals = argv.slice(1).filter(a => !a.startsWith('--'));
+const arg = positionals[0];
+if (!cmd) usage();
 
-let source;
-try { source = fs.readFileSync(file, 'utf8'); }
-catch (e) { console.error(`lumen: cannot read ${file}: ${e.message}`); process.exit(1); }
-
-const wabt = await wabtInit();
-const wat = fs.readFileSync(new URL('./lumenc.wat', import.meta.url), 'utf8');
-const binary = wabt.parseWat('lumenc.wat', wat).toBinary({}).buffer;
-
-let out = '';
-const { instance } = await WebAssembly.instantiate(binary, {
-  lumen: { console_print: (p, l) => { out += Buffer.from(new Uint8Array(instance.exports.mem.buffer, p, l)).toString('utf8'); } },
-});
-
-const bytes = Buffer.from(source, 'utf8');
-new Uint8Array(instance.exports.mem.buffer, SRC_BASE, bytes.length).set(bytes);
-
-// compile first, then report any errors before running
-const irWords = instance.exports.compile(bytes.length);
-const nerr = instance.exports.dbg_nerr();
-if (nerr > 0) {
-  const mem = new Uint8Array(instance.exports.mem.buffer);
-  const recs = new Int32Array(instance.exports.mem.buffer, 90000, nerr * 3);
-  for (let k = 0; k < nerr; k++) {
-    const code = recs[k * 3], off = recs[k * 3 + 1], len = recs[k * 3 + 2];
-    const name = Buffer.from(mem.slice(off, off + len)).toString('utf8');
-    const so = off - SRC_BASE;                          // byte offset into source
-    let line = 1, col = 1;
-    for (let j = 0; j < so && j < bytes.length; j++) { if (bytes[j] === 10) { line++; col = 1; } else col++; }
-    const what = code === 1 ? 'unknown variable' : code === 2 ? 'unknown function'
-      : code === 3 ? 'unexpected token' : code === 4 ? "expected '}'" : 'error';
-    const tail = name ? ` '${name}'` : '';
-    console.error(`${file}:${line}:${col}: error: ${what}${tail}`);
-  }
-  console.error(`lumen: ${nerr} error(s); not run.`);
-  process.exit(1);
-}
-
-if (cmd === 'check') {
-  console.log(`ok: compiled ${file} (${irWords} IR words, main at ${instance.exports.dbg_main()})`);
+// `explain` needs no file and no compiler
+if (cmd === 'explain') {
+  const reg = explain(arg);
+  if (!reg) { console.error(`lumen: unknown code ${arg}`); process.exit(1); }
+  console.log(`${reg.id}  ${reg.msg}\n\n${reg.explain}`);
   process.exit(0);
 }
 
-if (cmd === 'ir') {
-  const code = new Int32Array(instance.exports.mem.buffer, 11328, irWords);
-  let i = 0;
-  while (i < irWords) {
-    const op = code[i];
-    let s = String(i).padStart(4) + '  ' + (OPS[op] || `?${op}`);
-    if (op === 8) { s += `  entry=${code[i + 1]} argc=${code[i + 2]}`; i += 3; }
-    else if (ONE_OPERAND.has(op)) { s += `  ${code[i + 1]}`; i += 2; }
-    else { i += 1; }
-    console.log(s);
-  }
-  process.exit(0);
-}
+// `serve` / `mcp` delegate to the long-lived servers (clean argv via a child process)
+if (cmd === 'serve' || cmd === 'mcp') {
+  const { spawn } = await import('node:child_process');
+  const mod = new URL(cmd === 'serve' ? './lumend.mjs' : './lumen_mcp.mjs', import.meta.url);
+  const child = spawn(process.execPath, [mod.pathname, ...positionals], { stdio: 'inherit' });
+  child.on('exit', c => process.exit(c ?? 0));
+} else {
+  if (!['run', 'check', 'fix', 'ir'].includes(cmd) || !arg) usage();
 
-// cmd === 'run' (compilation already succeeded above)
-instance.exports.run(instance.exports.dbg_main());
-process.stdout.write(out);
+  let source;
+  try { source = fs.readFileSync(arg, 'utf8'); }
+  catch (e) { console.error(`lumen: cannot read ${arg}: ${e.message}`); process.exit(1); }
+
+  const { createCompiler } = await import('./compiler_core.mjs');
+  const { buildDiagnostics, applyFixes, fixableCount, renderHuman } = await import('./diagnostics.mjs');
+  const lumen = await createCompiler();
+
+  if (cmd === 'check') {
+    const c = lumen.compile(source);
+    const diags = buildDiagnostics(c.rawDiags, source);
+    if (flags.has('--json')) {
+      process.stdout.write(JSON.stringify({ schema: SCHEMA_VERSION, ok: diags.length === 0, irWords: c.irWords, fixable: fixableCount(diags), diagnostics: diags }) + '\n');
+      process.exit(diags.length === 0 ? 0 : 1);
+    }
+    if (diags.length === 0) { console.log(`ok: compiled ${arg} (${c.irWords} IR words, main at ${c.main})`); process.exit(0); }
+    for (const d of diags) console.error(renderHuman(arg, d));
+    console.error(`lumen: ${diags.length} error(s), ${fixableCount(diags)} auto-fixable; not run.`);
+    process.exit(1);
+  }
+
+  if (cmd === 'fix') {
+    let cur = source, totalApplied = 0, rounds = 0;
+    while (rounds++ < 20) {
+      const c = lumen.compile(cur);
+      const diags = buildDiagnostics(c.rawDiags, cur);
+      if (diags.length === 0) break;
+      const { source: next, applied } = applyFixes(cur, diags);
+      if (applied === 0 || next === cur) break;     // converged or nothing confidently fixable
+      cur = next; totalApplied += applied;
+    }
+    const final = lumen.compile(cur);
+    const remaining = buildDiagnostics(final.rawDiags, cur);
+    if (flags.has('--write')) {
+      fs.writeFileSync(arg, cur);
+      console.error(`lumen: applied ${totalApplied} fix(es) to ${arg}; ${remaining.length} diagnostic(s) remain.`);
+    } else {
+      process.stdout.write(cur);
+      console.error(`lumen: applied ${totalApplied} fix(es); ${remaining.length} diagnostic(s) remain.`);
+    }
+    process.exit(remaining.length === 0 ? 0 : 1);
+  }
+
+  if (cmd === 'ir') {
+    const r = lumen.ir(source);
+    if (!r.ok) { for (const d of buildDiagnostics(r.rawDiags, source)) console.error(renderHuman(arg, d)); process.exit(1); }
+    console.log(r.text);
+    process.exit(0);
+  }
+
+  // cmd === 'run'
+  const r = lumen.run(source);
+  if (!r.ok) {
+    for (const d of buildDiagnostics(r.rawDiags, source)) console.error(renderHuman(arg, d));
+    console.error(`lumen: ${r.rawDiags.length} error(s); not run.`);
+    process.exit(1);
+  }
+  process.stdout.write(r.stdout);
+}

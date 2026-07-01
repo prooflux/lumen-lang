@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createCompiler } from '../seed/compiler_core.mjs';
-import { compileToIR, emitC } from './pipeline.mjs';
+import { compileToIR, optimizeIR, emitC } from './pipeline.mjs';
 
 const fibSrc = (n) => `fn fib(n: Int) -> Int { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }\nfn main(c: Console) -> Unit { c.print_int(fib(${n})) }\n`;
 const CALLS = { 30: 2692537, 40: 331160281 };   // calls to fib = 2*F(n+1)-1
@@ -31,7 +31,8 @@ const interpMs = Number(process.hrtime.bigint() - ti) / 1e6;
 const interpRate = CALLS[30] / (interpMs / 1000);
 
 // 2) Lumen-native: fib(40) via emit.lm -> clang -O3; subtract spawn
-const { words, main } = await compileToIR(fibSrc(40));
+const ir = await compileToIR(fibSrc(40));
+const { words, main } = await optimizeIR(ir.words, ir.main);
 fs.writeFileSync(path.join(dir, 'p.c'), await emitC(words, main));
 execFileSync('clang', ['-O3', '-o', path.join(dir, 'p'), path.join(dir, 'p.c')]);
 const nativeMs = Math.max(0.001, median(Array.from({ length: 5 }, () => timeRun(path.join(dir, 'p')))) - spawnMs);

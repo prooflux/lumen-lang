@@ -86,7 +86,8 @@ async function emitWith(emitterSrc, words, main) {
 
 // v2 per-function emitter (emit_fn.lm) - the "beat C" lowering
 export async function buildAndRunFn(src, opt = '-O2') {
-  const { words, main } = await compileToIR(src);
+  const ir = await compileToIR(src);
+  const { words, main } = await optimizeIR(ir.words, ir.main);
   let csrc = await emitWith(EMIT_FN_SRC, words, main);
   
   // All CDF optimization and vectorization are performed directly by the Lumen compiler (emit_fn.lm).
@@ -156,7 +157,8 @@ export async function runIR(words, main) {
 
 // full pipeline: user .lm -> Lumen-emitted C -> clang -> native binary -> { stdout, exit, csrc }
 export async function buildAndRun(src, opt = '-O2') {
-  const { words, main } = await compileToIR(src);
+  const ir = await compileToIR(src);
+  const { words, main } = await optimizeIR(ir.words, ir.main);
   const csrc = await emitC(words, main);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-native-'));
   const cfile = path.join(dir, 'p.c');

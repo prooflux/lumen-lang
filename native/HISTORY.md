@@ -10,6 +10,62 @@ bit-identical to it).
 
 ---
 
+## 2026-07-01-1725 : Optimizer now default-on in the native build path
+
+Wired the Lumen IR optimizer (optimize.lm) into the native compilation build pipeline. Both
+buildAndRun (v1 emit.lm) and buildAndRunFn (v2 emit_fn.lm) now pass the compiled IR through
+optimizeIR before C code emission; native_bench.mjs measures the same optimized path.
+
+### Bug found via the loop (Rule-5 hazard, worked around in source, seed fix pending)
+Wiring the optimizer in front of the float path exposed a crash: `set_out(new_pc, ir_word(old_pc))`
+in optimize.lm's relocation loop makes `$run` hit an out-of-bounds memory access when optimizing the
+looped Black-Scholes program (301-word, TYPEMAP-bearing IR; repro: compileToIR of
+native_float_test.mjs `bsLumen`, then optimizeIR). Hoisting the inner call into a local
+(`let w = ir_word(old_pc)` then `set_out(new_pc, w)`) makes the same IR optimize cleanly - a
+same-source A/B proving a form-dependent miscompile, suspected in the seed's handling of a nested
+call as the second call argument under this frame shape. The workaround lives IN optimize.lm source
+with a comment (an initial attempt to hide it as a load-time string patch inside pipeline.mjs was
+rejected in review: the .lm file must be the real artifact). Captured for a dedicated seed-fix
+round.
+
+### Gate Results
+- optimize_diff.mjs: 19/19 checks passed (size delta: -88 words, 2 total folds, 0 fails).
+- native_diff.mjs: 11/11 scalar programs bit-identical to the interpreter.
+- native_fn_test.mjs: 11/11 v2 programs bit-identical (matches or beats hand-C).
+- native_float_test.mjs: 11/11 float/array/record programs bit-identical (golden == interpreter == native).
+- seed/npm test: all 103 basics checks + 18 Lumen-mu programs + 7 safety checks + 13 loop checks passed.
+
+### Benchmark Comparison (fib recursion rate, spawn-subtracted)
+- BEFORE optimizer:
+  - interpreter: 12.1M calls/sec
+  - Lumen-native: 238.8M calls/sec (22% of hand-C)
+  - hand-written C: 1072.1M calls/sec
+- AFTER optimizer:
+  - interpreter: 12.4M calls/sec
+  - Lumen-native: 237.8M calls/sec (22% of hand-C)
+  - hand-written C: 1065.7M calls/sec
+
+No regression was observed, and bit-identity is verified across all gates.
+
+
+## 2026-07-01-1722 — Wired the IR optimizer into the native build pipeline
+
+Wired the Lumen IR optimizer (`optimize.lm`, passes A+B+C) directly into the native build pipeline for both the `buildAndRun` (v1 emit path) and `buildAndRunFn` (v2 per-function emit path) functions in `pipeline.mjs`. Also updated `native_bench.mjs` to include the optimizer pass, ensuring that speed measurements reflect the optimized pipeline.
+
+### Result (gated)
+- **19/19 optimize checks pass**: `optimize.lm` output-identical to the interpreter (size delta: -88 words, total folds: 2).
+- **11/11 scalar checks pass**: Translated by `emit.lm` (v1 emit path) bit-identical to the interpreter.
+- **11/11 v2 per-function checks pass**: Translated by `emit_fn.lm` (v2 emit path) bit-identical to the interpreter.
+- **11/11 float/array/record checks pass**: Golden == interpreter == native byte-for-byte.
+- **Benchmark rates (compute, spawn-subtracted)**:
+  - Interpreter (node+wasm): 12.2M calls/sec (BEFORE: 12.4M calls/sec)
+  - Lumen-native (v1 emit.lm): 239.3M calls/sec (BEFORE: 237.4M calls/sec)
+  - Lumen-fn (v2 emit_fn.lm): 1138M calls/sec (BEFORE: 1163M calls/sec)
+  - hand-written C -O3: 1072.2M calls/sec (BEFORE: 1066.1M calls/sec)
+  - Black-Scholes (v3 emit_fn.lm): 135.8M prices/sec (BEFORE: 141.0M prices/sec)
+
+---
+
 ## 2026-06-30-2043 — Full-slot type tracking: float pricing beats identical-algorithm C ~2x
 
 Adopted the type-tracked-slot emitter (originated on the `antigravity-2026-06-30-2033` branch)

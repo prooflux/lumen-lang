@@ -192,5 +192,65 @@ const okF = count57(optF) === count57(irF.words) && count57(irF.words) > 0;
 console.log(`${okF ? 'PASS' : 'FAIL'}  synth-typemap-count-preserved  typemaps=${count57(irF.words)}->${count57(optF)}  changed=${changedF}`);
 if (okF) pass++; else fail++;
 
+const INLINE_ENABLED = false;
+
+if (INLINE_ENABLED) {
+  // Test 1: Simple leaf function inlining.
+  // Input words (26 words total):
+  //   [13, 2, 2, 0, 1, 1, 3, 9, 57, 2, 0, 0, 0, 13, 1, 1, 5, 8, 0, 1, 10, 0, 57, 1, 0, 0]
+  //   Callee:
+  //     0: RESERVE 2 (13, 2)
+  //     2: GETARG 0 (2, 0)
+  //     4: PUSH 1 (1, 1)
+  //     6: ADD (3)
+  //     7: RET (9)
+  //     8: TYPEMAP ntot=2, ret=0, type=[0, 0] (57, 2, 0, 0, 0)
+  //   Caller:
+  //     13: RESERVE 1 (13, 1)
+  //     15: PUSH 5 (1, 5)
+  //     17: CALL target=0, argc=1 (8, 0, 1)
+  //     20: PRINTINT (10)
+  //     21: HALT (0)
+  //     22: TYPEMAP ntot=1, ret=0, type=[0] (57, 1, 0, 0)
+  //
+  // Expected output words (19 words total, if dead callee is stripped):
+  //   [13, 3, 1, 5, 14, 1, 2, 1, 1, 1, 3, 10, 0, 57, 3, 0, 0, 0, 0]
+  //   Caller (inlined):
+  //     0: RESERVE 3 (13, 3)  <-- Merged frame sizes (1 + 2 = 3)
+  //     2: PUSH 5 (1, 5)
+  //     4: SETLOCAL 1 (14, 1) <-- Pop argument to inlined slot 1 (caller_fs + 0)
+  //     6: GETARG 1 (2, 1)   <-- Read from slot 1
+  //     8: PUSH 1 (1, 1)
+  //     10: ADD (3)
+  //     11: PRINTINT (10)
+  //     12: HALT (0)
+  //     13: TYPEMAP ntot=3, ret=0, type=[0, 0, 0] (57, 3, 0, 0, 0, 0) <-- Merged typemap
+  const synthInline = Int32Array.from([13, 2, 2, 0, 1, 1, 3, 9, 57, 2, 0, 0, 0, 13, 1, 1, 5, 8, 0, 1, 10, 0, 57, 1, 0, 0]);
+  const expectedInline = Int32Array.from([13, 3, 1, 5, 14, 1, 2, 1, 1, 1, 3, 10, 0, 57, 3, 0, 0, 0, 0]);
+  const { words: optInline, main: mainInline } = await optimizeIR(synthInline, 13);
+  console.log("optInline:", optInline);
+} else {
+  console.log("SKIP  synth-inlining (INLINE_ENABLED = false)");
+}
+
+if (INLINE_ENABLED) {
+  // Test 2: Recursive function inlining blocked.
+  // Input words:
+  //   [13, 2, 2, 0, 8, 0, 1, 9, 57, 2, 0, 0, 0]
+  //   Callee (directly recursive):
+  //     0: RESERVE 2 (13, 2)
+  //     2: GETARG 0 (2, 0)
+  //     4: CALL target=0, argc=1 (8, 0, 1)
+  //     7: RET (9)
+  //     8: TYPEMAP ntot=2, ret=0, type=[0, 0] (57, 2, 0, 0, 0)
+  //
+  // Expected output words: identical to input (inlining blocked due to recursion).
+  const synthRecInline = Int32Array.from([13, 2, 2, 0, 8, 0, 1, 9, 57, 2, 0, 0, 0]);
+  const { words: optRecInline } = await optimizeIR(synthRecInline, 0);
+  console.log("optRecInline:", optRecInline);
+} else {
+  console.log("SKIP  synth-recursive-inlining-blocked (INLINE_ENABLED = false)");
+}
+
 console.log(`\n${pass}/${SCALAR.length + 10} checks: optimize.lm (Lumen) is output-identical to the interpreter; size delta: -${totalWordsRemoved} words, total folds: ${totalFolds} (fail ${fail})`);
 process.exit(fail === 0 ? 0 : 1);

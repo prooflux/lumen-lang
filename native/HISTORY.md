@@ -10,6 +10,17 @@ bit-identical to it).
 
 ---
 
+## 2026-07-01-1750 : Seed stack leak fix (nested call crash resolved)
+
+Resolved the stack overflow crash by fixing the compiler's stack leak of statement expression return values. Standalone expression statements compiled by `c_expr` in `lumenc.wat` now emit a `SETLOCAL discard_slot` instruction to pop their return value off the stack, preventing stack growth across loops and statements. Opcodes that do not push values (`ASET`, `STORE32`, `STORE8`, `PRINTINT`, `PRINTTEXT`) are skipped to avoid stack corruption. Reverted the workaround in `optimize.lm` back to the nested call one-liner `set_out(new_pc, ir_word(old_pc))`.
+
+### Gate Results
+- seed/npm test: all 104 basics checks + 18 conformance checks + 7 safety checks + 13 loop checks passed.
+- optimize_diff.mjs: 19/19 checks passed.
+- native_diff.mjs: 11/11 scalar programs bit-identical.
+- native_fn_test.mjs: 11/11 v2 programs bit-identical (matches or beats hand-C).
+- native_float_test.mjs: 11/11 float/array/record programs bit-identical.
+
 ## 2026-07-01-1725 : Optimizer now default-on in the native build path
 
 Wired the Lumen IR optimizer (optimize.lm) into the native compilation build pipeline. Both

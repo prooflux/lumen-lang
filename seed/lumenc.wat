@@ -94,6 +94,7 @@
   (global $ety (mut i32) (i32.const 0))   ;; type of the value the last-compiled expression leaves on the stack: 0=Int, 1=Float
   (global $nfield (mut i32) (i32.const 0))   ;; record field registry count; table at [528000) (off,len,index,type) 16 bytes
   (global $nrec (mut i32) (i32.const 0))      ;; record-type count; table at [533632) (off,len,size) 12 bytes
+  (global $discard_slot (mut i32) (i32.const 0))
 
   ;; ---------- small helpers ----------
   (func $b (param $i i32) (result i32)
@@ -1173,6 +1174,7 @@
     (call $patch (local.get $jz) (global.get $emit)))
 
   (func $c_stmt
+    (local $last_op i32)
     (if (call $kw_is (global.get $tp) (i32.const 248070) (i32.const 3))   ;; 'let'
       (then (call $c_let) (return)))
     (if (call $kw_is (global.get $tp) (i32.const 248080) (i32.const 3))   ;; 'var'
@@ -1187,7 +1189,15 @@
       (then
         (if (i32.eq (call $tk (i32.add (global.get $tp) (i32.const 1))) (i32.const 19))   ;; '='
           (then (call $c_assign) (return)))))
-    (call $c_expr))
+    (call $c_expr)
+    (local.set $last_op (call $codew (i32.sub (global.get $emit) (i32.const 1))))
+    (if (i32.eq (local.get $last_op) (i32.const 51)) (then (return)))
+    (if (i32.eq (local.get $last_op) (i32.const 54)) (then (return)))
+    (if (i32.eq (local.get $last_op) (i32.const 56)) (then (return)))
+    (if (i32.eq (local.get $last_op) (i32.const 10)) (then (return)))
+    (if (i32.eq (local.get $last_op) (i32.const 16)) (then (return)))
+    (call $emitw (i32.const 14))   ;; SETLOCAL
+    (call $emitw (global.get $discard_slot)))
 
   (func $c_block
     (call $adv)   ;; '{'
@@ -1230,6 +1240,10 @@
       (then (call $adv)
             (call $set_sym_rettype (i32.sub (global.get $nsym) (i32.const 1)) (call $type_code))
             (call $skip_type)))
+    ;; Allocate a nameless discard slot for expression statements
+    (global.set $discard_slot (i32.add (global.get $nparam) (global.get $nlocal)))
+    (call $local_add (i32.const 0) (i32.const 0))
+    (call $set_slot_type (global.get $discard_slot) (i32.const 0))
     ;; reserve the frame (params + locals); operand backpatched once nlocal is known
     (call $emitw (i32.const 13))   ;; RESERVE
     (local.set $reservefix (global.get $emit)) (call $emitw (i32.const 0))

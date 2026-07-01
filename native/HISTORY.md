@@ -10,6 +10,18 @@ bit-identical to it).
 
 ---
 
+## 2026-07-01-1832 : M2 complete - text/heap/sum native emit; all conformance programs bit-identical
+
+Completed M2 by extending the native per-function compiler (`emit_fn.lm`) to fully support string operations (`MKTEXT`, `PRINTTEXT`, `CONCAT`, `INT2TEXT`, `TEXTEQ`) and sum cells (`MKSUM`, `SUMTAG`, `SUMVAL`). Standardized the sidecar protocol to compile and resolve compile-time string literal layout by appending directory triples `[orig_ptr, len, byte_offset]` and raw UTF-8 bytes to the end of page-9 compiler memory. Implemented runtime functions `lm_alloc_bytes`, `lm_alloc_sum`, `lm_concat`, `lm_int2text`, `lm_texteq`, and `lm_printtext` in C that operate on the existing `AHEAP` arena via direct casting/pointers. Integrated stack clamping and safe slot printing to resolve implicit compiler stack underflows at match statement merge points. All 17 conformance programs (including the 6 former exclusions) now compile and run natively with bit-identical outputs.
+
+### Gate Results
+- native_diff.mjs: 17/17 conformance programs bit-identical (hello, greet, report, fizzbuzz, safe_div, propagate all PASS).
+- native_fn_test.mjs: 11/11 v2 programs bit-identical (1160M calls/sec, ~110% of hand-C).
+- native_float_test.mjs: 11/11 float/array/record programs bit-identical (golden==interpreter==native, 138.6M prices/sec, ~137% of libm-C).
+- optimize_diff.mjs: 19/19 checks passed.
+- seed npm test: all 104 basics, 18 mu programs, 7 safety, and 13 loop checks passed.
+- perf.mjs: PASS compile and interpret baselines written.
+
 ## 2026-07-01-1750 : Seed stack leak fix (nested call crash resolved)
 
 Resolved the stack overflow crash by fixing the compiler's stack leak of statement expression return values. Standalone expression statements compiled by `c_expr` in `lumenc.wat` now emit a `SETLOCAL discard_slot` instruction to pop their return value off the stack, preventing stack growth across loops and statements. Opcodes that do not push values (`ASET`, `STORE32`, `STORE8`, `PRINTINT`, `PRINTTEXT`) are skipped to avoid stack corruption. Reverted the workaround in `optimize.lm` back to the nested call one-liner `set_out(new_pc, ir_word(old_pc))`.

@@ -949,10 +949,10 @@ fn c_primary() -> Unit {
       adv()
       if is_str_int_to_text(off, length) == 1 { emitw(18)  return () }
       if is_str_text_concat(off, length) == 1 { emitw(17)  return () }
-      if is_str_load8(off, length) == 1 { emitw(25)  return () }
-      if is_str_store8(off, length) == 1 { emitw(26)  return () }
-      if is_str_load32(off, length) == 1 { emitw(27)  return () }
-      if is_str_store32(off, length) == 1 { emitw(28)  return () }
+      if is_str_load8(off, length) == 1 { emitw(55)  return () }
+      if is_str_store8(off, length) == 1 { emitw(56)  return () }
+      if is_str_load32(off, length) == 1 { emitw(53)  return () }
+      if is_str_store32(off, length) == 1 { emitw(54)  return () }
       
       emitw(8)
       fixup_add(get_emit(), off, length)

@@ -110,8 +110,7 @@ assembler+linker — removing even `as`/`ld`. The kernel/loader is the floor nob
   `print_i64`, div/mod trap guards, no `"`/char-escapes in emitted C. Memory protocol: two seed
   instances; the host copies the IR snapshot into page-9 scratch `[524288,589824)` (untouched
   by `$run`). Diff-green 11/11 scalar; ≈19× the interpreter.
-- **M1.5. Optimizer Pass A — next.** `optimize.lm` jump-threading (length-preserving), proving
-  the Lumen-owned `optimize → interpret → diff` loop.
+- **M1.5. Optimizer Pass A, B, C — DONE.** `optimize.lm` jump-threading (length-preserving) and constant-folding + DCE (compacting with relocation), proving the Lumen-owned `optimize → interpret → diff` loop.
 - **M2. Heap + runtime — float (29–48) + arrays (49–52) DONE in `emit_fn.lm` v3** (diff-green 11/11,
   floats bit-identical via the transcribed non-libm series; records free). **Pending:** text/heap
   (15–18,28), sum (25–27), and type-tracked `double` slots so float pricing beats C (currently 74% of
@@ -131,9 +130,9 @@ Universal fail-safe: any opcode the scanner cannot size → return the input unc
 
 | Pass | Class | Win | When |
 |---|---|---|---|
-| A — jump threading | length-preserving | throughput | first (writable via array opcodes today; ports to `load32`) |
-| B — int const-fold + relocation | compacting | IR size + throughput | next |
-| C — DCE after RET/HALT/JMP | compacting | IR size | rides on B |
+| A — jump threading | length-preserving | throughput | DONE |
+| B — int const-fold + relocation | compacting | IR size + throughput | DONE |
+| C — DCE after RET/HALT/JMP | compacting | IR size | DONE |
 | regalloc, scheduling, inlining/LICM | asm-level | the big constant factor | at R3b/R4 (mandatory once LLVM stops doing regalloc) |
 
 Excluded from v1 (documented): `DIV`/`MOD` folding (trap), float folding (bit-exactness), local

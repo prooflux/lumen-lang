@@ -1,28 +1,55 @@
-# optimize.lm - the first Lumen-owned IR optimizer pass (point 2: a Lumen optimizer that
-# carries the speed so dropping clang stays performance-credible).
+# optimize.lm - the Lumen-owned IR optimizer pass
 #
-# Pass A: jump-to-jump threading. A JZ/JMP whose target is itself a JMP is rewritten to jump
-# straight to the final destination, collapsing JMP chains. LENGTH-PRESERVING (only operands
-# change), so targets stay absolute word indices and bit-identity is preserved by construction:
-# control flow is a pure function of pc, JMP has stack-effect 0, so reaching the chain's
-# terminus directly is observably identical.
+# Pass A: jump-to-jump threading.
+# Pass B: integer constant folding.
+# Pass C: dead-code elimination after unconditional terminators.
 #
-# It is a Lumen program, run by Lumen: it reads the IR from page-9 scratch via load32 and
-# rewrites operands in place via store32 (the keystone). The driver (pipeline.mjs) injects the
-# IR, runs this, reads the rewritten IR back, and the gate checks interpret(out) == interpret(in)
-# byte-for-byte on the whole corpus.
-#
-# Memory contract (same as emit.lm):
+# Memory contract:
 #   load32(524288)        = ir_len
 #   load32(524292)        = main_entry
-#   load32(524296 + i*4)  = IR word i   (store32 to rewrite)
+#   load32(524296 + i*4)  = IR word i (store32 to rewrite)
 
 fn hdr() -> Int { return 524288 }
 fn ir_len() -> Int { return load32(hdr()) }
 fn ir_word(i: Int) -> Int { return load32(hdr() + 8 + i * 4) }
 fn set_word(i: Int, v: Int) -> Unit { store32(hdr() + 8 + i * 4, v) }
 
-fn oplen(op: Int) -> Int {
+fn get_orig(i: Int) -> Int {
+  return load32(524288 + 8 + ir_len() * 4 + i * 4)
+}
+fn set_orig(i: Int, val: Int) -> Unit {
+  store32(524288 + 8 + ir_len() * 4 + i * 4, val)
+}
+
+fn get_target(i: Int) -> Int {
+  return load32(524288 + 8 + ir_len() * 2 * 4 + i * 4)
+}
+fn set_target(i: Int, val: Int) -> Unit {
+  store32(524288 + 8 + ir_len() * 2 * 4 + i * 4, val)
+}
+
+fn get_keep(i: Int) -> Int {
+  return load32(524288 + 8 + ir_len() * 3 * 4 + i * 4)
+}
+fn set_keep(i: Int, val: Int) -> Unit {
+  store32(524288 + 8 + ir_len() * 3 * 4 + i * 4, val)
+}
+
+fn get_map(i: Int) -> Int {
+  return load32(524288 + 8 + ir_len() * 4 * 4 + i * 4)
+}
+fn set_map(i: Int, val: Int) -> Unit {
+  store32(524288 + 8 + ir_len() * 4 * 4 + i * 4, val)
+}
+
+fn get_out(i: Int) -> Int {
+  return load32(524288 + 8 + ir_len() * 5 * 4 + 4 + i * 4)
+}
+fn set_out(i: Int, val: Int) -> Unit {
+  store32(524288 + 8 + ir_len() * 5 * 4 + 4 + i * 4, val)
+}
+
+fn oplen(pc: Int, op: Int) -> Int {
   if op == 1 { return 1 }
   if op == 2 { return 1 }
   if op == 6 { return 1 }
@@ -33,26 +60,60 @@ fn oplen(op: Int) -> Int {
   if op == 15 { return 1 }
   if op == 25 { return 1 }
   if op == 29 { return 2 }
+  if op == 57 { return ir_word(pc + 1) + 2 }
   return 0
 }
 
-# follow a JMP chain from word index t to its final non-JMP destination (cycle-capped)
+fn oplen_out(pc: Int, op: Int) -> Int {
+  if op == 1 { return 1 }
+  if op == 2 { return 1 }
+  if op == 6 { return 1 }
+  if op == 7 { return 1 }
+  if op == 8 { return 2 }
+  if op == 13 { return 1 }
+  if op == 14 { return 1 }
+  if op == 15 { return 1 }
+  if op == 25 { return 1 }
+  if op == 29 { return 2 }
+  if op == 57 { return get_out(pc + 1) + 2 }
+  return 0
+}
+
+fn is_known_op(op: Int) -> Int {
+  if op >= 0 {
+    if op <= 57 {
+      return 1
+    }
+  }
+  return 0
+}
+
 fn chase(t: Int) -> Int {
   var cur = t
   var hops = 0
   while hops < ir_len() {
-    if ir_word(cur) == 7 {
+    var is_jmp = 0
+    if cur >= 0 {
+      if cur < ir_len() {
+        if ir_word(cur) == 7 {
+          if cur + 1 < ir_len() {
+            is_jmp = 1
+          }
+        }
+      }
+    }
+    if is_jmp == 1 {
       cur = ir_word(cur + 1)
       hops = hops + 1
-    } else {
-      return cur
+    }
+    if is_jmp == 0 {
+      hops = ir_len()
     }
   }
   return cur
 }
 
-# JZ (6) and JMP (7) both carry a jump target as their operand
-fn optimize() -> Int {
+fn pass_a() -> Int {
   var changed = 0
   var pc = 0
   while pc < ir_len() {
@@ -64,7 +125,8 @@ fn optimize() -> Int {
         set_word(pc + 1, dst)
         changed = changed + 1
       }
-    } else if op == 7 {
+    }
+    if op == 7 {
       let t = ir_word(pc + 1)
       let dst = chase(t)
       if dst != t {
@@ -72,14 +134,335 @@ fn optimize() -> Int {
         changed = changed + 1
       }
     }
-    pc = pc + 1 + oplen(op)
+    pc = pc + 1 + oplen(pc, op)
   }
   return changed
 }
 
-# report how many jumps were threaded by writing the count to the header's +4 slot
-# (the driver reads it back; main_entry is re-read from the original snapshot, not needed after run)
+fn restore_orig(orig_len: Int, orig_main: Int) -> Unit {
+  var i = 0
+  while i < orig_len {
+    store32(524288 + 8 + i * 4, load32(524288 + 8 + orig_len * 4 + i * 4))
+    i = i + 1
+  }
+  store32(524288, orig_len)
+  store32(524288 + 4, orig_main)
+  store32(589812, 0)
+  store32(589816, 0)
+  store32(589820, 0)
+}
+
+fn optimize_passes(c: Console) -> Int {
+  let orig_len = ir_len()
+  let orig_main = load32(524292)
+
+  # Size fail-safe: the 5 scratch regions (orig/target/keep/map/out) need ~24 bytes per IR word
+  # and must stay below the counter slots at 589812. restore_orig must NOT be called here: the
+  # backup region is not written yet; just report zero changes and leave the input untouched.
+  if orig_len > 2500 {
+    store32(589812, 0)
+    store32(589816, 0)
+    store32(589820, 0)
+    return 0
+  }
+
+  # Copy input to original copy
+  var copy_i = 0
+  while copy_i < orig_len {
+    set_orig(copy_i, ir_word(copy_i))
+    copy_i = copy_i + 1
+  }
+
+  # Run Pass A (in-place jump threading)
+  let threaded_count = pass_a()
+
+  # Build target set
+  # 1. Initialize target set to 0
+  var init_i = 0
+  while init_i < orig_len {
+    set_target(init_i, 0)
+    init_i = init_i + 1
+  }
+
+  # 2. Main entry target
+  if orig_main < 0 {
+    restore_orig(orig_len, orig_main)
+    return 0
+  }
+  if orig_main >= orig_len {
+    restore_orig(orig_len, orig_main)
+    return 0
+  }
+  set_target(orig_main, 1)
+
+  # 3. Decode program and mark targets
+  var pc = 0
+  var decode_ok = 1
+  while pc < orig_len {
+    if decode_ok == 1 {
+      let op = ir_word(pc)
+      if is_known_op(op) == 0 {
+        decode_ok = 0
+      }
+      if decode_ok == 1 {
+        if op == 6 {
+          let t = ir_word(pc + 1)
+          if t < 0 { decode_ok = 0 }
+          if t >= orig_len { decode_ok = 0 }
+          if decode_ok == 1 {
+            set_target(t, 1)
+          }
+        }
+        if op == 7 {
+          let t = ir_word(pc + 1)
+          if t < 0 { decode_ok = 0 }
+          if t >= orig_len { decode_ok = 0 }
+          if decode_ok == 1 {
+            set_target(t, 1)
+          }
+        }
+        if op == 8 {
+          let t = ir_word(pc + 1)
+          if t < 0 { decode_ok = 0 }
+          if t >= orig_len { decode_ok = 0 }
+          if decode_ok == 1 {
+            set_target(t, 1)
+            if pc + 3 > orig_len { decode_ok = 0 }
+            if decode_ok == 1 {
+              set_target(pc + 3, 1)
+            }
+          }
+        }
+        pc = pc + 1 + oplen(pc, op)
+      }
+    }
+    if decode_ok == 0 {
+      pc = orig_len
+    }
+  }
+  if decode_ok == 0 {
+    restore_orig(orig_len, orig_main)
+    return 0
+  }
+  if pc != orig_len {
+    restore_orig(orig_len, orig_main)
+    return 0
+  }
+
+  # Initialize keep array
+  var keep_init = 0
+  while keep_init < orig_len {
+    set_keep(keep_init, 1)
+    keep_init = keep_init + 1
+  }
+
+  # Traversal for folding and DCE
+  var folded_count = 0
+  pc = 0
+  while pc < orig_len {
+    let keep_val = get_keep(pc)
+    var advanced = 0
+    if keep_val == 0 {
+      pc = pc + 1
+      advanced = 1
+    }
+    if advanced == 0 {
+      let op = ir_word(pc)
+      
+      # Check constant folding: PUSH a; PUSH b; OP
+      var can_fold = 0
+      if op == 1 {
+        if pc + 4 < orig_len {
+          if ir_word(pc + 2) == 1 {
+            let next_op = ir_word(pc + 4)
+            var is_fold_op = 0
+            if next_op == 3 { is_fold_op = 1 }
+            if next_op == 4 { is_fold_op = 1 }
+            if next_op == 11 { is_fold_op = 1 }
+            if is_fold_op == 1 {
+              if get_target(pc + 1) == 0 {
+                if get_target(pc + 2) == 0 {
+                  if get_target(pc + 3) == 0 {
+                    if get_target(pc + 4) == 0 {
+                      can_fold = 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      if can_fold == 1 {
+        let a = ir_word(pc + 1)
+        let b = ir_word(pc + 3)
+        let fold_op = ir_word(pc + 4)
+        var r = 0
+        if fold_op == 3 { r = a + b }
+        if fold_op == 4 { r = a - b }
+        if fold_op == 11 { r = a * b }
+        
+        var range_ok = 0
+        let min_val = 0 - 1 - 2147483647
+        let max_val = 2147483647
+        if r >= min_val {
+          if r <= max_val {
+            range_ok = 1
+          }
+        }
+        
+        if range_ok == 1 {
+          set_word(pc + 1, r)
+          set_keep(pc + 2, 0)
+          set_keep(pc + 3, 0)
+          set_keep(pc + 4, 0)
+          folded_count = folded_count + 1
+          pc = pc + 5
+          advanced = 1
+        }
+        if range_ok == 0 {
+          can_fold = 0
+        }
+      }
+      
+      if advanced == 0 {
+        # Check for terminator DCE
+        var is_term = 0
+        if op == 0 { is_term = 1 }
+        if op == 9 { is_term = 1 }
+        if op == 7 { is_term = 1 }
+        
+        if is_term == 1 {
+          var scan = pc + 1 + oplen(pc, op)
+          var dce_active = 1
+          while scan < orig_len {
+            if dce_active == 1 {
+              if get_target(scan) == 0 {
+                set_keep(scan, 0)
+                scan = scan + 1
+              }
+              if get_target(scan) == 1 {
+                dce_active = 0
+              }
+            }
+            if dce_active == 0 {
+              scan = orig_len
+            }
+          }
+        }
+        pc = pc + 1 + oplen(pc, op)
+      }
+    }
+  }
+
+  # Relocate and compact
+  var old_pc = 0
+  var new_pc = 0
+  var relocation_ok = 1
+  while old_pc < orig_len {
+    if relocation_ok == 1 {
+      if get_target(old_pc) == 1 {
+        if get_keep(old_pc) == 0 {
+          relocation_ok = 0
+        }
+      }
+      if relocation_ok == 1 {
+        if get_keep(old_pc) == 1 {
+          set_map(old_pc, new_pc)
+          set_out(new_pc, ir_word(old_pc))
+          new_pc = new_pc + 1
+        }
+        if get_keep(old_pc) == 0 {
+          set_map(old_pc, 0 - 1)
+        }
+        old_pc = old_pc + 1
+      }
+    }
+    if relocation_ok == 0 {
+      old_pc = orig_len
+    }
+  }
+  if relocation_ok == 0 {
+    restore_orig(orig_len, orig_main)
+    return 0
+  }
+  set_map(orig_len, new_pc)
+
+  # Rewrite branch/call operands in output
+  var out_pc = 0
+  var rewrite_ok = 1
+  while out_pc < new_pc {
+    if rewrite_ok == 1 {
+      let op = get_out(out_pc)
+      if op == 6 {
+        let t = get_out(out_pc + 1)
+        let new_t = get_map(t)
+        if new_t < 0 { rewrite_ok = 0 }
+        if new_t > new_pc { rewrite_ok = 0 }
+        if rewrite_ok == 1 {
+          set_out(out_pc + 1, new_t)
+        }
+      }
+      if op == 7 {
+        let t = get_out(out_pc + 1)
+        let new_t = get_map(t)
+        if new_t < 0 { rewrite_ok = 0 }
+        if new_t > new_pc { rewrite_ok = 0 }
+        if rewrite_ok == 1 {
+          set_out(out_pc + 1, new_t)
+        }
+      }
+      if op == 8 {
+        let t = get_out(out_pc + 1)
+        let new_t = get_map(t)
+        if new_t < 0 { rewrite_ok = 0 }
+        if new_t > new_pc { rewrite_ok = 0 }
+        if rewrite_ok == 1 {
+          set_out(out_pc + 1, new_t)
+        }
+      }
+      out_pc = out_pc + 1 + oplen_out(out_pc, op)
+    }
+    if rewrite_ok == 0 {
+      out_pc = new_pc
+    }
+  }
+  if rewrite_ok == 0 {
+    restore_orig(orig_len, orig_main)
+    return 0
+  }
+
+  # Rewrite main entry
+  let new_main = get_map(orig_main)
+  if new_main < 0 {
+    restore_orig(orig_len, orig_main)
+    return 0
+  }
+  if new_main > new_pc {
+    restore_orig(orig_len, orig_main)
+    return 0
+  }
+
+  # Copy output back to input region
+  var copy_back = 0
+  while copy_back < new_pc {
+    set_word(copy_back, get_out(copy_back))
+    copy_back = copy_back + 1
+  }
+
+  # Update header
+  store32(hdr(), new_pc)
+  store32(hdr() + 4, new_main)
+
+  # Write results to page 9 scratch registers
+  store32(589812, threaded_count)
+  store32(589816, folded_count)
+  store32(589820, threaded_count + folded_count + (orig_len - new_pc))
+  
+  return 1
+}
+
 fn main(c: Console) -> Unit {
-  let n = optimize()
-  store32(hdr() + 4, n)
+  let res = optimize_passes(c)
 }

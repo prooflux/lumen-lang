@@ -104,22 +104,41 @@ export async function buildAndRunFn(src, opt = '-O2') {
   return { stdout, exit, csrc };
 }
 
-// run optimize.lm (Lumen) over an injected IR snapshot -> { words: optimized IR (copy), changed }
+// run optimize.lm (Lumen) over an injected IR snapshot -> { words: optimized IR (copy), main, changed, folded, threaded }
 export async function optimizeIR(words, main) {
   const I = await freshInstance();
   const len = writeSrc(I, OPT_SRC);
   I.ex.compile(len);
-  if (I.ex.dbg_nerr() > 0) throw new Error(`optimize.lm compile: ${I.ex.dbg_nerr()} error(s)`);
+  if (I.ex.dbg_nerr() > 0) {
+    const n = I.ex.dbg_nerr();
+    const recs = new Int32Array(I.ex.mem.buffer, 286000, n * 3);
+    const m = new Uint8Array(I.ex.mem.buffer);
+    const ds = [];
+    for (let k = 0; k < n; k++) {
+      const code = recs[k*3], off = recs[k*3+1], len = recs[k*3+2];
+      const name = (off >= SRC_BASE && len > 0) ? Buffer.from(m.slice(off, off+len)).toString('utf8') : '';
+      ds.push({ code, byteOff: off - SRC_BASE, byteLen: len, name });
+    }
+    console.error("Compile Errors:", JSON.stringify(ds, null, 2));
+    throw new Error(`optimize.lm compile: ${I.ex.dbg_nerr()} error(s)`);
+  }
   const m32 = new Int32Array(I.ex.mem.buffer);
   m32[SCRATCH / 4] = words.length;
   m32[SCRATCH / 4 + 1] = main;
   for (let i = 0; i < words.length; i++) m32[SCRATCH / 4 + 2 + i] = words[i];
+  m32[589812 / 4] = 0;
+  m32[589816 / 4] = 0;
+  m32[589820 / 4] = 0;
   if (I.ex.set_fuel_max) I.ex.set_fuel_max(4000000000n);
   I.ex.run(I.ex.dbg_main());
-  const out = new Int32Array(words.length);
-  for (let i = 0; i < words.length; i++) out[i] = m32[SCRATCH / 4 + 2 + i];
-  const changed = m32[SCRATCH / 4 + 1];   // optimize.lm wrote the threaded-jump count here
-  return { words: out, changed };
+  const newLen = m32[SCRATCH / 4];
+  const newMain = m32[SCRATCH / 4 + 1];
+  const changed = m32[589820 / 4];
+  const folded = m32[589816 / 4];
+  const threaded = m32[589812 / 4];
+  const out = new Int32Array(newLen);
+  for (let i = 0; i < newLen; i++) out[i] = m32[SCRATCH / 4 + 2 + i];
+  return { words: out, main: newMain, changed, folded, threaded };
 }
 
 // execute a raw IR word array directly through the interpreter (no recompile) -> stdout

@@ -163,6 +163,14 @@ deepEq('E0002 unknown function', codesOf('fn main(c: Console) -> Unit {\n  c.pri
 deepEq('E0003 unexpected token', codesOf('fn main(c: Console) -> Unit {\n  @\n}\n'), ['E0003:@']);
 deepEq('E0004 unterminated block', codesOf('fn main(c: Console) -> Unit {\n'), ['E0004']);
 deepEq('clean program emits no diagnostics', codesOf('fn main(c: Console) -> Unit {\n  c.print_int(1)\n}\n'), []);
+deepEq('grouping parser: one bad token inside grouping does not cascade',
+  codesOf('fn main(c: Console) -> Unit {\n  let x = (1 + )\n}\nfn second(c: Console) -> Unit {\n  c.print_int(42)\n}\nfn third(c: Console) -> Unit {\n  c.print_int(100)\n}\n'),
+  ['E0003:)']
+);
+deepEq('grouping parser: empty grouping return () does not cascade',
+  codesOf('fn main(c: Console) -> Unit {\n  return ()\n}\nfn second(c: Console) -> Unit {\n  c.print_int(42)\n}\n'),
+  ['E0003:)']
+);
 
 // ---- confident fixes converge; valid code is untouched ----
 function fixToClean(src) {

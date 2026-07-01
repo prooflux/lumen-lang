@@ -726,7 +726,7 @@
         (global.set $ety (i32.const 0))
         (call $adv) (return)))
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 3))   ;; '(' grouping
-      (then (call $adv) (call $c_expr) (call $adv) (return)))
+      (then (call $adv) (call $c_expr) (if (i32.eq (call $tk (global.get $tp)) (i32.const 4)) (then (call $adv))) (return)))
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 1))   ;; IDENT
       (then
         (local.set $off (call $ta (global.get $tp)))

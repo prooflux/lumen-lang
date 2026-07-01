@@ -370,15 +370,8 @@ fn optimize_passes(c: Console) -> Int {
       if relocation_ok == 1 {
         if get_keep(old_pc) == 1 {
           set_map(old_pc, new_pc)
-          # SEED FRICTION (2026-07-01, open): the one-liner `set_out(new_pc, ir_word(old_pc))`
-          # crashes $run with an out-of-bounds memory access when optimizing the looped
-          # Black-Scholes float program (301-word IR, TYPEMAP-bearing; repro: compileToIR of
-          # native_float_test.mjs bsLumen, then optimizeIR). Hoisting the inner call into a
-          # local avoids it. Same-source A/B proven 2026-07-01; suspected seed codegen bug
-          # (nested call as second argument under this frame shape). Captured for a seed-fix
-          # round; do NOT fold this back into one line until that round lands and re-gates.
-          let w = ir_word(old_pc)
-          set_out(new_pc, w)
+          # SEED FRICTION RESOLVED 2026-07-01: Operand stack leak (statement values not popped) resolved in lumenc.wat c_stmt.
+          set_out(new_pc, ir_word(old_pc))
           new_pc = new_pc + 1
         }
         if get_keep(old_pc) == 0 {

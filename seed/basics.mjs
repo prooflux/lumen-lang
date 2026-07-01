@@ -184,5 +184,27 @@ eq('fix closes an unterminated block and converges', fixToClean('fn main(c: Cons
   eq('fix leaves valid code unchanged', applyFixes(valid, d).source, valid);
 }
 
+eq('loop stack corruption nested call', runFull(`
+fn outer(x: Int, y: Int) -> Int {
+  return x + y
+}
+fn inner(x: Int) -> Int {
+  return load32(524288 + 8 + x * 4) + 1
+}
+fn main(c: Console) -> Unit {
+  var l1 = 0
+  var l2 = 0
+  var l3 = 0
+  var l4 = 0
+  var l5 = 0
+  var i = 0
+  while i < 1014 {
+    outer(i, inner(i))
+    i = i + 1
+  }
+  c.print_int(42)
+}
+`), '42\n');
+
 console.log(`\n${pass}/${total} basics checks passed.`);
 process.exit(pass === total ? 0 : 1);

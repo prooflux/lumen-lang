@@ -111,6 +111,9 @@ eq('else-if: later branch',  runFull(grade.replace('SCORE', '72')), 'C');
 eq('else-if: final else',    runFull(grade.replace('SCORE', '40')), 'F');
 eq('else-if: sibling branches can reuse a let name without reading a stale slot',
   runFull('fn t(d: Int) -> Int {\n  if d == 1 {\n    let x = 10\n    return x\n  } else if d == 2 {\n    let x = 20\n    return x\n  }\n  return 0\n}\nfn main(c: Console) -> Unit { c.print_int(t(2)) }\n'), '20\n');
+eq('else-if followed by trailing statements in block',
+  runFull('fn test_elseif(x: Int, c: Console) -> Unit {\n  if x == 1 {\n    c.print("one\\n")\n  } else if x == 2 {\n    c.print("two\\n")\n  }\n  c.print("after\\n")\n}\nfn main(c: Console) -> Unit {\n  test_elseif(1, c)\n  test_elseif(2, c)\n  test_elseif(3, c)\n}\n'),
+  'one\nafter\ntwo\nafter\nafter\n');
 eq('while loop sums 1..5', runMain('var i = 1\n  var s = 0\n  while i <= 5 { s = s + i\n    i = i + 1 }\n  c.print_int(s)'), '15\n');
 
 // ---- functions: recursion, forward reference, multi-arg, mutual recursion ----

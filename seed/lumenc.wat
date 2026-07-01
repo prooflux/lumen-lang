@@ -95,6 +95,7 @@
   (global $nfield (mut i32) (i32.const 0))   ;; record field registry count; table at [528000) (off,len,index,type) 16 bytes
   (global $nrec (mut i32) (i32.const 0))      ;; record-type count; table at [533632) (off,len,size) 12 bytes
   (global $discard_slot (mut i32) (i32.const 0))
+  (global $expr_pushes (mut i32) (i32.const 0))
 
   ;; ---------- small helpers ----------
   (func $b (param $i i32) (result i32)
@@ -770,8 +771,8 @@
                 (if (i32.ne (call $tk (global.get $tp)) (i32.const 4)) (then (call $c_expr)))
                 (call $adv)   ;; ')'
                 (if (call $eqlit (local.get $moff) (local.get $mlen) (i32.const 248140) (i32.const 5))   ;; "print"
-                  (then (call $emitw (i32.const 16)))    ;; PRINTTEXT
-                  (else (call $emitw (i32.const 10))))   ;; PRINTINT (print_int)
+                  (then (call $emitw (i32.const 16)) (global.set $expr_pushes (i32.const 0)))    ;; PRINTTEXT
+                  (else (call $emitw (i32.const 10)) (global.set $expr_pushes (i32.const 0))))   ;; PRINTINT (print_int)
                 (return))
               (else
                 ;; field access p.field: GETARG the record, AGET its field's global slot
@@ -820,17 +821,17 @@
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248330) (i32.const 4))   ;; aget(a,i) -> Float
               (then (call $emitw (i32.const 50)) (global.set $ety (i32.const 1)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248340) (i32.const 4))   ;; aset(a,i,x) -> Unit (no value)
-              (then (call $emitw (i32.const 51)) (global.set $ety (i32.const 0)) (return)))
+              (then (call $emitw (i32.const 51)) (global.set $ety (i32.const 0)) (global.set $expr_pushes (i32.const 0)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248350) (i32.const 4))   ;; alen(a) -> Int
               (then (call $emitw (i32.const 52)) (global.set $ety (i32.const 0)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248360) (i32.const 6))   ;; load32(addr) -> Int (raw mem, sign-ext)
               (then (call $emitw (i32.const 53)) (global.set $ety (i32.const 0)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248370) (i32.const 7))   ;; store32(addr,val) -> Unit
-              (then (call $emitw (i32.const 54)) (global.set $ety (i32.const 0)) (return)))
+              (then (call $emitw (i32.const 54)) (global.set $ety (i32.const 0)) (global.set $expr_pushes (i32.const 0)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248380) (i32.const 5))   ;; load8(addr) -> Int (byte, zero-ext)
               (then (call $emitw (i32.const 55)) (global.set $ety (i32.const 0)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248390) (i32.const 6))   ;; store8(addr,val) -> Unit
-              (then (call $emitw (i32.const 56)) (global.set $ety (i32.const 0)) (return)))
+              (then (call $emitw (i32.const 56)) (global.set $ety (i32.const 0)) (global.set $expr_pushes (i32.const 0)) (return)))
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248100) (i32.const 11))   ;; int_to_text(x)
               (then (call $emitw (i32.const 18)) (global.set $ety (i32.const 0)) (return)))   ;; INT2TEXT
             (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248120) (i32.const 11))   ;; text_concat(a,b)
@@ -986,7 +987,9 @@
             (br $ol)))
         (br $oe))))
 
-  (func $c_expr (call $c_or))
+  (func $c_expr
+    (global.set $expr_pushes (i32.const 1))
+    (call $c_or))
 
   ;; '_' wildcard pattern?  (off is an absolute source address)
   (func $is_wild (param $off i32) (param $len i32) (result i32)
@@ -1174,7 +1177,6 @@
     (call $patch (local.get $jz) (global.get $emit)))
 
   (func $c_stmt
-    (local $last_op i32)
     (if (call $kw_is (global.get $tp) (i32.const 248070) (i32.const 3))   ;; 'let'
       (then (call $c_let) (return)))
     (if (call $kw_is (global.get $tp) (i32.const 248080) (i32.const 3))   ;; 'var'
@@ -1190,12 +1192,7 @@
         (if (i32.eq (call $tk (i32.add (global.get $tp) (i32.const 1))) (i32.const 19))   ;; '='
           (then (call $c_assign) (return)))))
     (call $c_expr)
-    (local.set $last_op (call $codew (i32.sub (global.get $emit) (i32.const 1))))
-    (if (i32.eq (local.get $last_op) (i32.const 51)) (then (return)))
-    (if (i32.eq (local.get $last_op) (i32.const 54)) (then (return)))
-    (if (i32.eq (local.get $last_op) (i32.const 56)) (then (return)))
-    (if (i32.eq (local.get $last_op) (i32.const 10)) (then (return)))
-    (if (i32.eq (local.get $last_op) (i32.const 16)) (then (return)))
+    (if (i32.eqz (global.get $expr_pushes)) (then (return)))
     (call $emitw (i32.const 14))   ;; SETLOCAL
     (call $emitw (global.get $discard_slot)))
 

@@ -206,5 +206,19 @@ fn main(c: Console) -> Unit {
 }
 `), '42\n');
 
+eq('loop stack corruption 10-arg call', runFull(`
+fn ten_args(p1: Int, p2: Int, p3: Int, p4: Int, p5: Int, p6: Int, p7: Int, p8: Int, p9: Int, p10: Int) -> Int {
+  return p1
+}
+fn main(c: Console) -> Unit {
+  var i = 0
+  while i < 2000 {
+    ten_args(i, i, i, i, i, i, i, i, i, i)
+    i = i + 1
+  }
+  c.print_int(99)
+}
+`), '99\n');
+
 console.log(`\n${pass}/${total} basics checks passed.`);
 process.exit(pass === total ? 0 : 1);

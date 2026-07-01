@@ -5,6 +5,7 @@
 // Usage: node basics.mjs
 import { createCompiler } from './compiler_core.mjs';
 import { buildDiagnostics, applyFixes } from './diagnostics.mjs';
+import fs from 'node:fs';
 
 const L = await createCompiler();
 const runMain = body => L.run(`fn main(c: Console) -> Unit {\n${body}\n}\n`).stdout;
@@ -168,8 +169,8 @@ deepEq('grouping parser: one bad token inside grouping does not cascade',
   ['E0003:)']
 );
 deepEq('grouping parser: empty grouping return () does not cascade',
-  codesOf('fn main(c: Console) -> Unit {\n  return ()\n}\nfn second(c: Console) -> Unit {\n  c.print_int(42)\n}\n'),
-  ['E0003:)']
+  codesOf('fn main(c: Console) -> Int {\n  return ()\n}\nfn second(c: Console) -> Unit {\n  c.print_int(42)\n}\n'),
+  ['E0003:()']
 );
 
 // ---- confident fixes converge; valid code is untouched ----
@@ -244,6 +245,13 @@ fn main(c: Console) -> Unit {
   symSrcOver += '}\n';
   eq('symbol overflow new guard', codesOf(symSrcOver)[0], 'E0003:f512');
 }
+
+// ---- unit expression support ----
+eq('early return from Unit function', runFull('fn f(x: Int, c: Console) -> Unit {\n  if x {\n    return ()\n  }\n  c.print_int(7)\n}\nfn main(c: Console) -> Unit {\n  f(1, c)\n  f(0, c)\n}\n'), '7\n');
+deepEq('negative: non-Unit function returning ()', codesOf('fn f(x: Int) -> Int { return () }\n'), ['E0003:()']);
+deepEq('negative: non-Unit function let binding ()', codesOf('fn f(x: Int) -> Int { let x = () }\n'), ['E0003:()']);
+deepEq('Unit function let binding ()', codesOf('fn f(x: Int) -> Unit { let x = () }\n'), []);
+deepEq('lumenc.lm compiles clean', codesOf(fs.readFileSync('lumenc.lm', 'utf8')), []);
 
 // ---- token capacity ----
 {

@@ -50,6 +50,7 @@
   (data (i32.const 248060) "main")
   (data (i32.const 248070) "let")
   (data (i32.const 248080) "var")
+  (data (i32.const 248090) "Unit")
   (data (i32.const 248100) "int_to_text")
   (data (i32.const 248120) "text_concat")
   (data (i32.const 248140) "print")
@@ -100,6 +101,7 @@
   (global $nrec (mut i32) (i32.const 0))      ;; record-type count; table at [533632) (off,len,size) 12 bytes
   (global $discard_slot (mut i32) (i32.const 0))
   (global $expr_pushes (mut i32) (i32.const 0))
+  (global $cur_fn_is_unit (mut i32) (i32.const 1))
 
   ;; ---------- small helpers ----------
   (func $b (param $i i32) (result i32)
@@ -736,6 +738,16 @@
         (call $emitw (call $mktext_lit (call $ta (global.get $tp)) (call $tb (global.get $tp))))
         (global.set $ety (i32.const 0))
         (call $adv) (return)))
+    (if (i32.and (i32.eq (call $tk (global.get $tp)) (i32.const 3))
+                 (i32.eq (call $tk (i32.add (global.get $tp) (i32.const 1))) (i32.const 4)))
+      (then
+        (if (i32.eqz (global.get $cur_fn_is_unit))
+          (then
+            (call $err_add (i32.const 3) (call $ta (global.get $tp)) (i32.sub (i32.add (call $ta (i32.add (global.get $tp) (i32.const 1))) (call $tb (i32.add (global.get $tp) (i32.const 1)))) (call $ta (global.get $tp))))))
+        (call $emitw (i32.const 1)) (call $emitw (i32.const 0))
+        (global.set $ety (i32.const 0))
+        (call $adv) (call $adv)
+        (return)))
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 3))   ;; '(' grouping
       (then (call $adv) (call $c_expr) (if (i32.eq (call $tk (global.get $tp)) (i32.const 4)) (then (call $adv))) (return)))
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 1))   ;; IDENT
@@ -1221,6 +1233,7 @@
 
   (func $c_fn
     (local $foff i32) (local $flen i32) (local $ismain i32) (local $reservefix i32) (local $i i32) (local $ntot i32)
+    (global.set $cur_fn_is_unit (i32.const 1))
     (call $adv)   ;; 'fn'
     (if (i32.ne (call $tk (global.get $tp)) (i32.const 1))   ;; a function name (identifier) must follow 'fn'
       (then (call $err_add (i32.const 3) (call $ta (global.get $tp)) (call $tb (global.get $tp)))))
@@ -1246,6 +1259,8 @@
     (call $adv)   ;; ')'
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 9))   ;; '->' type
       (then (call $adv)
+            (if (i32.eqz (call $eqlit (call $ta (global.get $tp)) (call $tb (global.get $tp)) (i32.const 248090) (i32.const 4)))
+              (then (global.set $cur_fn_is_unit (i32.const 0))))
             (call $set_sym_rettype (i32.sub (global.get $nsym) (i32.const 1)) (call $type_code))
             (call $skip_type)))
     ;; Allocate a nameless discard slot for expression statements

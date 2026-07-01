@@ -60,13 +60,23 @@ fn oplen_d_change(op: Int, pc: Int, d: Int) -> Int {
   if op == 1 { return d + 1 }
   if op == 2 { return d + 1 }
   if op == 3 { return d - 1 }
+  if op == 4 { return d - 1 }
+  if op == 5 { return d - 1 }
   if op == 6 { return d - 1 }
   if op == 8 {
     let argc = ir_word(pc + 2)
     return d - argc + 1
   }
   if op == 10 { return d - 1 }
+  if op == 11 { return d - 1 }
+  if op == 12 { return d - 1 }
   if op == 14 { return d - 1 }
+  if op == 19 { return d - 1 }
+  if op == 20 { return d - 1 }
+  if op == 21 { return d - 1 }
+  if op == 22 { return d - 1 }
+  if op == 23 { return d - 1 }
+  if op == 24 { return d - 1 }
   return d
 }
 
@@ -91,6 +101,19 @@ fn max_depth(func_pc: Int) -> Int {
     }
   }
   return max_d
+}
+
+fn emit_cmp(c: Console, d: Int, cond: Text, resolved_next_pc: Int) -> Unit {
+  let reg1 = get_reg()
+  let reg2 = get_reg()
+  let reg3 = get_reg()
+  let reg4 = get_reg()
+  c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
+  c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
+  c.print("  %r") num(c, reg3) c.print(" = icmp ") c.print(cond) c.print(" i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
+  c.print("  %r") num(c, reg4) c.print(" = zext i1 %r") num(c, reg3) c.print(" to i64\n")
+  c.print("  store i64 %r") num(c, reg4) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+  c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
 }
 
 fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
@@ -126,6 +149,106 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
     c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = add i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 4 {
+    let reg1 = get_reg()
+    let reg2 = get_reg()
+    let reg3 = get_reg()
+    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
+    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
+    c.print("  %r") num(c, reg3) c.print(" = sub i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
+    c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 5 {
+    emit_cmp(c, d, "slt", resolved_next_pc)
+    return d - 1
+  }
+  if op == 11 {
+    let reg1 = get_reg()
+    let reg2 = get_reg()
+    let reg3 = get_reg()
+    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
+    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
+    c.print("  %r") num(c, reg3) c.print(" = mul i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
+    c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 12 {
+    let reg1 = get_reg()
+    let reg2 = get_reg()
+    let reg3 = get_reg()
+    let reg4 = get_reg()
+    let reg5 = get_reg()
+    let reg6 = get_reg()
+    let reg7 = get_reg()
+    let reg8 = get_reg()
+    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
+    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
+    c.print("  %r") num(c, reg3) c.print(" = icmp eq i64 %r") num(c, reg2) c.print(", 0\n")
+    c.print("  %r") num(c, reg4) c.print(" = icmp eq i64 %r") num(c, reg2) c.print(", -1\n")
+    c.print("  %r") num(c, reg5) c.print(" = icmp eq i64 %r") num(c, reg1) c.print(", -9223372036854775808\n")
+    c.print("  %r") num(c, reg6) c.print(" = and i1 %r") num(c, reg4) c.print(", %r") num(c, reg5) c.print("\n")
+    c.print("  %r") num(c, reg7) c.print(" = or i1 %r") num(c, reg3) c.print(", %r") num(c, reg6) c.print("\n")
+    c.print("  br i1 %r") num(c, reg7) c.print(", label %L") num(c, pc) c.print("_trap, label %L") num(c, pc) c.print("_safe\n")
+    c.print("L") num(c, pc) c.print("_trap:\n")
+    c.print("  %unused_fflush_") num(c, pc) c.print(" = call i32 @fflush(ptr null)\n")
+    c.print("  call void @abort()\n")
+    c.print("  unreachable\n")
+    c.print("L") num(c, pc) c.print("_safe:\n")
+    c.print("  %r") num(c, reg8) c.print(" = sdiv i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
+    c.print("  store i64 %r") num(c, reg8) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 19 {
+    emit_cmp(c, d, "eq", resolved_next_pc)
+    return d - 1
+  }
+  if op == 20 {
+    emit_cmp(c, d, "ne", resolved_next_pc)
+    return d - 1
+  }
+  if op == 21 {
+    emit_cmp(c, d, "sle", resolved_next_pc)
+    return d - 1
+  }
+  if op == 22 {
+    emit_cmp(c, d, "sge", resolved_next_pc)
+    return d - 1
+  }
+  if op == 23 {
+    emit_cmp(c, d, "sgt", resolved_next_pc)
+    return d - 1
+  }
+  if op == 24 {
+    let reg1 = get_reg()
+    let reg2 = get_reg()
+    let reg3 = get_reg()
+    let reg4 = get_reg()
+    let reg5 = get_reg()
+    let reg6 = get_reg()
+    let reg7 = get_reg()
+    let reg8 = get_reg()
+    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
+    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
+    c.print("  %r") num(c, reg3) c.print(" = icmp eq i64 %r") num(c, reg2) c.print(", 0\n")
+    c.print("  %r") num(c, reg4) c.print(" = icmp eq i64 %r") num(c, reg2) c.print(", -1\n")
+    c.print("  %r") num(c, reg5) c.print(" = icmp eq i64 %r") num(c, reg1) c.print(", -9223372036854775808\n")
+    c.print("  %r") num(c, reg6) c.print(" = and i1 %r") num(c, reg4) c.print(", %r") num(c, reg5) c.print("\n")
+    c.print("  %r") num(c, reg7) c.print(" = or i1 %r") num(c, reg3) c.print(", %r") num(c, reg6) c.print("\n")
+    c.print("  br i1 %r") num(c, reg7) c.print(", label %L") num(c, pc) c.print("_trap, label %L") num(c, pc) c.print("_safe\n")
+    c.print("L") num(c, pc) c.print("_trap:\n")
+    c.print("  %unused_fflush_") num(c, pc) c.print(" = call i32 @fflush(ptr null)\n")
+    c.print("  call void @abort()\n")
+    c.print("  unreachable\n")
+    c.print("L") num(c, pc) c.print("_safe:\n")
+    c.print("  %r") num(c, reg8) c.print(" = srem i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
+    c.print("  store i64 %r") num(c, reg8) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
@@ -296,6 +419,8 @@ fn main(c: Console) -> Unit {
   
   c.print("declare i32 @printf(ptr, ...)\n")
   c.print("declare void @exit(i32)\n")
+  c.print("declare i32 @fflush(ptr)\n")
+  c.print("declare void @abort()\n")
   
   c.print("define i32 @main() {\n")
   c.print("  %ignored = call i64 @f") num(c, ir_main()) c.print("()\n")

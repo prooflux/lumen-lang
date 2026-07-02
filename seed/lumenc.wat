@@ -102,6 +102,8 @@
   (global $discard_slot (mut i32) (i32.const 0))
   (global $expr_pushes (mut i32) (i32.const 0))
   (global $cur_fn_is_unit (mut i32) (i32.const 1))
+  (global $prof (mut i32) (i32.const 0))          ;; profiling on/off flag
+  (global $last_steps (mut i64) (i64.const 0))    ;; exact fuel/step count of the most recent $run
 
   ;; ---------- small helpers ----------
   (func $b (param $i i32) (result i32)
@@ -1414,6 +1416,9 @@
         (if (i32.eq (local.get $op) (i32.const 8)) (then
           (local.set $entry (call $codew (global.get $pc)))
           (local.set $argc (call $codew (i32.add (global.get $pc) (i32.const 1))))
+          (if (global.get $prof) (then
+            (i32.store (i32.add (i32.const 600000) (i32.mul (local.get $entry) (i32.const 4)))
+              (i32.add (i32.load (i32.add (i32.const 600000) (i32.mul (local.get $entry) (i32.const 4)))) (i32.const 1)))))
           (global.set $pc (i32.add (global.get $pc) (i32.const 2)))
           (i32.store (i32.add (i32.const 9216) (i32.mul (global.get $csp) (i32.const 8))) (global.get $pc))
           (i32.store (i32.add (i32.add (i32.const 9216) (i32.mul (global.get $csp) (i32.const 8))) (i32.const 4)) (global.get $argbase))
@@ -1591,7 +1596,8 @@
           (global.set $pc (i32.add (global.get $pc) (i32.add (call $codew (global.get $pc)) (i32.const 2))))
           (br $loop)))
         (if (i32.eq (local.get $op) (i32.const 10)) (then (call $print_i64 (call $opop)) (br $loop)))
-        (br $halt))))
+        (br $halt)))
+    (global.set $last_steps (local.get $fuel)))
 
   ;; ---------- entry points ----------
   (func (export "compile") (param $srclen i32) (result i32)
@@ -1615,6 +1621,20 @@
     (global.get $emit))
   (func (export "run") (param $start i32) (call $run (local.get $start)))
   (func (export "set_fuel_max") (param $v i64) (global.set $fuel_max (local.get $v)))   ;; SAFETY: override interpreter step cap (tests)
+  (func (export "set_prof") (param $on i32)
+    (local $i i32)
+    (if (i32.eqz (local.get $on)) (then (global.set $prof (i32.const 0)))
+      (else
+        (local.set $i (i32.const 600000))
+        (block $ze (loop $zl
+          (br_if $ze (i32.ge_u (local.get $i) (i32.const 700000)))
+          (i32.store (local.get $i) (i32.const 0))
+          (local.set $i (i32.add (local.get $i) (i32.const 4)))
+          (br $zl)))
+        (global.set $prof (local.get $on)))))
+  (func (export "get_last_steps") (result i64) (global.get $last_steps))
+  (func (export "prof_count") (param $entry i32) (result i32)
+    (i32.load (i32.add (i32.const 600000) (i32.mul (local.get $entry) (i32.const 4)))))
   (func (export "dbg_nerr") (result i32) (global.get $nerr))
   (func (export "dbg_ntok") (result i32) (global.get $ntok))
   (func (export "dbg_emit") (result i32) (global.get $emit))

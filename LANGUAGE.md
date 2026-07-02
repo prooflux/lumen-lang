@@ -1,6 +1,6 @@
-# Lumen Language Reference (runnable subset)
+# Lumen Language Reference (seed interpreter)
 
-This describes the part of Lumen that **actually compiles and runs today** (the bootstrap subset, "Lumen-mu"). If you are an LLM being asked to write Lumen, write programs using only what is on this page; everything here is verified by the conformance suite. The broader language vision lives in `docs/`, but only what is documented here will run.
+This describes the **currently runnable subset of Lumen** (called "Lumen-mu", the seed interpreter). If you are writing a Lumen program, use only the features documented here; everything on this page is verified by the conformance test suite (`projects/lumen/seed/` and `projects/lumen/examples/`). The broader language vision lives in `docs/`, but only what is documented here will compile and run today.
 
 ## Run a program
 
@@ -9,11 +9,11 @@ This describes the part of Lumen that **actually compiles and runs today** (the 
 ./lumen check program.lm     # compile only; report ok or where it failed
 ./lumen ir    program.lm     # print the compiled IR (for inspection)
 ```
-(First time only: `cd seed && npm install` to fetch the WAT assembler.)
+(First time only: `cd seed && npm install` to fetch the WebAssembly runtime.)
 
 ## Program shape
 
-Every program is a list of functions. Execution starts at `main`, which takes the `Console` capability:
+Every program is a list of top-level function definitions. Execution starts at `main`, which receives the `Console` capability:
 
 ```lumen
 fn main(console: Console) -> Unit {
@@ -31,12 +31,17 @@ Functions may be defined in **any order**: forward references and mutual recursi
 
 ## Types
 
-- `Int` : 64-bit signed integer. Literals: `0`, `42`, `1000000`.
-- `Text` : UTF-8 string. Literals: `"hello"`, `"line one\n"` (the only escape is `\n`).
-- `Unit` : the no-value type; a function that returns nothing declares `-> Unit`.
-- `Console` : the capability that lets a function print. Only `main` receives it (pass it down to helpers that need to print).
+- `Int` : 64-bit signed integer. Literals: `0`, `42`, `-100`, `1000000`.
+- `Float` : 64-bit IEEE double-precision. Literals: `3.14`, `1.0`, `2e10`. Automatic coercion from Int in mixed arithmetic (e.g., `3 + 2.5` treats `3` as `3.0`).
+- `Text` : UTF-8 string. Literals: `"hello"`, `"line one\n"` (only `\n` escapes; no other escapes). Text is immutable.
+- `Unit` : the empty type; a function that returns nothing declares `-> Unit`.
+- `Console` : the I/O capability that lets a function print. Only `main` receives it; pass it down to helpers that need to print.
+- **Sum types** (user-defined): `type Color = | Red | Green | Blue` creates a tagged union. Variants can carry data: `type Shape = | Circle(Float) | Rect(Float, Float)`.
+- **Result** (built-in generic): `Result[T, E]` represents success `Ok(value: T)` or failure `Err(error: E)`. Use with the `?` operator.
+- **Records** (user-defined): `type Point = { x: Float, y: Float }` creates a struct. Construct with `Point { x: 1.0, y: 2.0 }` and access fields with dot notation (`p.x`).
+- **Float arrays** (heap-backed): `array(n)` allocates an array of `n` floats; `aget(arr, i)` reads index `i`; `aset(arr, i, v)` writes; `alen(arr)` returns the length.
 
-There is no `Bool` type to name; a comparison produces a truth value that `if` consumes directly.
+There is no `Bool` type; a comparison (`a < b`) produces a truth value that `if` and logical operators consume directly.
 
 ## Functions
 
@@ -44,83 +49,264 @@ There is no `Bool` type to name; a comparison produces a truth value that `if` c
 fn add(a: Int, b: Int) -> Int {
   return a + b
 }
-```
-Every parameter is typed. Every function declares a return type (use `-> Unit` if it returns nothing). The last thing a non-`Unit` function does on each path must be `return <expr>`.
 
-## Statements
+fn greet(name: Text) -> Text {
+  return text_concat("hello, ", name)
+}
+```
+
+Every parameter is explicitly typed. Every function declares a return type (use `-> Unit` if it returns nothing). Every code path in a non-`Unit` function must end with `return <expr>`.
+
+## Locals and binding
 
 ```lumen
-let x = expr        # immutable local binding (no reassignment, no `var`)
-return expr         # return a value
-if cond { ... }                 # no else
-if cond { ... } else { ... }    # with else
-console.print(text)             # an expression used as a statement
-```
-Write one statement per line.
-
-## Expressions and operators
-
-- Arithmetic: `+  -  *  /  %`  (integer division and remainder; `*` `/` `%` bind tighter than `+` `-`).
-- Comparison: `<  <=  >  >=  ==  !=`  (lower precedence than arithmetic). One comparison per expression; do not chain (`a < b < c` is not allowed — write `a < b` and a second `if`, or compute separately).
-- Grouping: parentheses `( )`.
-- Calls: `f(a, b)`. Functions can be called before they are defined.
-
-```lumen
-let area = (w + 1) * (h + 1)
-if n == 0 { return 1 }
+let x = 42              # immutable binding; x cannot be reassigned
+var y = 0              # mutable binding; y can be reassigned
+y = y + 1              # reassignment (only with var)
 ```
 
-## Built-in operations
-
-- `console.print(t: Text) -> Unit` : print `t` exactly as given (include `\n` yourself for a newline).
-- `console.print_int(n: Int) -> Unit` : print `n` in decimal **followed by a newline**.
-- `int_to_text(n: Int) -> Text` : the decimal text of `n`.
-- `text_concat(a: Text, b: Text) -> Text` : `a` followed by `b`.
-
-```lumen
-console.print(text_concat("answer = ", int_to_text(42)))   # prints: answer = 42
-console.print("\n")
-```
+`let` is the default; use `var` only when you need to reassign.
 
 ## Control flow
 
-There are **no loops** (`while`/`for` are not in this subset). Iterate with **recursion**:
+### if / else if / else
 
 ```lumen
-fn sum_to(n: Int) -> Int {
-  if n == 0 { return 0 }
-  return n + sum_to(n - 1)
+if x < 0 {
+  return "negative"
+} else if x == 0 {
+  return "zero"
+} else {
+  return "positive"
 }
 ```
 
-## Not in this subset (do not use)
-
-`var`/mutation, `while`/`for` loops, `match`, sum or record types, `Result`/`?`, generics, traits, boolean literals (`true`/`false`), float numbers, arrays/lists, modules/imports, and string escapes other than `\n`. Using any of these will fail to compile or behave unexpectedly. Stick to what is above.
-
-## A complete example
+### while loops
 
 ```lumen
-# fizz-ish: classify a number, then report it. Recursion + Text + comparisons.
-fn classify(n: Int) -> Text {
-  if n == 0 { return "zero" }
-  if n < 0 { return "negative" }
-  return "positive"
+var sum = 0
+var i = 1
+while i <= 10 {
+  sum = sum + i
+  i = i + 1
 }
+return sum
+```
 
-fn main(console: Console) -> Unit {
-  console.print(text_concat("3 is ", classify(3)))
-  console.print("\n")
-  console.print_int(fib(10))          # 55, with a trailing newline
-}
+### Recursion
 
+Functions can call themselves or other functions recursively. Forward references work: you can call a function defined later in the file.
+
+```lumen
 fn fib(n: Int) -> Int {
   if n < 2 { return n }
   return fib(n - 1) + fib(n - 2)
 }
 ```
 
-Save as `demo.lm` and run `./lumen run demo.lm`. Expected output:
+### match expressions (exhaustive)
+
+Match a sum type or compare a tuple pattern:
+
+```lumen
+type Status = | Ok | Error(Text)
+
+fn describe(s: Status) -> Text {
+  match s {
+    Ok -> "success"
+    Error(msg) -> text_concat("failed: ", msg)
+  }
+}
+
+# Match on tuples (e.g., to classify pairs of remainders)
+fn fizzbuzz_word(n: Int) -> Text {
+  match (n % 3, n % 5) {
+    (0, 0) -> "FizzBuzz"
+    (0, _) -> "Fizz"
+    (_, 0) -> "Buzz"
+    (_, _) -> int_to_text(n)
+  }
+}
 ```
-3 is positive
-55
+
+Match arms must be exhaustive (cover all cases).
+
+## Operators
+
+### Arithmetic
+
+- `+`, `-`, `*`, `/`, `%` (modulo)
+- `*`, `/`, `%` bind tighter than `+`, `-` (standard precedence)
+- Division by zero traps (runtime error)
+- Mixed Int/Float arithmetic: integers are automatically coerced to Float.
+- Unary minus: `-n` (negates a numeric value).
+
+```lumen
+let area = (w + 1.0) * (h + 1.0)
+let neg = -x
 ```
+
+### Comparison
+
+- `<`, `<=`, `>`, `>=`, `==`, `!=`
+- Lower precedence than arithmetic
+- Do not chain comparisons: write `a < b and b < c`, not `a < b < c`.
+
+```lumen
+if x == 0 { return "zero" }
+if x > 0 and x < 10 { return "single digit positive" }
+```
+
+### Logical (short-circuit)
+
+- `and` : short-circuits to false if the left side is false
+- `or` : short-circuits to true if the left side is true
+- `not` : logical negation
+
+```lumen
+if x > 0 and x < 10 { ... }   # if x <= 0, the right side is not evaluated
+if valid or fallback { ... }
+if not done { ... }
+```
+
+### Function calls
+
+Functions can be called before they are defined:
+
+```lumen
+let result = helper(42)
+
+fn helper(n: Int) -> Int {
+  return n * 2
+}
+
+fn main(console: Console) -> Unit {
+  console.print_int(result)
+}
+```
+
+Parentheses group expressions: `(a + b) * c`.
+
+## Built-in functions
+
+### Console I/O
+
+- `console.print(t: Text) -> Unit` : print text exactly (include `\n` for newline).
+- `console.print_int(n: Int) -> Unit` : print integer in decimal followed by newline.
+
+### Type conversion
+
+- `int_to_text(n: Int) -> Text` : convert Int to decimal Text.
+- `to_int(t: Text) -> Int` : parse Text as decimal (trap on invalid input).
+- `to_float(n: Int) -> Float` : convert Int to Float (exact for small integers).
+- `round(f: Float) -> Int` : round Float to nearest Int (banker's rounding).
+
+### Text operations
+
+- `text_concat(a: Text, b: Text) -> Text` : concatenate two texts.
+- `text_eq(a: Text, b: Text) -> Int` : return 1 if equal, 0 otherwise.
+
+### Math functions (f64 IEEE, POSIX libm)
+
+- `sqrt(x: Float) -> Float` : square root.
+- `abs(x: Float) -> Float` : absolute value (works on Int and Float).
+- `exp(x: Float) -> Float` : e^x.
+- `ln(x: Float) -> Float` : natural logarithm.
+- `pow(x: Float, y: Float) -> Float` : x raised to power y.
+
+### Raw memory (unsafe)
+
+For low-level operations, direct memory access via 32-bit words:
+
+- `load32(addr: Int) -> Int` : read a 32-bit word from memory address.
+- `store32(addr: Int, value: Int) -> Unit` : write a 32-bit word.
+- `load8(addr: Int) -> Int` : read a byte.
+- `store8(addr: Int, value: Int) -> Unit` : write a byte.
+
+### Result and the ? operator
+
+The `?` operator short-circuits out of a function, propagating an error:
+
+```lumen
+type Error = { code: Int, message: Text }
+
+fn read_config(path: Text) -> Result[Text, Error] {
+  let content = read_file(path)?   # if read_file returns Err, the whole function returns that Err
+  return Ok(content)
+}
+```
+
+Use `match` to handle Results:
+
+```lumen
+match read_config("file.txt") {
+  Ok(data) -> console.print(data)
+  Err(e) -> console.print(e.message)
+}
+```
+
+## Example: FizzBuzz
+
+```lumen
+fn classify(n: Int) -> Text {
+  match (n % 3, n % 5) {
+    (0, 0) -> "FizzBuzz"
+    (0, _) -> "Fizz"
+    (_, 0) -> "Buzz"
+    (_, _) -> int_to_text(n)
+  }
+}
+
+fn main(console: Console) -> Unit {
+  var i = 1
+  while i <= 15 {
+    console.print(classify(i))
+    console.print("\n")
+    i = i + 1
+  }
+}
+```
+
+## Example: Black-Scholes (real numeric kernel)
+
+```lumen
+fn norm_cdf(x: Float) -> Float {
+  let a1 = 0.254829592
+  let a2 = -0.284496736
+  let a3 = 1.421413741
+  let a4 = -1.453152027
+  let a5 = 1.061405429
+  let p = 0.3275911
+  let sign = if x >= 0.0 { 1.0 } else { -1.0 }
+  let x = abs(x) / sqrt(2.0)
+  let t = 1.0 / (1.0 + p * x)
+  let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * exp(-x * x)
+  return 0.5 * (1.0 + sign * y)
+}
+
+fn call_price(s: Float, k: Float, t: Float, r: Float, sigma: Float) -> Float {
+  let d1 = (ln(s / k) + (r + 0.5 * sigma * sigma) * t) / (sigma * sqrt(t))
+  let d2 = d1 - sigma * sqrt(t)
+  return s * norm_cdf(d1) - k * exp(-r * t) * norm_cdf(d2)
+}
+
+fn main(console: Console) -> Unit {
+  let price = call_price(100.0, 100.0, 1.0, 0.05, 0.2)
+  console.print("call price: ")
+  console.print_int(round(price))
+}
+```
+
+## Not in this subset (do not use)
+
+- Generics (except `Result`).
+- Imports and modules.
+- I/O beyond `console.print` (no file I/O, sockets, network).
+- Boolean literals (`true` / `false`). Use comparisons and `if` instead.
+- Tuple types (only tuple pattern matching in `match`).
+- Inheritance, traits, or method definitions.
+- String interpolation (use `text_concat` and `int_to_text`).
+- Exception handling (`try`/`catch`). Use `Result` and `?` instead.
+- `for` loops (use `while` or recursion).
+
+Using any of these will fail to compile with a structured diagnostic. Capture the error as a test case if it represents reasonable intent.

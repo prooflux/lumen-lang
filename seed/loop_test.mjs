@@ -4,6 +4,7 @@
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dispatch } from './lumen_mcp.mjs';
 import { createCompiler } from './compiler_core.mjs';
@@ -27,17 +28,45 @@ function check(name, cond, extra = '') { total++; if (cond) { pass++; console.lo
 
 // ---- 2. MCP dispatch (initialize / tools/list / tools/call) ----
 {
-  const init = dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  const init = await dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   check('mcp: initialize advertises tools capability', !!init.result.capabilities.tools && init.result.serverInfo.name === 'lumen-mcp');
-  const list = dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  const list = await dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.result.tools.map(t => t.name);
-  check('mcp: tools/list exposes the loop tools', ['lumen_check', 'lumen_fix', 'lumen_run', 'lumen_ir', 'lumen_explain'].every(n => names.includes(n)), names.join(','));
-  const run = dispatch({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'lumen_run', arguments: { source: 'fn main(c: Console) -> Unit {\n  c.print("hi\\n")\n}\n' } } });
+  check('mcp: tools/list exposes the loop tools', ['lumen_check', 'lumen_fix', 'lumen_run', 'lumen_ir', 'lumen_explain', 'lumen_batch', 'lumen_profile', 'lumen_symbols'].every(n => names.includes(n)), names.join(','));
+  const run = await dispatch({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'lumen_run', arguments: { source: 'fn main(c: Console) -> Unit {\n  c.print("hi\\n")\n}\n' } } });
   const runOut = JSON.parse(run.result.content[0].text);
   check('mcp: lumen_run returns program stdout', runOut.ok && runOut.stdout === 'hi\n', JSON.stringify(runOut));
-  const fix = dispatch({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'lumen_fix', arguments: { source: 'fn main(c: Console) -> Unit {\n  @\n' } } });
+  const fix = await dispatch({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'lumen_fix', arguments: { source: 'fn main(c: Console) -> Unit {\n  @\n' } } });
   const fixOut = JSON.parse(fix.result.content[0].text);
   check('mcp: lumen_fix repairs and reports remaining', fixOut.applied >= 1 && fixOut.diagnostics.length === 0, JSON.stringify(fixOut));
+  const goodSrc = 'fn main(c: Console) -> Unit {\n  c.print("hi\\n")\n}\n';
+  const badSrc = 'fn main(c: Console) -> Unit {\n  @\n';
+  const batch = await dispatch({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'lumen_batch', arguments: { sources: [goodSrc, badSrc] } } });
+  const batchOut = JSON.parse(batch.result.content[0].text);
+  check('mcp: lumen_batch checks N sources in one round-trip', batchOut.results.length === 2 && batchOut.results[0].ok === true && batchOut.results[1].ok === false, JSON.stringify(batchOut));
+
+  // lumen_profile: exact deterministic cost accounting (fib_print.lm calls fib(10) recursively).
+  const fibSrc = fs.readFileSync(new URL('../mu/examples/fib_print.lm', import.meta.url), 'utf8');
+  const prof1 = await dispatch({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'lumen_profile', arguments: { source: fibSrc } } });
+  const prof1Out = JSON.parse(prof1.result.content[0].text);
+  const prof2 = await dispatch({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'lumen_profile', arguments: { source: fibSrc } } });
+  const prof2Out = JSON.parse(prof2.result.content[0].text);
+  check('mcp: lumen_profile compiles ok and reports steps + functions', prof1Out.ok && Number(prof1Out.totalSteps) > 0 && prof1Out.functions.length > 0, JSON.stringify(prof1Out));
+  const fibFn = prof1Out.functions.find(f => f.name === 'fib');
+  check('mcp: lumen_profile counts fib calls > 10 (fib(10) recurses)', !!fibFn && fibFn.calls > 10, JSON.stringify(fibFn));
+  check('mcp: lumen_profile functions sorted by calls desc', prof1Out.functions.every((f, i) => i === 0 || prof1Out.functions[i - 1].calls >= f.calls), JSON.stringify(prof1Out.functions));
+  check('mcp: lumen_profile is deterministic across runs', prof1Out.totalSteps === prof2Out.totalSteps && JSON.stringify(prof1Out.functions) === JSON.stringify(prof2Out.functions), `${prof1Out.totalSteps} vs ${prof2Out.totalSteps}`);
+
+  // lumen_symbols: outline mutual.lm's functions (name, entry, line, signature).
+  const mutualSrc = fs.readFileSync(new URL('../mu/examples/mutual.lm', import.meta.url), 'utf8');
+  const sym1 = await dispatch({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'lumen_symbols', arguments: { source: mutualSrc } } });
+  const sym1Out = JSON.parse(sym1.result.content[0].text);
+  const sym2 = await dispatch({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'lumen_symbols', arguments: { source: mutualSrc } } });
+  const sym2Out = JSON.parse(sym2.result.content[0].text);
+  check('mcp: lumen_symbols compiles ok and lists functions', sym1Out.ok && sym1Out.symbols.length > 0, JSON.stringify(sym1Out));
+  check('mcp: lumen_symbols includes main with a plausible line + signature', sym1Out.symbols.some(s => s.name === 'main' && s.line > 0 && s.signature.includes('fn main(')), JSON.stringify(sym1Out.symbols));
+  check('mcp: lumen_symbols line numbers match the actual source text', sym1Out.symbols.every(s => s.line === -1 || mutualSrc.split('\n')[s.line - 1] === s.signature), JSON.stringify(sym1Out.symbols));
+  check('mcp: lumen_symbols is deterministic across calls', JSON.stringify(sym1Out) === JSON.stringify(sym2Out), `${JSON.stringify(sym1Out)} vs ${JSON.stringify(sym2Out)}`);
 }
 
 // ---- 3. warm daemon: span-edit -> diagnostic latency ----

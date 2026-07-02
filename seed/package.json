@@ -14,12 +14,13 @@
   ],
   "scripts": {
     "start": "node run.mjs",
-    "test": "node basics.mjs && node test.mjs && node safety.mjs && node loop_test.mjs && node cache_test.mjs",
+    "test": "node basics.mjs && node test.mjs && node safety.mjs && node loop_test.mjs && node cache_test.mjs && node profile_report_test.mjs",
     "basics": "node basics.mjs",
     "conformance": "node test.mjs",
     "safety": "node safety.mjs",
     "loop": "node loop_test.mjs",
     "cache": "node cache_test.mjs",
+    "profile-report": "node profile_report_test.mjs",
     "perf": "node perf.mjs",
     "serve": "node lumend.mjs",
     "mcp": "node lumen_mcp.mjs"

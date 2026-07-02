@@ -1,0 +1,77 @@
+# Lumen-mu. The profiler's report engine, written in Lumen (dogfood): reads the raw
+# {calls, name} records the host (lumen_mcp.mjs) injected via load32/load8, insertion-sorts
+# them by calls desc using raw memory scratch, and prints at most 10 lines: calls then name.
+#
+# Injection protocol (host writes, this program reads):
+#   600000              : n (i32, record count; NOT pre-sorted, sorting is this program's job)
+#   600004 + i*12        : [calls(i32), name_ptr(i32), reserved(i32)] for i in 0..n
+#   name_ptr             : points at a host-written Text object [len:i32][utf8 bytes] in
+#                           [640000, 690000)
+#   [700000, 710000)     : scratch region this program uses for the sort (store32/load32)
+
+fn count() -> Int { return load32(600000) }
+fn rec_base() -> Int { return 600004 }
+fn calls_of(i: Int) -> Int { return load32(rec_base() + i * 12) }
+fn name_ptr_of(i: Int) -> Int { return load32(rec_base() + i * 12 + 4) }
+
+fn scratch() -> Int { return 700000 }
+fn scratch_calls(i: Int) -> Int { return load32(scratch() + i * 8) }
+fn scratch_name(i: Int) -> Int { return load32(scratch() + i * 8 + 4) }
+fn set_scratch(i: Int, calls: Int, name_ptr: Int) -> Unit {
+  store32(scratch() + i * 8, calls)
+  store32(scratch() + i * 8 + 4, name_ptr)
+}
+
+fn copy_records() -> Unit {
+  let cnt = count()
+  var i = 0
+  while i < cnt {
+    set_scratch(i, calls_of(i), name_ptr_of(i))
+    i = i + 1
+  }
+}
+
+# Insertion sort, descending by calls. No `break` in Lumen-mu, so the inner scan uses a
+# `shifting` flag instead of an early exit.
+fn sort_desc() -> Unit {
+  let cnt = count()
+  var i = 1
+  while i < cnt {
+    let key_calls = scratch_calls(i)
+    let key_name = scratch_name(i)
+    var j = i - 1
+    var shifting = 1
+    while shifting == 1 {
+      if j >= 0 {
+        if scratch_calls(j) < key_calls {
+          set_scratch(j + 1, scratch_calls(j), scratch_name(j))
+          j = j - 1
+        } else {
+          shifting = 0
+        }
+      } else {
+        shifting = 0
+      }
+    }
+    set_scratch(j + 1, key_calls, key_name)
+    i = i + 1
+  }
+}
+
+fn print_report(c: Console, cnt: Int) -> Unit {
+  var limit = cnt
+  if limit > 10 { limit = 10 }
+  var i = 0
+  while i < limit {
+    c.print_int(scratch_calls(i))
+    c.print(scratch_name(i))
+    c.print("\n")
+    i = i + 1
+  }
+}
+
+fn main(console: Console) -> Unit {
+  copy_records()
+  sort_desc()
+  print_report(console, count())
+}

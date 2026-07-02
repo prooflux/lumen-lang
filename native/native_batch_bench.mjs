@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { buildAndRunFn } from './pipeline.mjs';
 
 const FLAGS = ['-ffp-contract=fast', '-fno-fast-math', '-O3'];
 const N = 2000000;
 
 // Increase array heap capacity for the test run by injecting it
-const bsBatchLumen = `
+export const bsBatchLumen = `
 fn norm_cdf(x: Float) -> Float {
   if x < 0.0 {
     return 1.0 - norm_cdf(-x)
@@ -309,5 +310,11 @@ async function run() {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-run().catch(console.error);
+const isMain = (() => {
+  try { return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); }
+  catch { return false; }   // argv[1] may not be a real file (node -, stdin scripts); an importer must never crash here
+})();
+if (isMain) {
+  run().catch(console.error);
+}
 

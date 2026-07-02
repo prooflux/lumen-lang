@@ -1,0 +1,18 @@
+{
+  "updated": "2026-07-02",
+  "machine": "MacBook Pro M1 Max, macOS 25.5.0, clang -O3, node 25",
+  "benches": {
+    "fib_native_v1": {
+      "rate": 214675844,
+      "tolerance": 0.1
+    },
+    "fib_native_fn": {
+      "rate": 1152533656,
+      "tolerance": 0.1
+    },
+    "bs_looped_fn": {
+      "rate": 124903715,
+      "tolerance": 0.1
+    }
+  }
+}

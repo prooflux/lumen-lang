@@ -1,0 +1,39 @@
+---
+description: Author, check, or run Lumen (.lm) code via the lumen-mcp tools
+globs: "**/*.lm"
+alwaysApply: false
+---
+
+# Lumen
+
+Lumen is a small, AI-native language. Author `.lm` programs against the current runnable subset
+and use the `lumen-mcp` MCP tools (`lumen_check` / `lumen_fix` / `lumen_run` / `lumen_ir` /
+`lumen_explain`) to check, fix, and run them instead of guessing at syntax.
+
+## Supported today (seed interpreter)
+
+- Types: Int (i64), Float (f64), Text, Unit, user sum types (`type E = | A | B`), Result[T, E]
+  with ok/err and the `?` operator, records (`type P = { a: Float }`), heap Float arrays
+  (array/aget/aset/alen).
+- let (immutable) AND var (mutable); while loops; if / else if / else; and / or / not
+  (short-circuit); match (exhaustive); unary minus; Int->Float coercion in mixed arithmetic.
+- Arithmetic + - * / % (div/mod by zero trap); comparisons < <= > >= == !=.
+- Builtins: console.print / console.print_int, int_to_text, text_concat, text_eq,
+  to_int / round / to_float, sqrt / abs / exp / ln / pow, load8 / store8 / load32 / store32.
+- Console is a capability passed to main; thread it to helpers that print.
+- Real kernels work: Black-Scholes in pure Lumen prices to 10.4506; the compiler itself
+  (lumenc.lm) self-compiles bit-identically to the seed.
+
+Not yet: generics beyond Result, imports, I/O beyond console, a real Bool, Int arrays.
+
+## Loop
+
+1. Write the smallest `.lm` program for the intent, inside the supported subset.
+2. Call `lumen_check`. If diagnostics are non-empty, try `lumen_fix` (mechanical fixes only).
+3. If still broken, read the diagnostic (`file:line:col: error: ...`) and fix by hand;
+   `lumen_explain` an unfamiliar code.
+4. Call `lumen_run` to confirm the output.
+
+If a construct that seems reasonable gets rejected (a loop, a float, a boolean literal), don't
+just work around it silently — that's real authoring friction and worth flagging as a gap in the
+language subset rather than papering over.

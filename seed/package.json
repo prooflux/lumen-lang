@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "Lumen stage-0 WAT seed: a bytecode interpreter for the Lumen-mu IR. Disposable; discarded at the self-hosting fixpoint.",
+  "bin": {
+    "lumen-mcp": "./lumen_mcp.mjs"
+  },
+  "files": [
+    "*.mjs",
+    "lumenc.wat",
+    "lumenc.lm"
+  ],
   "scripts": {
     "start": "node run.mjs",
     "test": "node basics.mjs && node test.mjs && node safety.mjs && node loop_test.mjs && node cache_test.mjs",

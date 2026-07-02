@@ -23,17 +23,16 @@ The first cut built the BS benches with `-ffp-contract=fast`, inflating bs_loope
 - `fib_native_fn`: 1152.5M calls/sec (tolerance 10%)
 - `bs_looped_fn`: 124.9M prices/sec (tolerance 10%)
 
-### Bug found via the loop (filed, blocks the 4th bench): silent native output loss on ~48KB+ arrays
-`bs_batch_fn` was planned as the 4th gated bench and is DROPPED for now: on the current tree the
-batch/array kernel loses its output natively - `buildAndRunFn(bsBatchLumen)` with `let n = 2000`
-prints the checksum bit-identical to the oracle, with `n = 3000` (2 arrays x 24KB) the native
-binary prints NOTHING and exits 0 while the oracle prints `3135...`; threshold between 32KB and
-48KB of array allocation. Silent (exit 0), so no existing diff gate sees it: the float corpus's
-arrays are small. Repro: `bsBatchLumen.replace('let n = 2000000','let n = 3000')` through
-`buildAndRunFn` vs `lumen.run`. Found because the bench gate now VERIFIES each benched binary
-(exit 0 + non-empty stdout) before timing it - the same check that caught the arena-cap regression
-posting 500000M prices/sec into a lower-bound-only gate. Queued for a dedicated fix round;
-re-gate the batch bench when native output matches the oracle again.
+### Correction (2026-07-01, later): the "silent native output loss" filing was WRONG - it is parity
+The section previously here filed a native-vs-oracle divergence on ~48KB arrays. Checkpoint-(a)
+diagnosis + a both-sides A/B at the same n retracted it: the interpreter ALSO silently halts at the
+same boundary (n=2267 prints on both sides, n=2268 silent on both sides; emitted `lm_anew`
+LM_CAP_BYTES == the interpreter ANEW bound, #201 parity working as designed). The original filing
+had only run the oracle at small n and extrapolated. Full finding + real consequences (heap
+capacity roadmap, silent-halt diagnosability, batch bench never oracle-conformant):
+`BUG_ARRAY_OUTPUT.md`. The `heap_boundary_under` / `heap_boundary_over_silent_halt` cases in
+native_float_test.mjs pin the parity. bs_batch_fn stays ungated: the workload exceeds the
+language's current heap, interpreter included.
 
 ### Gate Results
 - optimize_diff.mjs: 21/21 checks passed.

@@ -51,6 +51,20 @@ const isMain = (() => {
 if (isMain) {
   const lumen = await createCompiler();
   const corpus = JSON.parse(fs.readFileSync(new URL('./float_corpus.json', import.meta.url), 'utf8'));
+  // Heap-halt parity pins (finding 2026-07-01, BUG_ARRAY_OUTPUT.md): the language's heap bound
+  // silently halts allocation-heavy programs at the SAME point on both sides (interpreter ANEW
+  // guard == emitted lm_anew guard, LM_CAP_BYTES 36288 for this shape). One case just under the
+  // boundary (prints), one just over (both sides silent, golden ""). A native fix that "helpfully"
+  // lets the over-boundary case print would BREAK bit-identity and must fail here.
+  const arrPair = (n) => `fn main(c: Console) -> Unit {
+  let n = ${n}
+  let vols = array(n)
+  let prices = array(n)
+  c.print_int(123)
+}
+`;
+  corpus.push({ name: "heap_boundary_under", source: arrPair(2267), goldenStdout: "123\n", features: ["float"] });
+  corpus.push({ name: "heap_boundary_over_silent_halt", source: arrPair(2268), goldenStdout: "", features: ["float"] });
 
   // ---- 1. diff gate: golden == interpreter == native, byte-for-byte ----
   console.log('== diff: v3 float/array/record vs interpreter oracle (byte-for-byte) ==');

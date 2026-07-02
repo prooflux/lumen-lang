@@ -96,11 +96,11 @@ const bsLoopedOutput = await buildAndRunFn(bsLumen, '-O3');
 fs.writeFileSync(path.join(dir, 'bs_looped.c'), bsLoopedOutput.csrc);
 execFileSync('clang', [...GATE_FLAGS, '-o', path.join(dir, 'bs_looped'), path.join(dir, 'bs_looped.c')]);
 
-// bs_batch_fn is NOT gated yet: the batch/array kernel silently loses its output natively above
-// ~2000 elements on the current tree (oracle prints the checksum, native prints NOTHING, exit 0;
-// threshold between n=2000 [32KB arrays, correct] and n=3000 [48KB, empty]). Gating a bench whose
-// binary cannot prove it ran would be theater; see HISTORY.md for the filed bug and repro. Re-add
-// the bench when the emit path is fixed and its output matches the oracle.
+// bs_batch_fn is NOT gated: the batch workload exceeds the language's heap bound, and BOTH sides
+// halt silently at the same boundary (byte-exact parity, see BUG_ARRAY_OUTPUT.md; the earlier
+// "native loses output" claim here was wrong - the oracle halts too). The batch harness only runs
+// natively by patching the arena beyond what the oracle permits, so gating it would measure a
+// non-conformant configuration. Re-add when the language's own heap can hold the workload.
 
 // A timed binary must PROVE it ran before its wall time means anything: a binary that aborts or
 // halts early posts a phenomenal rate (observed: an arena-cap regression measured 500000M/sec and

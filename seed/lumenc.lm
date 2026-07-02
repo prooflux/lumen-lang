@@ -351,14 +351,13 @@ fn local_add(off: Int, len: Int) -> Unit {
 }
 
 fn local_find(off: Int, len: Int) -> Int {
-  var k = 0
-  let limit = get_nlocal()
-  while k < limit {
+  var k = get_nlocal() - 1
+  while k >= 0 {
     let base = LOCALS() + k * 8
     if eqlit(load32(base), load32(base + 4), off, len) == 1 {
       return k
     }
-    k = k + 1
+    k = k - 1
   }
   return 0 - 1
 }
@@ -690,6 +689,15 @@ fn c_primary() -> Unit {
     emitw(mktext_lit(ta(get_tp()), tb(get_tp())))
     adv()
     return ()
+  }
+  if tk(get_tp()) == 3 {
+    if tk(get_tp() + 1) == 4 {
+      emitw(1)
+      emitw(0)
+      adv()
+      adv()
+      return ()
+    }
   }
   if k == 3 {
     adv()

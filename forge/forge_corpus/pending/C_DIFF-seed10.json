@@ -1,0 +1,7 @@
+{
+  "seed": 10,
+  "class": "C_DIFF",
+  "detail": "stdout=\"\" exit=1 ref_stdout=\"\" ref_exit=0",
+  "originalSize": 435,
+  "reducedSize": 68
+}

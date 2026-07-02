@@ -1,0 +1,13 @@
+{
+  "name": "lumen-forge",
+  "private": true,
+  "type": "module",
+  "description": "5-path differential runner: interp, selfhost-IR, optimizer, C, LLVM.",
+  "scripts": {
+    "forge": "node forge.mjs",
+    "smoke": "node forge.mjs --from 1 --to 200 --native-every 50",
+    "campaign": "node forge.mjs --from 1 --to 20000 --native-every 20",
+    "test": "node gen_test.mjs && node forge_test.mjs && node forge_corpus_test.mjs"
+  },
+  "devDependencies": { "wabt": "^1.0.36" }
+}

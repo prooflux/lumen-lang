@@ -1,0 +1,7 @@
+{
+  "seed": 10,
+  "class": "IR_DIFF",
+  "detail": "diverge at word index 4: seed=1 selfhost=3",
+  "originalSize": 435,
+  "reducedSize": 68
+}

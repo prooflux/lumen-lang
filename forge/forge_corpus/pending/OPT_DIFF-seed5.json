@@ -1,0 +1,7 @@
+{
+  "seed": 5,
+  "class": "OPT_DIFF",
+  "detail": "stdout mismatch: opt=\"\" ref=\"val\"",
+  "originalSize": 852,
+  "reducedSize": 62
+}

@@ -1,0 +1,5 @@
+fn main(console: Console) -> Unit {
+  if ((95 + -92) > 96) {
+  }
+}
+

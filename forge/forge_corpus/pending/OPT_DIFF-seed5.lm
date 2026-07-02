@@ -1,0 +1,5 @@
+
+
+fn main(console: Console) -> Unit {
+  console.print("val")
+

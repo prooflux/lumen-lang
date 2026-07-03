@@ -15,10 +15,10 @@ scalar 11/11, optimize 12/12, float 11/11). `trunk` is at `49599218c` (PR #175, 
 it does NOT yet carry the typed-slot base, so **do not branch CFM work off trunk** until #176 merges.
 
 **Coordination protocol (no collisions — the agy-vs-mine divergence is the lesson):**
-1. `git clone --reference` a fresh checkout under `/Users/freedom/QUANTS-Working-Trees/<id>`, then
+1. `git clone --reference` a fresh checkout under `QUANTS-Working-Trees/<id>`, then
    `git checkout origin/ship/lumen-typed-float` (the branch tip — it carries this plan and the green
    code, foundation SHA `7a573970f21db34beb3f9450fdd84e9396bfb984`). Clone-per-agent; **never
-   worktrees**, never edit `/Users/freedom/QUANTS`. See `tools/swarm/swarm.py`.
+   worktrees**, never edit `QUANTS`. See `tools/swarm/swarm.py`.
 2. One agent per lane (below). Commit on `ship/<id>`, PR into `trunk`, merge-queue serializes.
 3. **Lane A (P0) must land first** — it is the gate every other lane is measured by. Lanes B/C/D
    branch off the *same* base SHA and rebase onto trunk once P0 merges.

@@ -8,6 +8,8 @@
 #   load32(524288)        = ir_len
 #   load32(524292)        = main_entry
 #   load32(524296 + i*4)  = IR word i (store32 to rewrite)
+# Scratch (internal): orig 600000, target 700000, keep 800000, map 900000, out 1000000
+# (fixed 100KB slots; requires the seed's 100-page memory; counters stay at 589812/16/20).
 
 fn hdr() -> Int { return 524288 }
 fn ir_len() -> Int { return load32(hdr()) }
@@ -15,38 +17,38 @@ fn ir_word(i: Int) -> Int { return load32(hdr() + 8 + i * 4) }
 fn set_word(i: Int, v: Int) -> Unit { store32(hdr() + 8 + i * 4, v) }
 
 fn get_orig(i: Int) -> Int {
-  return load32(524288 + 8 + ir_len() * 4 + i * 4)
+  return load32(600000 + i * 4)
 }
 fn set_orig(i: Int, val: Int) -> Unit {
-  store32(524288 + 8 + ir_len() * 4 + i * 4, val)
+  store32(600000 + i * 4, val)
 }
 
 fn get_target(i: Int) -> Int {
-  return load32(524288 + 8 + ir_len() * 2 * 4 + i * 4)
+  return load32(700000 + i * 4)
 }
 fn set_target(i: Int, val: Int) -> Unit {
-  store32(524288 + 8 + ir_len() * 2 * 4 + i * 4, val)
+  store32(700000 + i * 4, val)
 }
 
 fn get_keep(i: Int) -> Int {
-  return load32(524288 + 8 + ir_len() * 3 * 4 + i * 4)
+  return load32(800000 + i * 4)
 }
 fn set_keep(i: Int, val: Int) -> Unit {
-  store32(524288 + 8 + ir_len() * 3 * 4 + i * 4, val)
+  store32(800000 + i * 4, val)
 }
 
 fn get_map(i: Int) -> Int {
-  return load32(524288 + 8 + ir_len() * 4 * 4 + i * 4)
+  return load32(900000 + i * 4)
 }
 fn set_map(i: Int, val: Int) -> Unit {
-  store32(524288 + 8 + ir_len() * 4 * 4 + i * 4, val)
+  store32(900000 + i * 4, val)
 }
 
 fn get_out(i: Int) -> Int {
-  return load32(524288 + 8 + ir_len() * 5 * 4 + 4 + i * 4)
+  return load32(1000000 + i * 4)
 }
 fn set_out(i: Int, val: Int) -> Unit {
-  store32(524288 + 8 + ir_len() * 5 * 4 + 4 + i * 4, val)
+  store32(1000000 + i * 4, val)
 }
 
 fn oplen(pc: Int, op: Int) -> Int {
@@ -156,10 +158,11 @@ fn optimize_passes(c: Console) -> Int {
   let orig_len = ir_len()
   let orig_main = load32(524292)
 
-  # Size fail-safe: the 5 scratch regions (orig/target/keep/map/out) need ~24 bytes per IR word
-  # and must stay below the counter slots at 589812. restore_orig must NOT be called here: the
-  # backup region is not written yet; just report zero changes and leave the input untouched.
-  if orig_len > 2500 {
+  # Size fail-safe: the 5 scratch regions live in fixed 100KB slots (orig 600000, target 700000,
+  # keep 800000, map 900000, out 1000000), so each holds up to 25000 words; 24000 leaves margin.
+  # The counter ABI at 589812/589816/589820 is untouched by this layout. restore_orig must NOT
+  # be called here: the backup region is not written yet; report zero changes, leave input as-is.
+  if orig_len > 24000 {
     store32(589812, 0)
     store32(589816, 0)
     store32(589820, 0)

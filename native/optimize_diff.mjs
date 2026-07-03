@@ -145,11 +145,11 @@ if (okCall) {
   fail++;
 }
 
-// 7. size fail-safe: a program past the 2500-word cap must come back BYTE-IDENTICAL with changed=0
+// 7. size fail-safe: a program past the 24000-word cap must come back BYTE-IDENTICAL with changed=0
 // (regression: the early-exit path once called restore_orig before the backup existed, corrupting the IR).
-// Layout: PUSH 7; PRINT; HALT, then dead padding to 2504 words. A running optimizer would DCE the
+// Layout: PUSH 7; PRINT; HALT, then dead padding to 24004 words. A running optimizer would DCE the
 // padding (length 4); the fail-safe must instead return the input untouched.
-const big = new Int32Array(2504);
+const big = new Int32Array(24004);
 big[0] = 1; big[1] = 7; big[2] = 10; big[3] = 0;   // padding words stay 0 (HALT), unreachable, untargeted
 const beforeBig = await runIR(Int32Array.from(big), 0);
 const { words: optBig, main: mainBig, changed: changedBig } = await optimizeIR(Int32Array.from(big), 0);
@@ -252,5 +252,51 @@ if (INLINE_ENABLED) {
   console.log("SKIP  synth-recursive-inlining-blocked (INLINE_ENABLED = false)");
 }
 
-console.log(`\n${pass}/${SCALAR.length + 10} checks: optimize.lm (Lumen) is output-identical to the interpreter; size delta: -${totalWordsRemoved} words, total folds: ${totalFolds} (fail ${fail})`);
+// optimize-the-compiler: the hardest real program there is. The optimized lumenc.lm must
+// itself compile a corpus program to IR byte-identical to the seed's output (semantic
+// fidelity proven end-to-end on an 8,700+-word input; enabled by the 24000-word capacity).
+{
+  const wabtInit = (await import('../seed/node_modules/wabt/index.js')).default;
+  const lmSrc = fs.readFileSync(new URL('../seed/lumenc.lm', import.meta.url), 'utf8');
+  const { words: lmWords } = await compileToIR(lmSrc);
+  // fresh instance running the OPTIMIZED compiler (selfhost_diff instance-C pattern)
+  const wabt = await wabtInit();
+  const watText = fs.readFileSync(new URL('../seed/lumenc.wat', import.meta.url), 'utf8');
+  const module = await WebAssembly.compile(wabt.parseWat('w', watText).toBinary({}).buffer);
+  const fibSrc = fs.readFileSync(new URL('../mu/examples/fib_print.lm', import.meta.url), 'utf8');
+  const refFib = await compileToIR(fibSrc);
+  // locate lex_compile via the seed symbol table after compiling lumenc.lm on a scratch instance
+  const probe = await createCompiler();
+  probe.compile(lmSrc);
+  const dv = new DataView(probe.exports.mem.buffer); const u8 = new Uint8Array(probe.exports.mem.buffer);
+  let lce = -1;
+  for (let a = 150000; a < 157000; a += 12) {
+    const off = dv.getInt32(a, true), len = dv.getInt32(a + 4, true), e = dv.getInt32(a + 8, true);
+    if (off >= 100000 && off < 150000 && len > 0 &&
+        Buffer.from(u8.slice(off, off + len)).toString() === 'lex_compile') lce = e;
+  }
+  // optimize with lex_compile as the entry so its address rides the pc remap (a compacted
+  // IR shifts every pc; calling the OLD entry lands mid-function and emits nothing).
+  const { words: lmOpt, main: lmOptLce } = await optimizeIR(lmWords, lce);
+  const capOk = lmWords.length <= 24000 && lmOpt.length <= lmWords.length;
+  const inst = await WebAssembly.instantiate(module, { lumen: { console_print: () => {} } });
+  const ex = inst.exports;
+  new Int32Array(ex.mem.buffer, 11328, lmOpt.length).set(lmOpt);
+  const sb = Buffer.from(fibSrc, 'utf8');
+  new Uint8Array(ex.mem.buffer, 100000, sb.length).set(sb);
+  new Uint8Array(ex.mem.buffer, 0, 1024).fill(0);
+  const code = new Int32Array(ex.mem.buffer, 11328, lmOpt.length + 10);
+  const s0 = lmOpt.length;
+  code[s0] = 1; code[s0 + 1] = sb.length; code[s0 + 2] = 8; code[s0 + 3] = lmOptLce; code[s0 + 4] = 1; code[s0 + 5] = 0;
+  ex.set_fuel_max(50000000n);
+  ex.run(s0);
+  const emitN = new DataView(ex.mem.buffer).getInt32(0, true);
+  const got = new Int32Array(ex.mem.buffer, 211328, emitN);
+  let identical = emitN === refFib.words.length && lce >= 0 && capOk;
+  if (identical) for (let i = 0; i < emitN; i++) if (got[i] !== refFib.words[i]) { identical = false; break; }
+  console.log(`${identical ? 'PASS' : 'FAIL'}  optimize-the-compiler  lumenc.lm IR ${lmWords.length} -> ${lmOpt.length} words; optimized compiler emits fib_print ${identical ? 'bit-identical' : 'DIVERGENT'}`);
+  if (identical) pass++; else fail++;
+}
+
+console.log(`\n${pass}/${SCALAR.length + 11} checks: optimize.lm (Lumen) is output-identical to the interpreter; size delta: -${totalWordsRemoved} words, total folds: ${totalFolds} (fail ${fail})`);
 process.exit(fail === 0 ? 0 : 1);

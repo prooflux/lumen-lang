@@ -38,25 +38,28 @@ function parseArgs(argv) {
 
 // ---------- path a: INTERP (fresh instance per run, exact pattern from seed/test.mjs) ----------
 const SRC_BASE = 100000;
-let wabtBinary = null;
+let wabtBinary, wabtModule = null;
 async function loadWabtBinary() {
   if (wabtBinary) return wabtBinary;
   const wabt = await wabtInit();
   const wat = fs.readFileSync(new URL('../seed/lumenc.wat', import.meta.url), 'utf8');
   wabtBinary = wabt.parseWat('lumenc.wat', wat).toBinary({}).buffer;
+  // Compile the wasm module ONCE; instantiating from raw bytes re-JITs the entire module
+  // per program (the dominant cost of any instance-C campaign).
+  wabtModule = await WebAssembly.compile(wabtBinary);
   return wabtBinary;
 }
 
 async function runInterp(src) {
   const binary = await loadWabtBinary();
   let out = '';
-  const { instance } = await WebAssembly.instantiate(binary, {
+  const instance = await WebAssembly.instantiate(wabtModule, {
     lumen: { console_print: (p, l) => { out += Buffer.from(new Uint8Array(instance.exports.mem.buffer, p, l)).toString('utf8'); } },
   });
   const ex = instance.exports;
   const b = Buffer.from(src, 'utf8');
   new Uint8Array(ex.mem.buffer, SRC_BASE, b.length).set(b);
-  if (ex.set_fuel_max) ex.set_fuel_max(4000000000n);
+  if (ex.set_fuel_max) ex.set_fuel_max(50000000n);
   let exit = 0;
   try {
     ex.compile_and_run(b.length);
@@ -107,7 +110,7 @@ async function loadSelfhostState() {
 // seed/selfhost_diff.mjs's compileSelfhost().
 async function compileSelfhost(testSource) {
   const st = await loadSelfhostState();
-  const { instance: instC } = await WebAssembly.instantiate(st.binary, {
+  const instC = await WebAssembly.instantiate(wabtModule, {
     lumen: { console_print: (p, l) => {} }
   });
   const exC = instC.exports;
@@ -149,7 +152,7 @@ async function compileSelfhost(testSource) {
   codeMem[stubIndex + 4] = 1;
   codeMem[stubIndex + 5] = 0;
 
-  exC.set_fuel_max(4000000000n);
+  exC.set_fuel_max(50000000n);
   exC.run(stubIndex);
 
   const memView = new DataView(exC.mem.buffer);

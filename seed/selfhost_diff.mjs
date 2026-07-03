@@ -51,6 +51,9 @@ async function main() {
   const watPath = path.join(__dirname, 'lumenc.wat');
   const wat = fs.readFileSync(watPath, 'utf8');
   const binary = wabt.parseWat('lumenc.wat', wat).toBinary({}).buffer;
+  // Compile the wasm module ONCE; per-program instantiation reuses the compiled Module
+  // (instantiating from bytes re-JITs the whole module per program: ~25s of pure overhead).
+  const module = await WebAssembly.compile(binary);
 
   // 1. Instantiate Instance B (cached build of compiler)
   const L = await createCompiler();
@@ -90,7 +93,7 @@ async function main() {
 
   // Function to setup and run instance C compiling a test program
   async function compileSelfhost(testSource) {
-    const { instance: instC } = await WebAssembly.instantiate(binary, {
+    const instC = await WebAssembly.instantiate(module, {
       lumen: { console_print: (p, l) => {} }
     });
     const exC = instC.exports;
@@ -142,7 +145,7 @@ async function main() {
     codeMem[stubIndex + 4] = 1; // argc
     codeMem[stubIndex + 5] = 0; // HALT
 
-    exC.set_fuel_max(4000000000n);
+    exC.set_fuel_max(50000000n); // 8x headroom over the 6.3M-step self-compile; a wedge halts in ~0.4s, not 13.6s
     exC.run(stubIndex);
 
     // Read outputs

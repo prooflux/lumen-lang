@@ -29,8 +29,16 @@ dispatch chain grew; still within tolerance; see "Known follow-ups").
 
 The oracle goal is met on the bootstrap interpreter: it prices correctly, and the
 author loop (warm daemon, sub-ms compiles, MCP) is faster than spinning up
-Python/Excel. Roadmap steps 1-4 are done. The only remaining item is the native
-backend (step 5).
+Python/Excel. Roadmap steps 1-4 are done.
+
+> **Update (2026-07-03):** everything below this line marked "remaining" or "started" has
+> since landed. Both native backends exist and are gated bit-identical (a C emitter,
+> `native/emit_fn.lm`, and an LLVM emitter, `native/emit_llvm.lm`); the Lumen optimizer
+> `native/optimize.lm` landed and now optimizes the compiler itself; and `lumenc.lm`
+> **self-hosts** (`SELF: MATCH`, byte-identical, CI-gated). The remaining native item is the
+> fixpoint (run `lumenc.lm` through the backends so the compiler runs natively). The full,
+> current narrative is `../SELFHOST_CAMPAIGN_LOG.md`. The text below is preserved as the
+> 2026-06-30 status snapshot.
 
 ### Honest speed status (the part gated on the native backend)
 Benchmark, 200k Black-Scholes evaluations, both exact (104506):
@@ -59,15 +67,19 @@ Cranelift is superseded (no host rust; clang reaches the same LLVM target today)
   (231M vs 12.3M calls/sec), ~21% of hand-written C**. First proof Lumen translates its own IR
   to a native binary, no 3rd language in the translation.
 
-**Remaining (multi-week):** the Lumen optimizer `optimize.lm` (next; closes the gap to C);
-float/heap emit (M2, floats must transcribe the seed's exact non-libm series); a single AOT
-binary (M3); ditching clang via direct LLVM-IR/asm emission (M4); and the headline spine —
-repairing `lumenc.lm` so Lumen genuinely self-hosts (SRC overflow now guarded; capacity walls
-and full language parity remain). The bootstrap interpreter stays the reference oracle forever.
+**Remaining as of the 2026-06-30 snapshot (nearly all since landed — see the update banner
+above):** the Lumen optimizer `optimize.lm` (LANDED, and now optimizes the compiler itself);
+float/heap emit (LANDED in `emit_fn.lm`); direct LLVM-IR emission (LANDED as `emit_llvm.lm`);
+and the headline spine — `lumenc.lm` self-hosting (ACHIEVED, `SELF: MATCH`, byte-identical).
+Still open: the single AOT native binary and the native fixpoint (retiring the seed). The
+bootstrap interpreter stays the reference oracle forever.
 
 ## Known follow-ups
 - A float-aware `print_float` / `float_to_text` (today floats are output by scaling
-  with `to_int`/`round`); the formatter is a moderate WAT routine.
-- The builtin dispatch in `c_primary` is a linear name chain; length-bucket or hash
-  it to recover the ~15% compile-throughput drift if it keeps growing.
-- Int arrays / generic element type; a real `Bool`; exponent-form float literals.
+  with `to_int`/`round`); the formatter is a moderate WAT routine. (Still open.)
+- The builtin dispatch in `c_primary` is a linear name chain. The ~15% "drift" worry is
+  empirically retired: the 2026-07-02 speed campaign measured five such micro-optimizations
+  (including length-bucketing this chain) at or below baseline under V8 and reverted them all;
+  the seed is at a local optimum (~615k compiles/sec/core). The real speed lever is the native
+  fixpoint, not seed micro-tuning.
+- Int arrays / generic element type; a real `Bool`; exponent-form float literals. (Still open.)

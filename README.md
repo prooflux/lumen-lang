@@ -14,9 +14,11 @@ Together these make Lumen the first language explicitly optimized as a **compile
 
 ## Status
 
-**Design phase.** This repository currently contains the language design, the draft grammar, the debuggability model, the compiler architecture, and a phased roadmap. There is no compiler yet. The example programs under `examples/` are illustrative of the intended syntax and are not yet runnable.
+**Self-hosting fixpoint reached.** A working compiler exists and self-hosts: `lumenc.lm` (the Lumen-mu compiler written in Lumen) compiles its own source to IR that is byte-identical to what the reference seed produces (`SELF: MATCH`), and this is re-checked on every commit. The runnable subset (Lumen-mu) covers `Int`/`Float`/`Text`/`Unit`, `let`/`var`, `if`/`else if`/`else`, `while`, `and`/`or`/`not`, sum types + `Result` + `match` + `?`, records, heap-backed Float arrays, and a math kernel; it prices a full Black-Scholes call to 10.4506 exactly. Two Lumen-written native backends (a C emitter and an LLVM emitter) are output-identical to the interpreter on the conformance corpus. A deterministic differential fuzzer (`forge/`) grows the oracle corpus itself, and the toolchain ships an MCP surface (`check`/`fix`/`run`/`ir`/`explain`/`batch`/`profile`/`symbols`) with a warm daemon.
 
-Start here:
+The full chronicle is `SELFHOST_CAMPAIGN_LOG.md`; the current runnable language is `LANGUAGE.md`; the research core (a generation-closure theorem, a pre-registered experiment, a tagged claims inventory) is under `../research/drafts/lumen-oracle-gated-self-hosting/`.
+
+Design and vision documents (the "why" and the long-horizon shape) start here:
 
 - `docs/MANIFESTO.md` is the why: all for AI, all by AI, zero legacy.
 - `docs/spec/SYNTHESIS.md` is the integrated design of record (after the 17-dimension adversarial deepening pass). Start here for the real shape of the language.
@@ -32,9 +34,9 @@ Start here:
 
 ## What Lumen is not
 
-- Not an interpreter bolted onto Python. Lumen compiles ahead-of-time to a standalone native binary.
-- Not a transpiler that emits another language. The semantics are its own, so the structured-error and deterministic-trace guarantees hold end to end.
-- Not "production-ready". The roadmap is multi-phase. The documents here are honest about scope.
+- Not an interpreter bolted onto Python. The seed is pure WebAssembly text; the compiler is written in Lumen; the Lumen-written backends emit native code. No legacy high-level language sits in the trust path.
+- Not a transpiler that emits another language as its semantics. The seed interpreter IS the definitional semantics, and every other artifact (self-hosted compiler, C backend, LLVM backend) is gated to bit-identity against it.
+- Not "production-ready" as a general-purpose language yet: today you write the small provable cores in Lumen (verified kernels, pricing math) and keep the app shell in your existing stack. The scope is stated honestly per document; `LANGUAGE.md` is the exact runnable surface.
 
 ## The one-paragraph pitch
 

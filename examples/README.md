@@ -1,3 +1,8 @@
-# Lumen Examples (illustrative)
+# Lumen Examples
 
-These programs illustrate the intended v0.1 syntax. They are NOT yet runnable: the compiler does not exist (the project is in the design phase). They double as seeds for the conformance suite once Phase 1 begins. Each file states its expected behavior in a comment so it can later become a conformance test with an expected output or an expected diagnostic code.
+These programs illustrate Lumen syntax. Some are historical design sketches of the intended
+surface; for programs that are **verified to compile and run today**, use the conformance
+corpus under `../mu/examples/` (the 17 programs the seed compiler and both native backends are
+gated against). Run any of them with `node ../seed/lumen.mjs run <file>.lm`. Each file states
+its expected behavior in a comment so it doubles as a conformance test with an expected output
+or an expected diagnostic code.

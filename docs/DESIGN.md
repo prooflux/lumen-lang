@@ -1,6 +1,6 @@
 # Lumen Language Design
 
-Status: draft v0.1 (design phase, no implementation yet)
+Status: design of record. This is the long-horizon language design; the implementation has since reached a self-hosting fixpoint on the Lumen-mu subset (see `../README.md` and `../SELFHOST_CAMPAIGN_LOG.md`). Where this document describes features beyond the current runnable surface, treat it as the intended design, and `../LANGUAGE.md` as what compiles today.
 Name: Lumen (`.lm`, CLI `lumen`)
 Audience: language designers, compiler engineers, and the AI agents that will build and use this language.
 

@@ -1,5 +1,27 @@
 # Lumen Roadmap
 
+> **Current status (2026-07-03): the self-hosting fixpoint is reached.** The phase plan below
+> is the original design-era roadmap, kept as the plan of record; the project has since moved
+> far faster than its phase numbering. Where things actually stand:
+> - **Phase 1-3 (seed, front end, run):** DONE. The pure-WAT seed (`seed/lumenc.wat`) lexes,
+>   parses, type-checks, and runs the full Lumen-mu corpus deterministically, with structured
+>   diagnostics and the MCP/daemon feedback loop live.
+> - **Phase 4 (native backend):** substantially delivered as *Lumen-written* backends: a C
+>   emitter (`native/emit_fn.lm`) and an LLVM emitter (`native/emit_llvm.lm`), both gated
+>   bit-identical to the interpreter, plus a Lumen-written optimizer (`native/optimize.lm`)
+>   that now optimizes the compiler itself. Remaining: the native fixpoint (run `lumenc.lm`
+>   through the backends so the compiler runs natively and the seed retires).
+> - **Phase 6 (self-hosting):** its exit criterion, **byte-identical self-compilation**, is
+>   ACHIEVED and CI-gated (`seed/selfhost_diff.mjs` reports `SELF: MATCH` on every commit;
+>   the generation-closure theorem in `../research/drafts/lumen-oracle-gated-self-hosting/`
+>   lifts that per-commit check to all bootstrap generations at once).
+> - **Beyond the plan:** a deterministic differential fuzzer that grows the oracle corpus
+>   (`forge/`), deterministic profiling, and a formal research core (theorem + pre-registered
+>   experiment + tagged claims inventory).
+>
+> The living, per-commit narrative is `../SELFHOST_CAMPAIGN_LOG.md`; the exact runnable
+> language is `../LANGUAGE.md`.
+
 Status: draft v0.1. This roadmap is deliberately honest about scope. Building a self-hosting, natively compiled language with its own toolchain is a multi-phase effort measured in many months to years, even with heavy AI assistance. The phases below each have a concrete exit criterion so progress is verifiable rather than vibes.
 
 The development method throughout is conformance-test-driven (see `DESIGN.md` section 10): a feature lands as RFC, spec change, conformance tests, then implementation that turns those tests green.

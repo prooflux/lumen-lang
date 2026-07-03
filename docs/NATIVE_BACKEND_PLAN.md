@@ -80,10 +80,15 @@ fast; it is never allowed to disagree.
    Lumen back-end module bolted onto the Lumen compiler pipeline. The keystone is literally the
    self-host keystone; the headline track is repairing `lumenc.lm`.
 
-**Honest status:** `lumenc.lm` does NOT self-host today (diagnosed: SRC overflow [now guarded],
-token/symbol/CODE capacity walls, and it needed exactly the `load32/store32/load8/store8`
-builtins the keystone now provides; it had also collided opcodes 25–28 with
-`MKSUM/SUMTAG/SUMVAL/TEXTEQ`). We state this; we do not pretend the foundation is finished.
+**Honest status (updated 2026-07-03):** `lumenc.lm` **self-hosts** — it compiles its own source
+to IR byte-identical to the seed's (`SELF: MATCH`, CI-gated by `seed/selfhost_diff.mjs`). The
+foundation is finished. The path there closed every diagnosed blocker in sequence: the
+`load32/store32/load8/store8` keystone (opcodes 53-56), the opcode-25-28 collision with
+`MKSUM/SUMTAG/SUMVAL/TEXTEQ`, the SRC-overflow and token/symbol/CODE capacity walls (the
+memory map was remapped to mirror the seed), the frame-model and literal-pool parity fixes, and
+lexer hang-proofing. What remains on THIS plan is the native fixpoint: compile `lumenc.lm`
+through the Lumen-written backends so the compiler runs natively and the seed retires. Full
+chronicle: `../SELFHOST_CAMPAIGN_LOG.md`.
 
 ## Why the IR makes this tractable
 The compiler already lowers all of Lumen-mu to a flat opcode stream the interpreter walks

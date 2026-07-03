@@ -646,6 +646,10 @@ fn lex(srclen: Int) -> Unit {
                           n = n + 1
                           i = i + 1
                         }
+                        if val == 0 {
+                          err_add(3, SRC() + i, 1)
+                          i = i + 1
+                        }
                       }
                     }
                   }

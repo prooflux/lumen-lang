@@ -13,6 +13,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual trigger: auto-merge.yml squash-merges with GITHUB_TOKEN, and bot-token pushes do
+  # NOT re-trigger workflows, so main's HEAD can end up with no gate run of its own (the last
+  # push-gate stays pinned to an older commit). workflow_dispatch lets us force a fresh run on
+  # main HEAD to reflect true status. Run: gh workflow run gate.yml --ref main
+  workflow_dispatch:
 
 concurrency:
   group: gate-${{ github.ref }}

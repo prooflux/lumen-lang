@@ -1,0 +1,42 @@
+name: gate
+
+# The single required check for Lumen. Runs the same correctness gates a developer runs
+# locally: the seed conformance/safety/loop suite and the native bit-identity gates
+# (optimizer, C emitter, per-function emitter, float/array/record). All are deterministic;
+# they fail only on a correctness regression, never on timing. The rate gate
+# (native_bench.mjs) is intentionally excluded here — it is a local Law-P perf check, not a
+# CI gate, because shared runners make wall-clock comparisons flaky. macos-latest is arm64
+# with Apple clang, matching the development machine so float bit-identity holds exactly.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: seed gates (conformance + safety + loop + cache)
+        working-directory: seed
+        run: |
+          npm install
+          npm test
+      - name: native gates (bit-identity vs the interpreter oracle)
+        working-directory: native
+        run: |
+          npm install
+          node optimize_diff.mjs
+          node native_diff.mjs
+          node native_fn_test.mjs
+          node native_float_test.mjs

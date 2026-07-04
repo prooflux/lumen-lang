@@ -1,0 +1,36 @@
+name: auto-merge
+
+# Hands-off squash-merge: when the gate workflow finishes SUCCESSFULLY for a pull request,
+# squash-merge that PR with no manual approval. A SEPARATE workflow triggered by
+# workflow_run, so it runs from the main copy with a write-capable GITHUB_TOKEN. Open a PR
+# as a DRAFT to opt OUT of auto-merge. (Same model as the monorepo it graduated from.)
+
+on:
+  workflow_run:
+    workflows: ["gate"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    if: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Squash-merge the green PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          pr=$(gh pr list --repo "$REPO" --head "$HEAD_BRANCH" --base main --state open \
+                 --json number,isDraft --jq '.[0] // empty')
+          if [ -z "$pr" ]; then echo "no open PR for branch '$HEAD_BRANCH'"; exit 0; fi
+          num=$(echo "$pr" | jq -r '.number')
+          draft=$(echo "$pr" | jq -r '.isDraft')
+          echo "PR #$num draft=$draft branch=$HEAD_BRANCH"
+          if [ "$draft" = "true" ]; then echo "draft -> opt out, skipping"; exit 0; fi
+          gh pr merge "$num" --repo "$REPO" --squash --delete-branch

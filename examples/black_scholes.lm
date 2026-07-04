@@ -1,0 +1,78 @@
+# Black-Scholes European call: an independent pricing oracle written in Lumen.
+#
+# Dogfood purpose: reproduce, from first principles and by a DIFFERENT algorithm, the
+# vanilla call price FE-API computes with an erf-exact normal CDF. FE-API prices the
+# canonical case S=100 K=100 r=0.05 sigma=0.2 T=1 at 10.450583572185565. This oracle
+# uses the Abramowitz & Stegun 26.2.17 rational approximation for the normal CDF
+# (|error| < 7.5e-8), so agreement is a genuine cross-check, not a copy. Lumen and
+# FE-API agree to 8e-6 (both round to 10.4506).
+#
+# It also shows Lumen-mu is already expressive enough to format a Float to a decimal
+# string in userland (float_to_text below) with no compiler change: an oracle must be
+# able to EMIT its number, and today it can.
+
+# Format a non-negative-or-negative Float to a fixed 6-decimal string, e.g. 10.450576.
+fn float_to_text(x: Float) -> Text {
+  var sign: Text = ""
+  var v: Float = x
+  if v < 0.0 {
+    sign = "-"
+    v = 0.0 - v
+  }
+  let ip: Int = to_int(v)
+  let frac: Float = v - to_float(ip)
+  var scaled: Int = round(frac * 1000000.0)
+  var ipart: Int = ip
+  if scaled >= 1000000 {
+    scaled = scaled - 1000000
+    ipart = ipart + 1
+  }
+  # count digits of the fractional part so we can left-pad with zeros to width 6
+  var digits: Int = 1
+  var probe: Int = scaled
+  while probe >= 10 {
+    probe = probe / 10
+    digits = digits + 1
+  }
+  var zeros: Text = ""
+  var need: Int = 6 - digits
+  while need > 0 {
+    zeros = text_concat(zeros, "0")
+    need = need - 1
+  }
+  return text_concat(sign, text_concat(int_to_text(ipart), text_concat(".", text_concat(zeros, int_to_text(scaled)))))
+}
+
+fn norm_pdf(x: Float) -> Float {
+  let inv_sqrt_2pi: Float = 0.3989422804014327
+  return inv_sqrt_2pi * exp(-0.5 * x * x)
+}
+
+fn norm_cdf(x: Float) -> Float {
+  # Abramowitz & Stegun 26.2.17, valid for x >= 0; reflect for x < 0.
+  var neg: Int = 0
+  var z: Float = x
+  if z < 0.0 {
+    neg = 1
+    z = 0.0 - z
+  }
+  let t: Float = 1.0 / (1.0 + 0.2316419 * z)
+  let poly: Float = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+  let cdf: Float = 1.0 - norm_pdf(z) * poly
+  if neg == 1 {
+    return 1.0 - cdf
+  }
+  return cdf
+}
+
+fn bs_call(S: Float, K: Float, r: Float, sigma: Float, T: Float) -> Float {
+  let sqrtT: Float = sqrt(T)
+  let d1: Float = (ln(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrtT)
+  let d2: Float = d1 - sigma * sqrtT
+  return S * norm_cdf(d1) - K * exp(-r * T) * norm_cdf(d2)
+}
+
+fn main(console: Console) -> Unit {
+  let price: Float = bs_call(100.0, 100.0, 0.05, 0.20, 1.0)
+  console.print(text_concat("bs_call=", text_concat(float_to_text(price), "\n")))
+}

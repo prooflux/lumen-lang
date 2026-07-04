@@ -3,9 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { compileToIR, optimizeIR, freshInstance, writeSrc } from './pipeline.mjs';
+import { compileToIR, optimizeIR, freshInstance, writeSrc, emitWith, EMIT_FN_BASE, EMIT_FN_CEIL } from './pipeline.mjs';
 
-const SCRATCH = 524288;
 const SRC_BASE = 100000;
 
 function printUsageAndExit() {
@@ -69,48 +68,10 @@ if (fast) {
   console.log("Warning: --fast option enabled. Bit-reproducibility vs the interpreter is voided.");
 }
 
-async function emitWith(emitterSrc, words, main, strings = []) {
-  const I = await freshInstance();
-  const len = writeSrc(I, emitterSrc);
-  I.ex.compile(len);
-  if (I.ex.dbg_nerr() > 0) throw new Error(`emitter compile: ${I.ex.dbg_nerr()} error(s)`);
-  const m32 = new Int32Array(I.ex.mem.buffer);
-  m32[SCRATCH / 4] = words.length;
-  m32[SCRATCH / 4 + 1] = main;
-  for (let i = 0; i < words.length; i++) m32[SCRATCH / 4 + 2 + i] = words[i];
-
-  // Inject the strings sidecar
-  const offset_words = 2 + words.length;
-  const dir_word_count = 3 * strings.length;
-  m32[SCRATCH / 4 + offset_words] = dir_word_count;
-
-  let current_byte_offset = SCRATCH + (offset_words + 1 + dir_word_count) * 4;
-
-  for (let i = 0; i < strings.length; i++) {
-    const s = strings[i];
-    const triple_idx = SCRATCH / 4 + offset_words + 1 + 3 * i;
-    m32[triple_idx] = s.ptr;
-    m32[triple_idx + 1] = s.len;
-    m32[triple_idx + 2] = current_byte_offset;
-
-    // Copy bytes to current_byte_offset
-    const m8 = new Uint8Array(I.ex.mem.buffer);
-    m8.set(s.bytes, current_byte_offset);
-
-    current_byte_offset += s.len;
-  }
-
-  if (current_byte_offset > 589824) {
-    throw new Error(`IR + sidecar exceed Page-9 capacity (size ${current_byte_offset - SCRATCH}B exceeds 65536B)`);
-  }
-
-  I.resetOut();
-  if (I.ex.set_fuel_max) I.ex.set_fuel_max(4000000000n);
-  I.ex.run(I.ex.dbg_main());
-  // emit_fn.lm emits the full C runtime header itself (cruntime-purity round);
-  // the emitter output is a complete translation unit - no JS-side prepends.
-  return I.getOut();
-}
+// emitWith is imported from pipeline.mjs (shared, parameterized by injection base). build.mjs
+// only emits via emit_fn.lm, whose IR reads from EMIT_FN_BASE (the 2MB high block above the
+// seed VM heap); see the fixpoint heap-collision fix. emit_fn emits a complete translation
+// unit (its own C runtime header) - no JS-side prepends.
 
 async function main() {
   let src;
@@ -185,7 +146,7 @@ async function main() {
   const EMIT_FN_SRC = fs.readFileSync(new URL('./emit_fn.lm', import.meta.url), 'utf8');
   let csrc;
   try {
-    csrc = await emitWith(EMIT_FN_SRC, words, irMain, strings);
+    csrc = await emitWith(EMIT_FN_SRC, words, irMain, strings, EMIT_FN_BASE, EMIT_FN_CEIL);
   } catch (e) {
     console.error(`Error during C emission: ${e.message}`);
     process.exit(1);

@@ -1,8 +1,14 @@
-fn hdr() -> Int { return 524288 }
+# Injected-IR + emit scratch live in a high block at 2MB, well ABOVE the seed VM's Text
+# heap (bump-allocated from 488000). emit_fn's `num` allocates a Text per number and never
+# frees it (no GC), so on a compiler-sized program the heap climbs past page 9 (524288); if
+# the IR were injected there (as it was) the heap's write pointer overtakes emit's read
+# pointer mid-emit and corrupts un-read IR (desync -> runaway). At 2MB the heap (max ~600KB
+# for lumenc.lm) never reaches it. pipeline.mjs injects the emit_fn IR at this same base.
+fn hdr() -> Int { return 2000000 }
 fn ir_len() -> Int { return load32(hdr()) }
 fn ir_main() -> Int { return load32(hdr() + 4) }
 fn ir_word(i: Int) -> Int { return load32(hdr() + 8 + i * 4) }
-fn arity_base() -> Int { return 560000 }
+fn arity_base() -> Int { return 2200000 }
 fn arity_of(e: Int) -> Int { return load32(arity_base() + e * 4) }
 
 fn dir_base() -> Int { return hdr() + 8 + ir_len() * 4 }
@@ -53,8 +59,8 @@ fn type_of_slot(func_pc: Int, slot: Int) -> Int {
 }
 
 fn num(c: Console, n: Int) -> Unit { c.print(int_to_text(n)) }
-fn get_sty(k: Int) -> Int { return load8(1000000 + k) }
-fn set_sty(k: Int, t: Int) -> Unit { store8(1000000 + k, t) }
+fn get_sty(k: Int) -> Int { return load8(2400000 + k) }
+fn set_sty(k: Int, t: Int) -> Unit { store8(2400000 + k, t) }
 
 fn slot_int(c: Console, k: Int) -> Unit {
   if k < 0 { c.print("s0") }
@@ -477,9 +483,9 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
 # Detects the fixed IR idiom `while idx<lim { aset(out, idx, f(aget(in, idx))) idx=idx+1 }` and, if f
 # is a straight-line Float function, emits a 2-wide NEON loop over f's ACTUAL body plus a scalar tail.
 # General: idx/lim/out/in/f are read from the IR; nothing is hardcoded, named, or benchmark-specific.
-# Loop state at [570000): 0=start(-1 none) 1=end 2=idx 3=lim 4=out 5=in 6=f_pc
-fn ls_get(i: Int) -> Int { return load32(570000 + i * 4) }
-fn ls_set(i: Int, v: Int) -> Unit { store32(570000 + i * 4, v) }
+# Loop state at [2300000): 0=start(-1 none) 1=end 2=idx 3=lim 4=out 5=in 6=f_pc
+fn ls_get(i: Int) -> Int { return load32(2300000 + i * 4) }
+fn ls_set(i: Int, v: Int) -> Unit { store32(2300000 + i * 4, v) }
 
 fn is_vec_fn(f_pc: Int) -> Int {
   var pc = f_pc + 2

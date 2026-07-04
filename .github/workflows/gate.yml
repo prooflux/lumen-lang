@@ -38,8 +38,10 @@ jobs:
           npm install
           node optimize_diff.mjs
           node native_diff.mjs
+          node rawmem_diff.mjs
           node native_fn_test.mjs
           node native_float_test.mjs
           node llvm_diff.mjs
           node standalone_diff.mjs
           node heapcap_test.mjs
+          node fixpoint_emit_test.mjs

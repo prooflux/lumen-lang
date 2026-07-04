@@ -17,6 +17,12 @@ import wabtInit from 'wabt';
 const SRC_BASE = 100000;
 const CODE_BASE = 11328;
 const SCRATCH = 524288;            // page 9: compile-time tables only; safe to inject into after compile
+// emit_fn.lm injects here instead of page 9: its per-number int_to_text allocations grow the
+// seed VM's Text heap (from 488000) well past page 9 on a compiler-sized program, so the IR
+// must sit above the heap's max reach. MUST equal emit_fn.lm hdr(); CEIL is arity_base() (the
+// next emit-scratch region), the ceiling the injected IR + string sidecar must not cross.
+export const EMIT_FN_BASE = 2000000;
+export const EMIT_FN_CEIL = 2200000;
 
 const wabt = await wabtInit();
 const wat = fs.readFileSync(new URL('../seed/lumenc.wat', import.meta.url), 'utf8');
@@ -101,26 +107,31 @@ export async function emitC(words, main) {
 
 // run a chosen emitter .lm (Lumen) over an injected IR snapshot -> emitted C source text
 // run a chosen emitter .lm (Lumen) over an injected IR snapshot -> emitted C source text
-async function emitWith(emitterSrc, words, main, strings = []) {
+// base/ceil select the injection region. emit.lm (v1) injects into page 9 (base=SCRATCH,
+// ceil=589824). emit_fn.lm injects into the 2MB high block (base=EMIT_FN_BASE) so the seed
+// VM's Text heap (bump-allocated from 488000 by emit_fn's per-number int_to_text, never
+// freed) cannot climb into the un-read IR mid-emit and desync the walk. Its hdr()/scratch
+// bases in emit_fn.lm MUST match EMIT_FN_BASE and the emit-scratch layout below.
+export async function emitWith(emitterSrc, words, main, strings = [], base = SCRATCH, ceil = 589824) {
   const I = await freshInstance();
   const len = writeSrc(I, emitterSrc);
   I.ex.compile(len);
   if (I.ex.dbg_nerr() > 0) throw new Error(`emitter compile: ${I.ex.dbg_nerr()} error(s)`);
   const m32 = new Int32Array(I.ex.mem.buffer);
-  m32[SCRATCH / 4] = words.length;
-  m32[SCRATCH / 4 + 1] = main;
-  for (let i = 0; i < words.length; i++) m32[SCRATCH / 4 + 2 + i] = words[i];
+  m32[base / 4] = words.length;
+  m32[base / 4 + 1] = main;
+  for (let i = 0; i < words.length; i++) m32[base / 4 + 2 + i] = words[i];
 
   // Inject the strings sidecar
   const offset_words = 2 + words.length;
   const dir_word_count = 3 * strings.length;
-  m32[SCRATCH / 4 + offset_words] = dir_word_count;
+  m32[base / 4 + offset_words] = dir_word_count;
 
-  let current_byte_offset = SCRATCH + (offset_words + 1 + dir_word_count) * 4;
+  let current_byte_offset = base + (offset_words + 1 + dir_word_count) * 4;
 
   for (let i = 0; i < strings.length; i++) {
     const s = strings[i];
-    const triple_idx = SCRATCH / 4 + offset_words + 1 + 3 * i;
+    const triple_idx = base / 4 + offset_words + 1 + 3 * i;
     m32[triple_idx] = s.ptr;
     m32[triple_idx + 1] = s.len;
     m32[triple_idx + 2] = current_byte_offset;
@@ -132,8 +143,8 @@ async function emitWith(emitterSrc, words, main, strings = []) {
     current_byte_offset += s.len;
   }
 
-  if (current_byte_offset > 589824) {
-    throw new Error(`IR + sidecar exceed Page-9 capacity (size ${current_byte_offset - SCRATCH}B exceeds 65536B)`);
+  if (current_byte_offset > ceil) {
+    throw new Error(`IR + sidecar exceed injection capacity (size ${current_byte_offset - base}B, ceil ${ceil})`);
   }
 
   I.resetOut();
@@ -175,7 +186,7 @@ export async function buildAndRunFn(src, opt = '-O2') {
     return s;
   });
 
-  let csrc = await emitWith(EMIT_FN_SRC, words, main, strings);
+  let csrc = await emitWith(EMIT_FN_SRC, words, main, strings, EMIT_FN_BASE, EMIT_FN_CEIL);
   
   // All CDF optimization and vectorization are performed directly by the Lumen compiler (emit_fn.lm).
 

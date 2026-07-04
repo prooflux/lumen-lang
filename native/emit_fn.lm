@@ -127,6 +127,7 @@ fn oplen_d_change(op: Int, pc: Int, d: Int) -> Int {
   if op == 12 { res = d - 1 }
   if op == 5 { res = d - 1 }
   if op == 19 { res = d - 1 }
+  if op == 20 { res = d - 1 }
   if op == 21 { res = d - 1 }
   if op == 22 { res = d - 1 }
   if op == 23 { res = d - 1 }
@@ -172,6 +173,10 @@ fn oplen_d_change(op: Int, pc: Int, d: Int) -> Int {
   if op == 50 { res = d - 1 }
   if op == 51 { res = d - 3 }
   if op == 52 { res = d }
+  if op == 53 { res = d }
+  if op == 54 { res = d - 2 }
+  if op == 55 { res = d }
+  if op == 56 { res = d - 2 }
   if res < 0 { return 0 }
   return res
 }
@@ -297,6 +302,7 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
   }
   if op == 5 { cmp(c, d, "<") return d - 1 }
   if op == 19 { cmp(c, d, "==") return d - 1 }
+  if op == 20 { cmp(c, d, "!=") return d - 1 }
   if op == 21 { cmp(c, d, "<=") return d - 1 }
   if op == 22 { cmp(c, d, ">=") return d - 1 }
   if op == 23 { cmp(c, d, ">") return d - 1 }
@@ -444,6 +450,24 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
     slot_int(c, d - 1) c.print("=lm_alen(") sl_int(c, d - 1) c.print(");\n")
     set_sty(d - 1, 0)
     return d
+  }
+  if op == 53 {
+    slot_int(c, d - 1) c.print("=(int64_t)(*(int32_t*)(LMEM+(uint64_t)") sl_int(c, d - 1) c.print("));\n")
+    set_sty(d - 1, 0)
+    return d
+  }
+  if op == 54 {
+    c.print("*(int32_t*)(LMEM+(uint64_t)") sl_int(c, d - 2) c.print(")=(int32_t)") sl_int(c, d - 1) c.print(";\n")
+    return d - 2
+  }
+  if op == 55 {
+    slot_int(c, d - 1) c.print("=(int64_t)(*(uint8_t*)(LMEM+(uint64_t)") sl_int(c, d - 1) c.print("));\n")
+    set_sty(d - 1, 0)
+    return d
+  }
+  if op == 56 {
+    c.print("*(uint8_t*)(LMEM+(uint64_t)") sl_int(c, d - 2) c.print(")=(uint8_t)") sl_int(c, d - 1) c.print(";\n")
+    return d - 2
   }
   c.print("\n#error unsupported ") num(c, op) c.print("\n")
   return d
@@ -650,7 +674,9 @@ static inline float64x2_t neon_exp(float64x2_t x){
 }
 #define AHEAP_CAP 9072
 #define LM_CAP_BYTES 36288
+#define LMEM_CAP 1048576
 static int64_t AHEAP[AHEAP_CAP];
+static unsigned char LMEM[LMEM_CAP];
 static int64_t AHP=0;
 static int64_t LM_HP=0;
 static int64_t lm_anew(int64_t n){if(n<0)n=0; if(LM_HP+4+8*n>LM_CAP_BYTES||AHP+1+n>AHEAP_CAP){fflush(stdout); exit(0);} LM_HP+=4+8*n; int64_t h=AHP; AHEAP[h]=n; for(int64_t i=0;i<n;i++)AHEAP[h+1+i]=0; AHP=AHP+1+n; return h;}

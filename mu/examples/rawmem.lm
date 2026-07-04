@@ -1,0 +1,15 @@
+# Lumen-mu (native fixpoint corpus). Expected stdout: "7\n65\n-6789\n1\n0\n".
+# Exercises the raw-memory keystone (store32/load32/store8/load8, ops 53-56) and integer
+# NE (op 20) - the 5 opcodes emit_fn.lm's C backend was missing before this gate. Addresses
+# 524288/524300 mirror seed/native/test_load32.lm's own round-trip values; 524292 adds a
+# second store32 (negative, to cover sign-extension) plus a true and a false != branch.
+fn main(c: Console) -> Unit {
+  store32(524288, 7)
+  c.print_int(load32(524288))
+  store8(524300, 65)
+  c.print_int(load8(524300))
+  store32(524292, 0 - 6789)
+  c.print_int(load32(524292))
+  if load32(524288) != load32(524292) { c.print_int(1) } else { c.print_int(0) }
+  if load32(524288) != load32(524288) { c.print_int(1) } else { c.print_int(0) }
+}

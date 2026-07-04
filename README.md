@@ -1,6 +1,6 @@
 # Lumen
 
-[![gate](https://github.com/prooflux/lumen-lang/actions/workflows/gate.yml/badge.svg)](https://github.com/prooflux/lumen-lang/actions/workflows/gate.yml)
+[![gate](https://github.com/lumen-source/lumen/actions/workflows/gate.yml/badge.svg)](https://github.com/lumen-source/lumen/actions/workflows/gate.yml)
 
 
 An AI-native programming language: authored by LLM agents, gated by executable oracles.

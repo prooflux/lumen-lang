@@ -1,0 +1,58 @@
+# Newton-Raphson implied volatility - a certified numeric kernel in Lumen.
+#
+# Inverts Black-Scholes: given a call price, find the volatility that reproduces it.
+# A tight iterative kernel (price + vega + Newton step) - the kind of small, hot,
+# provable routine Lumen targets: native-compiled, no runtime, embarrassingly parallel.
+#
+# Given the ATM call priced at 10.4506 (S=K=100, r=5%, T=1), recover sigma = 0.20.
+# Output is sigma scaled x10000 (2000 = 0.2000).
+#
+# Run:  node ../../seed/lumen.mjs run implied_vol.lm
+
+fn norm_cdf(x: Float) -> Float {
+  let ax = abs(x)
+  let t = 1.0 / (1.0 + 0.2316419 * ax)
+  let poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+  let pdf = exp(-(ax * ax) / 2.0) / sqrt(2.0 * 3.14159265358979)
+  let upper = 1.0 - pdf * poly
+  if x < 0.0 {
+    return 1.0 - upper
+  }
+  return upper
+}
+
+fn norm_pdf(x: Float) -> Float {
+  return exp(-(x * x) / 2.0) / sqrt(2.0 * 3.14159265358979)
+}
+
+fn bs_call(s: Float, k: Float, r: Float, t: Float, vol: Float) -> Float {
+  let sqt = vol * sqrt(t)
+  let d1 = (ln(s / k) + (r + 0.5 * vol * vol) * t) / sqt
+  let d2 = d1 - sqt
+  return s * norm_cdf(d1) - k * exp(-(r * t)) * norm_cdf(d2)
+}
+
+fn bs_vega(s: Float, k: Float, r: Float, t: Float, vol: Float) -> Float {
+  let d1 = (ln(s / k) + (r + 0.5 * vol * vol) * t) / (vol * sqrt(t))
+  return s * norm_pdf(d1) * sqrt(t)
+}
+
+fn implied_vol(price: Float, s: Float, k: Float, r: Float, t: Float) -> Float {
+  var vol = 0.5
+  var i = 0
+  while i < 50 {
+    let diff = bs_call(s, k, r, t, vol) - price
+    let v = bs_vega(s, k, r, t, vol)
+    vol = vol - diff / v
+    i = i + 1
+  }
+  return vol
+}
+
+fn main(console: Console) -> Unit {
+  console.print_int(round(implied_vol(10.4506, 100.0, 100.0, 0.05, 1.0) * 10000.0))   # 2000
+  console.print("\n")
+  console.print_int(round(implied_vol(6.0401, 100.0, 110.0, 0.05, 1.0) * 10000.0))    # 2000
+  console.print("\n")
+  return ()
+}

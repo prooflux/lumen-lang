@@ -6,7 +6,9 @@
 // the toolchain self-contained on top of the existing `wabt` bootstrap assembler.
 //
 // Tools: lumen_check, lumen_fix, lumen_run, lumen_ir, lumen_explain, lumen_batch, lumen_profile,
-// lumen_symbols.
+// lumen_symbols, and the full-compiler-access set lumen_tokens, lumen_types, lumen_optimize,
+// lumen_emit_c, lumen_emit_llvm (every artifact the compiler produces, exposed to agents; the
+// work is done by the Lumen/WAT compiler and the Lumen emit/optimize programs, host marshals).
 //
 // Daemon proxy: when the warm `lumend` daemon (lumend.mjs) is listening on its Unix socket,
 // lumen_check/lumen_run/lumen_ir/lumen_batch are served through it instead of the in-process
@@ -25,6 +27,7 @@ import wabtInit from 'wabt';
 import { createCompiler, SRC_BASE } from './compiler_core.mjs';
 import { buildDiagnostics, applyFixes, fixableCount, explain } from './diagnostics.mjs';
 import { cacheKey, CACHE_DIR_PATH } from './cache.mjs';
+import { compileToIR, optimizeIR, emitC, emitLlvm } from '../native/pipeline.mjs';
 
 const lumen = await createCompiler();
 
@@ -311,6 +314,94 @@ function symbolsFromSource(src) {
   return result;
 }
 
+// --- full-compiler-access tools (Tier 1: everything the compiler KNOWS about a program) ---
+// Each returns structured data produced by the Lumen/WAT compiler itself; the host only
+// marshals it to JSON (no compiler logic is reimplemented here). optimize/emit run the Lumen
+// programs optimize.lm / emit_fn.lm / emit_llvm.lm on the seed.
+
+// The lexer's token stream, straight from the TOKENS region [296000,...) the compiler filled.
+function tokensFromSource(src) {
+  const cached = cacheRead('tokens', src);
+  if (cached) return cached;
+  const c = lumen.compile(src);
+  if (!c.ok) { const r = { ok: false, tokens: [], diagnostics: buildDiagnostics(c.rawDiags, src) }; cacheWrite('tokens', src, r); return r; }
+  const ex = lumen.exports;
+  const memB = new DataView(ex.mem.buffer);
+  const u8B = new Uint8Array(ex.mem.buffer);
+  const n = ex.dbg_ntok ? ex.dbg_ntok() : 0;
+  const tokens = [];
+  for (let i = 0; i < n; i++) {
+    const base = 296000 + i * 12;                 // (kind:i32, a:i32, b:i32), per the seed's tokset
+    const kind = memB.getInt32(base, true);
+    const a = memB.getInt32(base + 4, true);
+    const b = memB.getInt32(base + 8, true);
+    const t = { i, kind, a, b };
+    if (a >= 100000 && a < 150000 && b > 0) t.lexeme = Buffer.from(u8B.slice(a, a + b)).toString('utf8');
+    tokens.push(t);
+  }
+  const result = { ok: true, count: n, tokens };
+  cacheWrite('tokens', src, result);
+  return result;
+}
+
+// Per-function type information from the TYPEMAP records (op 57) the compiler emits into the IR:
+// [57, ntot, rettype, slot_0..slot_{ntot-1}]. The seed's type_code maps Float->1, everything
+// else (Int/Text/Unit/sum/record ptr)->0, so this reports Float-vs-scalar exactly as the
+// compiler tracks it. TYPEMAPs are matched to functions in emission (entry) order.
+async function typesFromSource(src) {
+  const cached = cacheRead('types', src);
+  if (cached) return cached;
+  const c = lumen.compile(src);
+  if (!c.ok) { const r = { ok: false, functions: [], diagnostics: buildDiagnostics(c.rawDiags, src) }; cacheWrite('types', src, r); return r; }
+  const { words } = await compileToIR(src);
+  const label = (code) => (code === 1 ? 'Float' : 'scalar');
+  const typemaps = [];
+  let pc = 0;
+  while (pc < words.length) {          // authoritative opcode walk (mirrors compileToIR) so an
+    const op = words[pc];              // operand word equal to 57 is never mistaken for a TYPEMAP
+    if (op === 57) {
+      const ntot = words[pc + 1];
+      typemaps.push({ rettype: label(words[pc + 2]), slots: Array.from({ length: ntot }, (_, k) => label(words[pc + 3 + k])) });
+      pc += 3 + ntot;
+    } else if (op === 1 || op === 2 || op === 6 || op === 7 || op === 13 || op === 14 || op === 15 || op === 25) {
+      pc += 2;
+    } else if (op === 8 || op === 29) {
+      pc += 3;
+    } else { pc += 1; }
+  }
+  const symsRes = symbolsFromSource(src);
+  const names = (symsRes.symbols || []).map((s) => s.name);
+  const functions = typemaps.map((tm, i) => ({ name: names[i] || `fn#${i}`, rettype: tm.rettype, slots: tm.slots }));
+  const result = { ok: true, functions };
+  cacheWrite('types', src, result);
+  return result;
+}
+
+// The Lumen optimizer (optimize.lm) run on the program's IR: pass stats + size delta.
+async function optimizeFromSource(src) {
+  const c = lumen.compile(src);
+  if (!c.ok) return { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
+  const { words, main } = await compileToIR(src);
+  const o = await optimizeIR(words, main);
+  return { ok: true, wordsBefore: words.length, wordsAfter: o.words.length,
+    wordsRemoved: words.length - o.words.length, threaded: o.threaded || 0, folded: o.folded || 0, changed: o.changed || 0 };
+}
+
+// The native C the Lumen C-emitter (emit_fn.lm) produces for this program.
+async function emitCFromSource(src) {
+  const c = lumen.compile(src);
+  if (!c.ok) return { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
+  const { words, main } = await compileToIR(src);
+  return { ok: true, c: await emitC(words, main) };
+}
+
+// The LLVM IR the Lumen LLVM-emitter (emit_llvm.lm) produces for this program.
+async function emitLlvmFromSource(src) {
+  const c = lumen.compile(src);
+  if (!c.ok) return { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
+  return { ok: true, llvm: await emitLlvm(src) };
+}
+
 const TOOLS = [
   { name: 'lumen_check', description: 'Compile Lumen source and return structured diagnostics (the canonical Diagnostic stream). Empty diagnostics means it compiles.',
     inputSchema: { type: 'object', properties: { source: { type: 'string', description: 'Lumen (.lm) source' } }, required: ['source'] } },
@@ -327,6 +418,16 @@ const TOOLS = [
   { name: 'lumen_profile', description: 'Compile and run Lumen source with exact, reproducible cost accounting: total interpreter steps and per-function call counts (sorted by calls desc). Returns diagnostics if it does not compile. Pass report:true to also render a human-readable top-10-by-calls report, generated by profile_report.lm (a Lumen program, not a JS formatter).',
     inputSchema: { type: 'object', properties: { source: { type: 'string' }, report: { type: 'boolean', description: 'also return a `report` field: a rendered top-10-by-calls text report produced by running profile_report.lm' } }, required: ['source'] } },
   { name: 'lumen_symbols', description: 'Outline a Lumen source\'s top-level functions for agent navigation: name, symbol-table entry address, source line, and the declaring line\'s text.',
+    inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
+  { name: 'lumen_tokens', description: 'The lexer\'s full token stream for a Lumen source: per token its numeric kind, the two payload words (a, b), and the source lexeme where applicable. Read straight from the compiler\'s TOKENS region.',
+    inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
+  { name: 'lumen_types', description: 'Per-function type information the compiler tracks: return type and per-frame-slot types, from the TYPEMAP records it emits. Reports Float vs scalar exactly as the compiler distinguishes them.',
+    inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
+  { name: 'lumen_optimize', description: 'Run the Lumen optimizer (optimize.lm: jump-threading, constant-folding, dead-code elimination) on the program\'s IR and report the pass stats and size delta (words before/after, threaded, folded).',
+    inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
+  { name: 'lumen_emit_c', description: 'The native C source the Lumen C-emitter (emit_fn.lm) produces for this program. The emitter is itself a Lumen program run on the seed.',
+    inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
+  { name: 'lumen_emit_llvm', description: 'The LLVM IR the Lumen LLVM-emitter (emit_llvm.lm) produces for this program. The emitter is itself a Lumen program run on the seed.',
     inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
 ];
 
@@ -353,6 +454,11 @@ async function callTool(name, args) {
   if (name === 'lumen_batch') return await batchCheck((args && args.sources) || []);
   if (name === 'lumen_profile') return await profileSource(src, { report: !!(args && args.report) });
   if (name === 'lumen_symbols') return symbolsFromSource(src);
+  if (name === 'lumen_tokens') return tokensFromSource(src);
+  if (name === 'lumen_types') return await typesFromSource(src);
+  if (name === 'lumen_optimize') return await optimizeFromSource(src);
+  if (name === 'lumen_emit_c') return await emitCFromSource(src);
+  if (name === 'lumen_emit_llvm') return await emitLlvmFromSource(src);
   throw new Error(`unknown tool ${name}`);
 }
 

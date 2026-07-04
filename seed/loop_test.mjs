@@ -67,6 +67,31 @@ function check(name, cond, extra = '') { total++; if (cond) { pass++; console.lo
   check('mcp: lumen_symbols includes main with a plausible line + signature', sym1Out.symbols.some(s => s.name === 'main' && s.line > 0 && s.signature.includes('fn main(')), JSON.stringify(sym1Out.symbols));
   check('mcp: lumen_symbols line numbers match the actual source text', sym1Out.symbols.every(s => s.line === -1 || mutualSrc.split('\n')[s.line - 1] === s.signature), JSON.stringify(sym1Out.symbols));
   check('mcp: lumen_symbols is deterministic across calls', JSON.stringify(sym1Out) === JSON.stringify(sym2Out), `${JSON.stringify(sym1Out)} vs ${JSON.stringify(sym2Out)}`);
+
+  // ---- full-compiler-access tools (tokens, types, optimize, emit_c, emit_llvm) ----
+  const call = async (id, name, source) => JSON.parse((await dispatch({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: { source } } })).result.content[0].text);
+  const floatSrc = 'fn sq(x: Float) -> Float { return x * x }\nfn main(c: Console) -> Unit {\n  c.print_int(to_int(sq(4.0)))\n  return ()\n}\n';
+
+  const tok = await call(20, 'lumen_tokens', floatSrc);
+  check('mcp: lumen_tokens returns the token stream with lexemes', tok.ok && tok.count > 0 && tok.tokens.some(t => t.lexeme === 'sq'), JSON.stringify(tok.tokens && tok.tokens.slice(0, 6)));
+  check('mcp: lumen_tokens is deterministic', JSON.stringify(tok) === JSON.stringify(await call(21, 'lumen_tokens', floatSrc)));
+
+  const typ = await call(22, 'lumen_types', floatSrc);
+  const sqFn = typ.functions && typ.functions.find(f => f.name === 'sq');
+  check('mcp: lumen_types reports sq as Float-returning with a Float slot', typ.ok && !!sqFn && sqFn.rettype === 'Float' && sqFn.slots.includes('Float'), JSON.stringify(typ.functions));
+
+  const opt = await call(23, 'lumen_optimize', 'fn main(c: Console) -> Unit {\n  c.print_int(2 + 3)\n  return ()\n}\n');
+  check('mcp: lumen_optimize folds a constant and never grows the IR', opt.ok && opt.wordsAfter <= opt.wordsBefore && opt.folded >= 1, JSON.stringify(opt));
+
+  const ec = await call(24, 'lumen_emit_c', floatSrc);
+  check('mcp: lumen_emit_c produces C with a main()', ec.ok && /int main/.test(ec.c), (ec.c || '').slice(0, 60));
+
+  const el = await call(25, 'lumen_emit_llvm', floatSrc);
+  check('mcp: lumen_emit_llvm produces LLVM IR with a define', el.ok && /define/.test(el.llvm), (el.llvm || '').slice(0, 60));
+
+  const listAll = await dispatch({ jsonrpc: '2.0', id: 26, method: 'tools/list', params: {} });
+  const allNames = listAll.result.tools.map(t => t.name);
+  check('mcp: tools/list exposes the full-access tools', ['lumen_tokens', 'lumen_types', 'lumen_optimize', 'lumen_emit_c', 'lumen_emit_llvm'].every(n => allNames.includes(n)), allNames.join(','));
 }
 
 // ---- 3. warm daemon: span-edit -> diagnostic latency ----

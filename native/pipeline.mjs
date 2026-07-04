@@ -318,6 +318,13 @@ async function emitLlvmWith(emitterSrc, words, main, strings = []) {
   return I.getOut();
 }
 
+// emit LLVM IR text for a source (compile -> optimize-free IR -> emit_llvm.lm). Read-only:
+// the same Lumen emitter buildAndRunLlvm uses, but returns the .ll text instead of building.
+export async function emitLlvm(src) {
+  const ir = await compileToIR(src);
+  return await emitLlvmWith(EMIT_LLVM_SRC, ir.words, ir.main, ir.strings);
+}
+
 export async function buildAndRunLlvm(src, opt = '-O3') {
   const ir = await compileToIR(src);
   const { words, main } = await optimizeIR(ir.words, ir.main);

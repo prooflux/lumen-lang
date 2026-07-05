@@ -1,0 +1,72 @@
+# HTTP/1.1 request-line parser, written in pure Lumen over a raw-memory byte buffer.
+#
+# This is the first brick of Lumen-native web traffic. The protocol logic lives in the
+# LANGUAGE (deterministic functions over bytes); the actual socket I/O is a separate host
+# capability seam, kept off the compiler's hot path, so adding HTTP does not touch the
+# compiler and cannot slow the language down. Here the host seam (the test harness, later a
+# real socket) writes the raw request bytes to REQ_BASE and the byte count to REQ_LEN_ADDR;
+# this program reads them and emits the parsed request line.
+#
+# It uses ONLY load8 + arithmetic - no new builtin, no compiler feature - so it is
+# perf-neutral by construction (perf.mjs still gates it every cycle).
+#
+# Emits four ints, one per line: method_code  path_offset  path_len  http_version
+#   method_code: GET=1 POST=2 PUT=3 DELETE=4 HEAD=5 PATCH=6 OPTIONS=7 unknown=0
+#   http_version: major*10 + minor  (HTTP/1.1 -> 11, HTTP/1.0 -> 10)
+
+fn req_base() -> Int { return 600000 }
+fn req_len_addr() -> Int { return 599996 }
+fn rlen() -> Int { return load32(req_len_addr()) }
+fn b(i: Int) -> Int { return load8(req_base() + i) }
+
+# Scan forward from `start` for byte `target`; return its index, or rlen() if absent.
+fn scan(start: Int, target: Int) -> Int {
+  var i = start
+  while i < rlen() {
+    if b(i) == target { return i }
+    i = i + 1
+  }
+  return rlen()
+}
+
+# Classify the method from its byte span [0, mlen) with exact ASCII compares.
+fn method_code(mlen: Int) -> Int {
+  if mlen == 3 {
+    if b(0) == 71 and b(1) == 69 and b(2) == 84 { return 1 }              # GET
+    if b(0) == 80 and b(1) == 85 and b(2) == 84 { return 3 }              # PUT
+    return 0
+  }
+  if mlen == 4 {
+    if b(0) == 80 and b(1) == 79 and b(2) == 83 and b(3) == 84 { return 2 }   # POST
+    if b(0) == 72 and b(1) == 69 and b(2) == 65 and b(3) == 68 { return 5 }   # HEAD
+    return 0
+  }
+  if mlen == 5 {
+    if b(0) == 80 and b(1) == 65 and b(2) == 84 and b(3) == 67 and b(4) == 72 { return 6 }   # PATCH
+    return 0
+  }
+  if mlen == 6 {
+    if b(0) == 68 and b(1) == 69 and b(2) == 76 and b(3) == 69 and b(4) == 84 and b(5) == 69 { return 4 }   # DELETE
+    return 0
+  }
+  if mlen == 7 {
+    if b(0) == 79 and b(1) == 80 and b(2) == 84 and b(3) == 73 and b(4) == 79 and b(5) == 78 and b(6) == 83 { return 7 }   # OPTIONS
+    return 0
+  }
+  return 0
+}
+
+fn main(c: Console) -> Unit {
+  let sp1 = scan(0, 32)                 # first space: end of method
+  let path_off = sp1 + 1
+  let sp2 = scan(path_off, 32)          # second space: end of path
+  let path_len = sp2 - path_off
+  let v = sp2 + 1                        # start of "HTTP/x.y"
+  let major = b(v + 5) - 48
+  let minor = b(v + 7) - 48
+  c.print_int(method_code(sp1))
+  c.print_int(path_off)
+  c.print_int(path_len)
+  c.print_int(major * 10 + minor)
+  return ()
+}

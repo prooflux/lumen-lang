@@ -20,6 +20,7 @@ const cases = [
   ['../mu/examples/fizzbuzz.lm', '1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz\n'],
   ['../mu/examples/count.lm', '1\n2\n3\n4\n5\n'],
   ['../mu/examples/sum_loop.lm', '55\n'],
+  ['../mu/examples/bitwise.lm', '8\n14\n6\n16\n16\n-1\n'],
   ['../mu/examples/safe_div.lm', 'ok 4\ndiv by zero\n'],
   ['../mu/examples/propagate.lm', '9\n'],
   ['native/test_load32.lm', '7\n65\n'],   // raw-memory keystone: store32/load32 + store8/load8 round-trip

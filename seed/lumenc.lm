@@ -296,6 +296,52 @@ fn is_kw_store32(i: Int) -> Int {
   return is_str_store32(ta(i), tb(i))
 }
 
+fn is_str_band(off: Int, len: Int) -> Int {
+  if len != 4 { return 0 }
+  if load8(off + 0) != 98 { return 0 }
+  if load8(off + 1) != 97 { return 0 }
+  if load8(off + 2) != 110 { return 0 }
+  if load8(off + 3) != 100 { return 0 }
+  return 1
+}
+fn is_str_bor(off: Int, len: Int) -> Int {
+  if len != 3 { return 0 }
+  if load8(off + 0) != 98 { return 0 }
+  if load8(off + 1) != 111 { return 0 }
+  if load8(off + 2) != 114 { return 0 }
+  return 1
+}
+fn is_str_bxor(off: Int, len: Int) -> Int {
+  if len != 4 { return 0 }
+  if load8(off + 0) != 98 { return 0 }
+  if load8(off + 1) != 120 { return 0 }
+  if load8(off + 2) != 111 { return 0 }
+  if load8(off + 3) != 114 { return 0 }
+  return 1
+}
+fn is_str_shl(off: Int, len: Int) -> Int {
+  if len != 3 { return 0 }
+  if load8(off + 0) != 115 { return 0 }
+  if load8(off + 1) != 104 { return 0 }
+  if load8(off + 2) != 108 { return 0 }
+  return 1
+}
+fn is_str_shr(off: Int, len: Int) -> Int {
+  if len != 3 { return 0 }
+  if load8(off + 0) != 115 { return 0 }
+  if load8(off + 1) != 104 { return 0 }
+  if load8(off + 2) != 114 { return 0 }
+  return 1
+}
+fn is_str_bnot(off: Int, len: Int) -> Int {
+  if len != 4 { return 0 }
+  if load8(off + 0) != 98 { return 0 }
+  if load8(off + 1) != 110 { return 0 }
+  if load8(off + 2) != 111 { return 0 }
+  if load8(off + 3) != 116 { return 0 }
+  return 1
+}
+
 fn kw_is(i: Int, p: Int, plen: Int) -> Int {
   if tk(i) != 1 { return 0 }
   return eqlit(ta(i), tb(i), p, plen)
@@ -758,7 +804,13 @@ fn c_primary() -> Unit {
       if is_str_store8(off, length) == 1 { emitw(56)  set_expr_pushes(0)  return () }
       if is_str_load32(off, length) == 1 { emitw(53)  return () }
       if is_str_store32(off, length) == 1 { emitw(54)  set_expr_pushes(0)  return () }
-      
+      if is_str_band(off, length) == 1 { emitw(58)  return () }
+      if is_str_bor(off, length) == 1 { emitw(59)  return () }
+      if is_str_bxor(off, length) == 1 { emitw(60)  return () }
+      if is_str_shl(off, length) == 1 { emitw(61)  return () }
+      if is_str_shr(off, length) == 1 { emitw(62)  return () }
+      if is_str_bnot(off, length) == 1 { emitw(63)  return () }
+
       emitw(8)
       fixup_add(get_emit(), off, length)
       emitw(0)

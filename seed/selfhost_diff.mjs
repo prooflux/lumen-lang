@@ -22,6 +22,7 @@ const CONFORMANCE_LIST = [
   '../mu/examples/fizzbuzz.lm',
   '../mu/examples/count.lm',
   '../mu/examples/sum_loop.lm',
+  '../mu/examples/bitwise.lm',
   '../mu/examples/safe_div.lm',
   '../mu/examples/propagate.lm',
 ];
@@ -44,6 +45,7 @@ const EXPECTED_MATCH = [
   '../mu/examples/fizzbuzz.lm',
   '../mu/examples/count.lm',
   '../mu/examples/sum_loop.lm',
+  '../mu/examples/bitwise.lm',
 ];
 
 async function main() {

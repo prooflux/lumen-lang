@@ -1,0 +1,10 @@
+# Bitwise builtins, exercised end to end. Compiles+runs on the seed AND (self-hosted) on
+# lumenc.lm, bit-identically. Expected stdout: "8\n14\n6\n16\n16\n-1\n".
+fn main(c: Console) -> Unit {
+  c.print_int(band(12, 10))   # 1100 & 1010 = 1000 = 8
+  c.print_int(bor(12, 10))    # 1110 = 14
+  c.print_int(bxor(12, 10))   # 0110 = 6
+  c.print_int(shl(1, 4))      # 16
+  c.print_int(shr(256, 4))    # 16
+  c.print_int(bnot(0))        # all ones = -1
+}

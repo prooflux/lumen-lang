@@ -1,0 +1,111 @@
+# HTTP/1.1 header parser, written in pure Lumen over a raw-memory byte buffer.
+#
+# The host seam (test harness, later a real socket) writes the raw request bytes to
+# REQ_BASE and the byte count to REQ_LEN_ADDR; this program skips the request line,
+# then scans header lines up to the terminating empty line (CRLFCRLF), counting the
+# non-empty header lines and pulling out Content-Length (case-insensitive name match).
+#
+# Uses ONLY load8 + arithmetic - no new builtin, no compiler feature.
+#
+# Emits two ints, one per line: header_count  content_length (-1 if absent)
+
+fn req_base() -> Int { return 600000 }
+fn req_len_addr() -> Int { return 599996 }
+fn rlen() -> Int { return load32(req_len_addr()) }
+fn b(i: Int) -> Int { return load8(req_base() + i) }
+
+fn lower(ch: Int) -> Int {
+  if ch >= 65 and ch <= 90 { return ch + 32 }
+  return ch
+}
+
+# Scan forward from `start` for CRLF (13 then 10); return index of the 13, or rlen() if absent.
+fn scan_crlf(start: Int) -> Int {
+  var i = start
+  while i < rlen() {
+    if b(i) == 13 and i + 1 < rlen() and b(i + 1) == 10 { return i }
+    i = i + 1
+  }
+  return rlen()
+}
+
+# "content-length" as fixed ASCII codes, compared case-insensitively byte by byte.
+fn cl_byte(i: Int) -> Int {
+  if i == 0 { return 99 }   # c
+  if i == 1 { return 111 }  # o
+  if i == 2 { return 110 }  # n
+  if i == 3 { return 116 }  # t
+  if i == 4 { return 101 }  # e
+  if i == 5 { return 110 }  # n
+  if i == 6 { return 116 }  # t
+  if i == 7 { return 45 }   # -
+  if i == 8 { return 108 }  # l
+  if i == 9 { return 101 }  # e
+  if i == 10 { return 110 } # n
+  if i == 11 { return 103 } # g
+  if i == 12 { return 116 } # t
+  return 104                # h (i == 13)
+}
+
+# Check whether the header name in [start, end) matches "content-length" case-insensitively.
+# Returns 1 for match, 0 otherwise.
+fn is_content_length(start: Int, end: Int) -> Int {
+  let tlen = 14
+  if end - start != tlen { return 0 }
+  var i = 0
+  while i < tlen {
+    if lower(b(start + i)) != cl_byte(i) { return 0 }
+    i = i + 1
+  }
+  return 1
+}
+
+fn find_colon(start: Int, end: Int) -> Int {
+  var i = start
+  while i < end {
+    if b(i) == 58 { return i }
+    i = i + 1
+  }
+  return end
+}
+
+fn parse_value(start: Int, end: Int) -> Int {
+  var v = start
+  while v < end and b(v) == 32 {
+    v = v + 1
+  }
+  var val = 0
+  while v < end and b(v) >= 48 and b(v) <= 57 {
+    val = val * 10 + (b(v) - 48)
+    v = v + 1
+  }
+  return val
+}
+
+fn main(c: Console) -> Unit {
+  # Skip the request line.
+  let req_line_end = scan_crlf(0)
+  var pos = req_line_end + 2
+
+  var count = 0
+  var content_length = -1
+  var done = 0
+
+  while done == 0 {
+    let line_end = scan_crlf(pos)
+    if line_end == pos {
+      done = 1
+    } else {
+      count = count + 1
+      let colon = find_colon(pos, line_end)
+      if is_content_length(pos, colon) == 1 {
+        content_length = parse_value(colon + 1, line_end)
+      }
+      pos = line_end + 2
+    }
+  }
+
+  c.print_int(count)
+  c.print_int(content_length)
+  return ()
+}

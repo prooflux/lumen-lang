@@ -1,0 +1,62 @@
+# HTTP/1.1 "Transfer-Encoding: chunked" body decoder, written in pure Lumen over a raw-memory
+# byte buffer.
+#
+# The host seam (the test harness, later a real socket) writes the raw chunked-encoded body
+# bytes to IN_BASE and the byte count to IN_LEN_ADDR; this program decodes the chunk framing
+# and emits the concatenated data bytes to OUT_BASE, storing the decoded length at
+# OUT_LEN_ADDR.
+#
+# Chunk format (repeats until a zero-size chunk terminates it):
+#   <hex-size> CR LF <data bytes> CR LF
+#   0 CR LF CR LF                          (terminator, no trailing data)
+#
+# Uses ONLY load8/store8/load32/store32 + arithmetic - no new builtin, no compiler feature.
+
+fn in_base() -> Int { return 600000 }
+fn in_len_addr() -> Int { return 599996 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+
+fn in_len() -> Int { return load32(in_len_addr()) }
+fn ib(i: Int) -> Int { return load8(in_base() + i) }
+
+# Hex digit value, or -1 if not a hex digit.
+fn hex_val(ch: Int) -> Int {
+  if ch >= 48 and ch <= 57 { return ch - 48 }
+  if ch >= 97 and ch <= 102 { return ch - 97 + 10 }
+  if ch >= 65 and ch <= 70 { return ch - 65 + 10 }
+  return -1
+}
+
+fn main(c: Console) -> Unit {
+  var i = 0
+  var out_len = 0
+  var done = 0
+  while done == 0 {
+    # Parse the hex chunk-size starting at i.
+    var size = 0
+    var d = hex_val(ib(i))
+    while d >= 0 {
+      size = size * 16 + d
+      i = i + 1
+      d = hex_val(ib(i))
+    }
+    # Skip CRLF after the size.
+    i = i + 2
+    if size == 0 {
+      done = 1
+    } else {
+      var k = 0
+      while k < size {
+        store8(out_base() + out_len, ib(i))
+        out_len = out_len + 1
+        i = i + 1
+        k = k + 1
+      }
+      # Skip CRLF after the data.
+      i = i + 2
+    }
+  }
+  store32(out_len_addr(), out_len)
+  return ()
+}

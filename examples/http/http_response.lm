@@ -1,0 +1,182 @@
+# HTTP/1.1 response builder, written in pure Lumen over raw-memory byte buffers.
+#
+# The host seam (the test harness, later a real socket) writes the response's status code as a
+# 32-bit int at CODE_ADDR, the body bytes at BODY_BASE, and the body byte length at BODY_LEN_ADDR.
+# This program formats the exact response bytes:
+#   "HTTP/1.1 " <code> " " <reason> "\r\nContent-Length: " <bodylen> "\r\n\r\n" <body>
+# into the output buffer starting at OUT_BASE, and stores the total output byte length at
+# OUT_LEN_ADDR. Integers are formatted to decimal ASCII by hand (% 10 / 10, with a 0 special
+# case); the reason phrase is looked up from the status code.
+#
+# It uses ONLY load8/store8/load32/store32 + arithmetic - no new builtin, no compiler feature -
+# so it is perf-neutral by construction.
+
+fn code_addr() -> Int { return 599992 }
+fn body_len_addr() -> Int { return 599996 }
+fn body_base() -> Int { return 600000 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+
+# Write one byte at `pos`, return the next position.
+fn w1(pos: Int, ch: Int) -> Int {
+  store8(pos, ch)
+  return pos + 1
+}
+
+# Write "HTTP/1.1 " (9 bytes: H T T P / 1 . 1 space).
+fn write_http_prefix(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 72)  # H
+  p = w1(p, 84)  # T
+  p = w1(p, 84)  # T
+  p = w1(p, 80)  # P
+  p = w1(p, 47)  # /
+  p = w1(p, 49)  # 1
+  p = w1(p, 46)  # .
+  p = w1(p, 49)  # 1
+  p = w1(p, 32)  # space
+  return p
+}
+
+# Write "\r\nContent-Length: " (19 bytes).
+fn write_content_length_header(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 13)   # \r
+  p = w1(p, 10)   # \n
+  p = w1(p, 67)   # C
+  p = w1(p, 111)  # o
+  p = w1(p, 110)  # n
+  p = w1(p, 116)  # t
+  p = w1(p, 101)  # e
+  p = w1(p, 110)  # n
+  p = w1(p, 116)  # t
+  p = w1(p, 45)   # -
+  p = w1(p, 76)   # L
+  p = w1(p, 101)  # e
+  p = w1(p, 110)  # n
+  p = w1(p, 103)  # g
+  p = w1(p, 116)  # t
+  p = w1(p, 104)  # h
+  p = w1(p, 58)   # :
+  p = w1(p, 32)   # space
+  return p
+}
+
+# Write "\r\n\r\n" (4 bytes).
+fn write_double_crlf(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 13)
+  p = w1(p, 10)
+  p = w1(p, 13)
+  p = w1(p, 10)
+  return p
+}
+
+fn write_reason_ok(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 79)  # O
+  p = w1(p, 75)  # K
+  return p
+}
+
+fn write_reason_not_found(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 78)   # N
+  p = w1(p, 111)  # o
+  p = w1(p, 116)  # t
+  p = w1(p, 32)   # space
+  p = w1(p, 70)   # F
+  p = w1(p, 111)  # o
+  p = w1(p, 117)  # u
+  p = w1(p, 110)  # n
+  p = w1(p, 100)  # d
+  return p
+}
+
+fn write_reason_internal_error(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 73)   # I
+  p = w1(p, 110)  # n
+  p = w1(p, 116)  # t
+  p = w1(p, 101)  # e
+  p = w1(p, 114)  # r
+  p = w1(p, 110)  # n
+  p = w1(p, 97)   # a
+  p = w1(p, 108)  # l
+  p = w1(p, 32)   # space
+  p = w1(p, 83)   # S
+  p = w1(p, 101)  # e
+  p = w1(p, 114)  # r
+  p = w1(p, 118)  # v
+  p = w1(p, 101)  # e
+  p = w1(p, 114)  # r
+  p = w1(p, 32)   # space
+  p = w1(p, 69)   # E
+  p = w1(p, 114)  # r
+  p = w1(p, 114)  # r
+  p = w1(p, 111)  # o
+  p = w1(p, 114)  # r
+  return p
+}
+
+# Map a status code to its reason phrase; unrecognized codes get no phrase.
+fn write_reason(pos: Int, code: Int) -> Int {
+  if code == 200 { return write_reason_ok(pos) }
+  if code == 404 { return write_reason_not_found(pos) }
+  if code == 500 { return write_reason_internal_error(pos) }
+  return pos
+}
+
+# Format a non-negative int as decimal ASCII digits (handles 0), return the next position.
+fn write_int(pos: Int, n: Int) -> Int {
+  if n == 0 {
+    return w1(pos, 48)
+  }
+  var digits = 0
+  var temp = n
+  while temp > 0 {
+    digits = digits + 1
+    temp = temp / 10
+  }
+  var divisor = 1
+  var i = 0
+  while i < digits - 1 {
+    divisor = divisor * 10
+    i = i + 1
+  }
+  var p = pos
+  var rem = n
+  var j = 0
+  while j < digits {
+    let d = rem / divisor
+    p = w1(p, 48 + d)
+    rem = rem - d * divisor
+    divisor = divisor / 10
+    j = j + 1
+  }
+  return p
+}
+
+fn main(c: Console) -> Unit {
+  let code = load32(code_addr())
+  let bodylen = load32(body_len_addr())
+
+  var pos = out_base()
+  pos = write_http_prefix(pos)
+  pos = write_int(pos, code)
+  pos = w1(pos, 32)               # space
+  pos = write_reason(pos, code)
+  pos = write_content_length_header(pos)
+  pos = write_int(pos, bodylen)
+  pos = write_double_crlf(pos)
+
+  var k = 0
+  while k < bodylen {
+    store8(pos, load8(body_base() + k))
+    pos = pos + 1
+    k = k + 1
+  }
+
+  store32(out_len_addr(), pos - out_base())
+  return ()
+}

@@ -1,0 +1,61 @@
+# URL-component percent-decoder, written in pure Lumen over raw-memory byte buffers.
+#
+# Reads the input bytes at IN_BASE (600000), length at IN_LEN_ADDR (599996), and writes
+# the decoded bytes starting at OUT_BASE (700000), storing the decoded length (32-bit int)
+# at OUT_LEN_ADDR (699996).
+#
+# Rules, scanned left to right:
+#   '%' (37) followed by two hex digits: emit the single byte hi*16 + lo, advance past all three.
+#   '+' (43): emit a space (32).
+#   any other byte: emit it unchanged.
+#
+# Uses ONLY load8/store8/load32/store32 + arithmetic - no new builtin, perf-neutral by
+# construction.
+
+fn in_base() -> Int { return 600000 }
+fn in_len_addr() -> Int { return 599996 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+
+fn ilen() -> Int { return load32(in_len_addr()) }
+fn ib(i: Int) -> Int { return load8(in_base() + i) }
+
+# Value of a hex digit byte, or -1 if it is not a hex digit.
+fn hex_val(ch: Int) -> Int {
+  if ch >= 48 and ch <= 57 { return ch - 48 }
+  if ch >= 65 and ch <= 70 { return ch - 65 + 10 }
+  if ch >= 97 and ch <= 102 { return ch - 97 + 10 }
+  return -1
+}
+
+fn main(c: Console) -> Unit {
+  var i = 0
+  var o = 0
+  let n = ilen()
+  while i < n {
+    let ch = ib(i)
+    if ch == 37 and i + 2 < n {
+      let hi = hex_val(ib(i + 1))
+      let lo = hex_val(ib(i + 2))
+      if hi >= 0 and lo >= 0 {
+        store8(out_base() + o, hi * 16 + lo)
+        o = o + 1
+        i = i + 3
+      } else {
+        store8(out_base() + o, ch)
+        o = o + 1
+        i = i + 1
+      }
+    } else {
+      if ch == 43 {
+        store8(out_base() + o, 32)
+      } else {
+        store8(out_base() + o, ch)
+      }
+      o = o + 1
+      i = i + 1
+    }
+  }
+  store32(out_len_addr(), o)
+  return ()
+}

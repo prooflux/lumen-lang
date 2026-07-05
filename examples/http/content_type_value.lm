@@ -1,0 +1,117 @@
+# Content-Type header value extractor, written in pure Lumen over a raw-memory byte buffer.
+#
+# The host seam (test harness, later a real socket) writes the raw request bytes to
+# REQ_BASE and the byte count to REQ_LEN_ADDR; this program skips the request line, then
+# scans header lines up to the terminating empty line (CRLFCRLF), looking for a header
+# whose name matches "content-type" case-insensitively. If found, it copies the header's
+# value (leading spaces skipped, up to but not including the terminating CRLF) to the
+# output buffer at OUT_BASE and stores the output length at OUT_LEN_ADDR. If no such
+# header exists, it stores output length 0.
+#
+# Uses ONLY load8/store8/load32/store32 + arithmetic - no new builtin, no compiler feature.
+
+fn req_base() -> Int { return 600000 }
+fn req_len_addr() -> Int { return 599996 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+fn rlen() -> Int { return load32(req_len_addr()) }
+fn b(i: Int) -> Int { return load8(req_base() + i) }
+
+fn lower(ch: Int) -> Int {
+  if ch >= 65 and ch <= 90 { return ch + 32 }
+  return ch
+}
+
+# Scan forward from `start` for CRLF (13 then 10); return index of the 13, or rlen() if absent.
+fn scan_crlf(start: Int) -> Int {
+  var i = start
+  while i < rlen() {
+    if b(i) == 13 and i + 1 < rlen() and b(i + 1) == 10 { return i }
+    i = i + 1
+  }
+  return rlen()
+}
+
+# "content-type" as fixed ASCII codes, compared case-insensitively byte by byte.
+fn ct_byte(i: Int) -> Int {
+  if i == 0 { return 99 }   # c
+  if i == 1 { return 111 }  # o
+  if i == 2 { return 110 }  # n
+  if i == 3 { return 116 }  # t
+  if i == 4 { return 101 }  # e
+  if i == 5 { return 110 }  # n
+  if i == 6 { return 116 }  # t
+  if i == 7 { return 45 }   # -
+  if i == 8 { return 116 }  # t
+  if i == 9 { return 121 }  # y
+  if i == 10 { return 112 } # p
+  return 101                # e (i == 11)
+}
+
+# Check whether the header name in [start, end) matches "content-type" case-insensitively.
+fn is_content_type(start: Int, end: Int) -> Int {
+  let tlen = 12
+  if end - start != tlen { return 0 }
+  var i = 0
+  while i < tlen {
+    if lower(b(start + i)) != ct_byte(i) { return 0 }
+    i = i + 1
+  }
+  return 1
+}
+
+fn find_colon(start: Int, end: Int) -> Int {
+  var i = start
+  while i < end {
+    if b(i) == 58 { return i }
+    i = i + 1
+  }
+  return end
+}
+
+fn skip_spaces(start: Int, end: Int) -> Int {
+  var v = start
+  while v < end and b(v) == 32 {
+    v = v + 1
+  }
+  return v
+}
+
+fn copy_value(start: Int, end: Int) -> Int {
+  var i = start
+  var n = 0
+  while i < end {
+    store8(out_base() + n, b(i))
+    n = n + 1
+    i = i + 1
+  }
+  return n
+}
+
+fn main(c: Console) -> Unit {
+  # Skip the request line.
+  let req_line_end = scan_crlf(0)
+  var pos = req_line_end + 2
+
+  var done = 0
+  var out_len = 0
+
+  while done == 0 {
+    let line_end = scan_crlf(pos)
+    if line_end == pos {
+      done = 1
+    } else {
+      let colon = find_colon(pos, line_end)
+      if is_content_type(pos, colon) == 1 {
+        let vstart = skip_spaces(colon + 1, line_end)
+        out_len = copy_value(vstart, line_end)
+        done = 1
+      } else {
+        pos = line_end + 2
+      }
+    }
+  }
+
+  store32(out_len_addr(), out_len)
+  return ()
+}

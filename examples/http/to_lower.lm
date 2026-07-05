@@ -1,0 +1,29 @@
+# ASCII lowercasing kernel, written in pure Lumen over raw-memory byte buffers.
+#
+# Reads the input byte buffer at IN_BASE (length at IN_LEN_ADDR), and writes the
+# lowercased bytes to OUT_BASE, storing the output length at OUT_LEN_ADDR. Uses ONLY
+# load8/store8 + arithmetic - no new builtin, no compiler feature - so it is
+# perf-neutral by construction.
+
+fn in_base() -> Int { return 600000 }
+fn in_len_addr() -> Int { return 599996 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+fn ilen() -> Int { return load32(in_len_addr()) }
+fn b(i: Int) -> Int { return load8(in_base() + i) }
+
+# Map a single byte to its ASCII-lowercase form: A..Z (65..90) -> +32, else unchanged.
+fn lower_byte(v: Int) -> Int {
+  if v >= 65 and v <= 90 { return v + 32 }
+  return v
+}
+
+fn main(c: Console) -> Unit {
+  var i = 0
+  while i < ilen() {
+    store8(out_base() + i, lower_byte(b(i)))
+    i = i + 1
+  }
+  store32(out_len_addr(), ilen())
+  return ()
+}

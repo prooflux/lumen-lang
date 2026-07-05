@@ -1439,6 +1439,7 @@
           (global.set $argbase (i32.sub (global.get $osp) (local.get $argc)))
           (global.set $pc (local.get $entry)) (br $loop)))
         (if (i32.eq (local.get $op) (i32.const 9)) (then
+          (br_if $halt (i32.eqz (global.get $csp)))   ;; top-level RET (main returning with no caller frame): halt, do not underflow csp
           (local.set $t (call $opop))
           (global.set $osp (global.get $argbase))
           (call $opush (local.get $t))

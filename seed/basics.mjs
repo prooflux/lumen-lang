@@ -30,6 +30,12 @@ eq('mod',            runMain('c.print_int(7 % 3)'), '1\n');
 eq('precedence * over +', runMain('c.print_int(2 + 3 * 4)'), '14\n');
 eq('parens override precedence', runMain('c.print_int((2 + 3) * 4)'), '20\n');
 
+// ---- termination: an explicit `return` at the top of main must HALT, not underflow the call
+// stack. Regression: run() enters main with csp=0 and pushes no frame, so main's RET did
+// csp-- (to -1) and read a stale return PC (=0), re-executing from PC 0 in a fuel-bounded loop.
+eq('explicit return () in main terminates', runMain('c.print_int(9)\n  return ()'), '9\n');
+eq('return in main after work terminates', runFull('fn main(c: Console) -> Unit {\n  var s = 0\n  var i = 0\n  while i < 4 { s = s + i  i = i + 1 }\n  c.print_int(s)\n  return ()\n}\n'), '6\n');
+
 // ---- Float: literals, arithmetic, comparison, Int<->Float, to_int/round ----
 eq('float to_int truncates', runMain('c.print_int(to_int(2.9))'), '2\n');
 eq('round up',     runMain('c.print_int(round(2.6))'), '3\n');

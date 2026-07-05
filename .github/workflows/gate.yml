@@ -54,3 +54,4 @@ jobs:
           node standalone_diff.mjs
           node heapcap_test.mjs
           node fixpoint_emit_test.mjs
+          node http_parse_test.mjs

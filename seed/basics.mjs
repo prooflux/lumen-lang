@@ -61,6 +61,17 @@ eq('ln roundtrip', runMain('c.print_int(round(ln(exp(2.0)) * 1000000.0))'), '200
 eq('pow integer', runMain('c.print_int(round(pow(2.0, 10.0)))'), '1024\n');
 eq('pow compound', runMain('c.print_int(round(pow(1.05, 3.0) * 1000000.0))'), '1157625\n');
 
+// ---- bitwise builtins: band/bor/bxor/shl/shr (logical, unsigned)/bnot ----
+eq('band',              runMain('c.print_int(band(12, 10))'), '8\n');
+eq('bor',               runMain('c.print_int(bor(12, 10))'), '14\n');
+eq('bxor',              runMain('c.print_int(bxor(12, 10))'), '6\n');
+eq('shl',               runMain('c.print_int(shl(1, 4))'), '16\n');
+eq('shr logical',       runMain('c.print_int(shr(256, 4))'), '16\n');
+eq('shr unsigned of -1', runMain('c.print_int(shr(0 - 1, 60))'), '15\n');
+eq('bnot zero is -1',   runMain('c.print_int(bnot(0))'), '-1\n');
+eq('bnot 5 is -6',      runMain('c.print_int(bnot(5))'), '-6\n');
+eq('bitwise compose',   runMain('c.print_int(band(bor(12, 10), bxor(12, 10)))'), '6\n');
+
 // ---- arrays (heap-backed Float vectors): array(n) aget(a,i) aset(a,i,x) alen(a) ----
 eq('array len', runMain('c.print_int(alen(array(5)))'), '5\n');
 eq('array set/get', runFull('fn main(c: Console) -> Unit {\n  let a = array(2)\n  aset(a, 0, 1.5)\n  aset(a, 1, 2.5)\n  c.print_int(to_int((aget(a, 0) + aget(a, 1)) * 10.0))\n}\n'), '40\n');

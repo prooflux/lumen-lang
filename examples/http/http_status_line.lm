@@ -1,0 +1,37 @@
+# HTTP/1.1 status-line parser, written in pure Lumen over a raw-memory byte buffer.
+#
+# The host seam (test harness, later a real socket) writes the raw response bytes to
+# RES_BASE and the byte count to RES_LEN_ADDR; this program scans the status line
+# "HTTP/1.1 <code> <reason>\r\n" and emits the numeric status code as ONE printed int.
+#
+# It uses ONLY load8/load32 + arithmetic - no new builtin, no compiler feature - so it
+# is perf-neutral by construction.
+
+fn res_base() -> Int { return 600000 }
+fn res_len_addr() -> Int { return 599996 }
+fn rlen() -> Int { return load32(res_len_addr()) }
+fn b(i: Int) -> Int { return load8(res_base() + i) }
+
+# Scan forward from `start` for byte `target`; return its index, or rlen() if absent.
+fn scan(start: Int, target: Int) -> Int {
+  var i = start
+  while i < rlen() {
+    if b(i) == target { return i }
+    i = i + 1
+  }
+  return rlen()
+}
+
+fn main(c: Console) -> Unit {
+  let sp1 = scan(0, 32)        # first space: end of "HTTP/1.1"
+  let code_off = sp1 + 1
+  let sp2 = scan(code_off, 32) # second space: end of status code
+  var code = 0
+  var i = code_off
+  while i < sp2 {
+    code = code * 10 + (b(i) - 48)
+    i = i + 1
+  }
+  c.print_int(code)
+  return ()
+}

@@ -1,0 +1,30 @@
+# URL query-string pair counter, written in pure Lumen over a raw-memory byte buffer.
+#
+# The host seam writes the query-string bytes to QS_BASE and the byte count to QS_LEN_ADDR;
+# this program reads them and emits ONE integer: the number of key=value pairs, where pairs
+# are separated by '&' (38). An empty input has 0 pairs; a non-empty input with no '&' has
+# exactly 1 pair.
+#
+# Uses ONLY load32 + arithmetic - no new builtin, no compiler feature.
+
+fn qs_base() -> Int { return 600000 }
+fn qs_len_addr() -> Int { return 599996 }
+fn qslen() -> Int { return load32(qs_len_addr()) }
+fn b(i: Int) -> Int { return load8(qs_base() + i) }
+
+fn count_pairs() -> Int {
+  let n = qslen()
+  if n == 0 { return 0 }
+  var count = 1
+  var i = 0
+  while i < n {
+    if b(i) == 38 { count = count + 1 }
+    i = i + 1
+  }
+  return count
+}
+
+fn main(c: Console) -> Unit {
+  c.print_int(count_pairs())
+  return ()
+}

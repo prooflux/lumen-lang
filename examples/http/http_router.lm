@@ -1,0 +1,88 @@
+# Minimal HTTP request router, written in pure Lumen over a raw-memory byte buffer.
+#
+# Parses the method and path from the request line and emits a single routing id via
+# c.print_int. Uses ONLY load8/load32 + arithmetic - no new builtin, no compiler feature.
+#
+# Routes:
+#   GET  "/"       -> 1
+#   GET  "/health" -> 2
+#   POST "/api"    -> 3
+#   anything else  -> 0
+
+fn req_base() -> Int { return 600000 }
+fn req_len_addr() -> Int { return 599996 }
+fn rlen() -> Int { return load32(req_len_addr()) }
+fn b(i: Int) -> Int { return load8(req_base() + i) }
+
+# Scan forward from `start` for byte `target`; return its index, or rlen() if absent.
+fn scan(start: Int, target: Int) -> Int {
+  var i = start
+  while i < rlen() {
+    if b(i) == target { return i }
+    i = i + 1
+  }
+  return rlen()
+}
+
+# 1 if the byte span [0, mlen) is exactly "GET", else 0.
+fn is_get(mlen: Int) -> Int {
+  if mlen == 3 {
+    if b(0) == 71 and b(1) == 69 and b(2) == 84 { return 1 }
+  }
+  return 0
+}
+
+# 1 if the byte span [0, mlen) is exactly "POST", else 0.
+fn is_post(mlen: Int) -> Int {
+  if mlen == 4 {
+    if b(0) == 80 and b(1) == 79 and b(2) == 83 and b(3) == 84 { return 1 }
+  }
+  return 0
+}
+
+# 1 if the byte span [off, off+len) is exactly "/", else 0.
+fn is_root(off: Int, len: Int) -> Int {
+  if len == 1 {
+    if b(off) == 47 { return 1 }
+  }
+  return 0
+}
+
+# 1 if the byte span [off, off+len) is exactly "/health", else 0.
+fn is_health(off: Int, len: Int) -> Int {
+  if len == 7 {
+    if b(off) == 47 and b(off + 1) == 104 and b(off + 2) == 101 and b(off + 3) == 97 and
+      b(off + 4) == 108 and b(off + 5) == 116 and b(off + 6) == 104 { return 1 }
+  }
+  return 0
+}
+
+# 1 if the byte span [off, off+len) is exactly "/api", else 0.
+fn is_api(off: Int, len: Int) -> Int {
+  if len == 4 {
+    if b(off) == 47 and b(off + 1) == 97 and b(off + 2) == 112 and b(off + 3) == 105 { return 1 }
+  }
+  return 0
+}
+
+fn route(mlen: Int, path_off: Int, path_len: Int) -> Int {
+  if is_get(mlen) == 1 {
+    if is_root(path_off, path_len) == 1 { return 1 }
+    if is_health(path_off, path_len) == 1 { return 2 }
+    return 0
+  }
+  if is_post(mlen) == 1 {
+    if is_api(path_off, path_len) == 1 { return 3 }
+    return 0
+  }
+  return 0
+}
+
+fn main(c: Console) -> Unit {
+  let sp1 = scan(0, 32)                 # first space: end of method
+  let path_off = sp1 + 1
+  let sp2 = scan(path_off, 32)          # second space: end of path
+  let path_len = sp2 - path_off
+  c.print_int(route(sp1, path_off, path_len))
+  return ()
+}

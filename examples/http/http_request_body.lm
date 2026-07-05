@@ -1,0 +1,45 @@
+# HTTP/1.1 request body extractor, written in pure Lumen over a raw-memory byte buffer.
+#
+# The host seam (test harness, later a real socket) writes the raw request bytes to REQ_BASE
+# and the byte count to REQ_LEN_ADDR. This program scans for the first blank line (CR LF CR LF)
+# and copies everything after it - the body - to OUT_BASE, storing the body length at
+# OUT_LEN_ADDR. If no blank line is found, or nothing follows it, the output length is 0.
+#
+# It uses ONLY load8/store8 + arithmetic - no new builtin, no compiler feature - so it is
+# perf-neutral by construction (perf.mjs still gates it every cycle).
+
+fn req_base() -> Int { return 600000 }
+fn req_len_addr() -> Int { return 599996 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+fn rlen() -> Int { return load32(req_len_addr()) }
+fn b(i: Int) -> Int { return load8(req_base() + i) }
+
+# Find the index of the byte AFTER the first CR LF CR LF sequence (i.e. the start of the
+# body), scanning from `start`. Returns rlen() if no such sequence exists.
+fn find_body_start(start: Int) -> Int {
+  var i = start
+  while i + 3 < rlen() {
+    if b(i) == 13 and b(i + 1) == 10 and b(i + 2) == 13 and b(i + 3) == 10 {
+      return i + 4
+    }
+    i = i + 1
+  }
+  return rlen()
+}
+
+fn main(c: Console) -> Unit {
+  let body_start = find_body_start(0)
+  let body_len = rlen() - body_start
+  if body_len <= 0 {
+    store32(out_len_addr(), 0)
+    return ()
+  }
+  var i = 0
+  while i < body_len {
+    store8(out_base() + i, b(body_start + i))
+    i = i + 1
+  }
+  store32(out_len_addr(), body_len)
+  return ()
+}

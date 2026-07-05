@@ -1,0 +1,35 @@
+# Hex decoder, written in pure Lumen over raw-memory byte buffers.
+#
+# Reads the input hex string at IN_BASE (600000), length at IN_LEN_ADDR (599996),
+# and writes the decoded bytes starting at OUT_BASE (700000), storing the
+# decoded length (32-bit int) at OUT_LEN_ADDR (699996).
+
+fn in_base() -> Int { return 600000 }
+fn in_len_addr() -> Int { return 599996 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+
+fn ilen() -> Int { return load32(in_len_addr()) }
+fn ib(i: Int) -> Int { return load8(in_base() + i) }
+
+fn hex_val(ch: Int) -> Int {
+  if ch >= 48 and ch <= 57 { return ch - 48 }
+  if ch >= 65 and ch <= 70 { return ch - 65 + 10 }
+  if ch >= 97 and ch <= 102 { return ch - 97 + 10 }
+  return 0
+}
+
+fn main(c: Console) -> Unit {
+  var i = 0
+  var o = 0
+  let n = ilen()
+  while i < n {
+    let hi = hex_val(ib(i))
+    let lo = hex_val(ib(i + 1))
+    store8(out_base() + o, hi * 16 + lo)
+    o = o + 1
+    i = i + 2
+  }
+  store32(out_len_addr(), o)
+  return ()
+}

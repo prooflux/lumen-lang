@@ -59,3 +59,9 @@ jobs:
           node http_response_test.mjs
           node url_decode_test.mjs
           node http_chunked_test.mjs
+          node http_request_body_test.mjs
+          node http_router_test.mjs
+          node query_parse_test.mjs
+          node http_status_line_test.mjs
+          node hex_encode_test.mjs
+          node hex_decode_test.mjs

@@ -16,7 +16,8 @@ export const OPS = {0:'HALT',1:'PUSH',2:'GETARG',3:'ADD',4:'SUB',5:'LT',6:'JZ',7
   9:'RET',10:'PRINTINT',11:'MUL',12:'DIV',13:'RESERVE',14:'SETLOCAL',15:'MKTEXT',
   16:'PRINTTEXT',17:'CONCAT',18:'INT2TEXT',19:'EQ',20:'NE',21:'LE',22:'GE',23:'GT',24:'MOD',
   25:'MKSUM',26:'SUMTAG',27:'SUMVAL',28:'TEXTEQ',
-  53:'LOAD32',54:'STORE32',55:'LOAD8',56:'STORE8'};   // raw-memory keystone (self-host + native emitter/optimizer)
+  53:'LOAD32',54:'STORE32',55:'LOAD8',56:'STORE8',   // raw-memory keystone (self-host + native emitter/optimizer)
+  58:'BAND',59:'BOR',60:'BXOR',61:'SHL',62:'SHR',63:'BNOT'};   // bitwise builtins (stack ops, no inline operands)
 const ONE_OPERAND = new Set([1,2,6,7,13,14,15,25]);
 
 // Create a warm compiler. `await createCompiler()` once, reuse forever.

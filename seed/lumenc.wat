@@ -27,6 +27,8 @@
 ;;   [150000 .. 157000) SYMBOLS (name_off, name_len, entry) = 12 bytes each (~583 fns)
 ;;   [157000 .. 157500) PARAMS of current fn (name_off, name_len) = 8 bytes each (~62)
 ;;   [157500 .. 158000) LOCALS of current fn (name_off, name_len) = 8 bytes each (~62)
+;;   [158000 .. 248000) free; builtin op-name literals at 160000 (band/bor/bxor/shl/shr/bnot)
+;;                      because the keyword region below is full and abuts the nvariant table
 ;;   [248000 .. 248400] keyword literals (data) + nvariant table
 ;;   [249000 .. 286000) call-target FIXUPS (code_pos, name_off, name_len) = 12 bytes each
 ;;   [286000 .. 296000) DIAG: compile-error records (code, name_off, name_len) = 12 bytes each
@@ -79,6 +81,15 @@
   (data (i32.const 248370) "store32")
   (data (i32.const 248380) "load8")
   (data (i32.const 248390) "store8")
+  ;; bitwise builtin names. The keyword region [248000..248400] is full and abuts the runtime
+  ;; nvariant table at 248400, so these live in the free gap [158000..248000) (see memory map);
+  ;; $eqlit compares source tokens against these bytes at any address.
+  (data (i32.const 160000) "band")
+  (data (i32.const 160016) "bor")
+  (data (i32.const 160032) "bxor")
+  (data (i32.const 160048) "shl")
+  (data (i32.const 160064) "shr")
+  (data (i32.const 160080) "bnot")
 
   (global $osp     (mut i32) (i32.const 0))
   (global $csp     (mut i32) (i32.const 0))
@@ -839,7 +850,13 @@
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248280) (i32.const 3))   ;; exp(x)
                 (then (call $emitw (i32.const 46)) (global.set $ety (i32.const 1)) (return)))
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248300) (i32.const 3))   ;; pow(x,y)
-                (then (call $emitw (i32.const 48)) (global.set $ety (i32.const 1)) (return)))))
+                (then (call $emitw (i32.const 48)) (global.set $ety (i32.const 1)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 160016) (i32.const 3))   ;; bor(a,b) -> Int
+                (then (call $emitw (i32.const 59)) (global.set $ety (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 160048) (i32.const 3))   ;; shl(a,n) -> Int
+                (then (call $emitw (i32.const 61)) (global.set $ety (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 160064) (i32.const 3))   ;; shr(a,n) -> Int (logical/unsigned)
+                (then (call $emitw (i32.const 62)) (global.set $ety (i32.const 0)) (return)))))
             (if (i32.eq (local.get $len) (i32.const 4)) (then
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248270) (i32.const 4))   ;; sqrt(x)
                 (then (call $emitw (i32.const 44)) (global.set $ety (i32.const 1)) (return)))
@@ -848,7 +865,13 @@
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248340) (i32.const 4))   ;; aset(a,i,x) -> Unit (no value)
                 (then (call $emitw (i32.const 51)) (global.set $ety (i32.const 0)) (global.set $expr_pushes (i32.const 0)) (return)))
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248350) (i32.const 4))   ;; alen(a) -> Int
-                (then (call $emitw (i32.const 52)) (global.set $ety (i32.const 0)) (return)))))
+                (then (call $emitw (i32.const 52)) (global.set $ety (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 160000) (i32.const 4))   ;; band(a,b) -> Int
+                (then (call $emitw (i32.const 58)) (global.set $ety (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 160032) (i32.const 4))   ;; bxor(a,b) -> Int
+                (then (call $emitw (i32.const 60)) (global.set $ety (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 160080) (i32.const 4))   ;; bnot(a) -> Int
+                (then (call $emitw (i32.const 63)) (global.set $ety (i32.const 0)) (return)))))
             (if (i32.eq (local.get $len) (i32.const 5)) (then
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248250) (i32.const 5))   ;; round(x): Float -> Int (nearest)
                 (then (call $emitw (i32.const 43)) (global.set $ety (i32.const 0)) (return)))
@@ -1609,6 +1632,23 @@
         (if (i32.eq (local.get $op) (i32.const 57)) (then           ;; TYPEMAP N type_1 .. type_N (skip)
           (global.set $pc (i32.add (global.get $pc) (i32.add (call $codew (global.get $pc)) (i32.const 2))))
           (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 58)) (then           ;; BAND a b -> a & b
+          (local.set $bb (call $opop)) (local.set $a (call $opop))
+          (call $opush (i64.and (local.get $a) (local.get $bb))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 59)) (then           ;; BOR a b -> a | b
+          (local.set $bb (call $opop)) (local.set $a (call $opop))
+          (call $opush (i64.or (local.get $a) (local.get $bb))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 60)) (then           ;; BXOR a b -> a ^ b
+          (local.set $bb (call $opop)) (local.set $a (call $opop))
+          (call $opush (i64.xor (local.get $a) (local.get $bb))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 61)) (then           ;; SHL a n -> a << n
+          (local.set $bb (call $opop)) (local.set $a (call $opop))
+          (call $opush (i64.shl (local.get $a) (local.get $bb))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 62)) (then           ;; SHR a n -> a >>> n (logical / unsigned)
+          (local.set $bb (call $opop)) (local.set $a (call $opop))
+          (call $opush (i64.shr_u (local.get $a) (local.get $bb))) (br $loop)))
+        (if (i32.eq (local.get $op) (i32.const 63)) (then           ;; BNOT a -> ~a
+          (call $opush (i64.xor (call $opop) (i64.const -1))) (br $loop)))
         (if (i32.eq (local.get $op) (i32.const 10)) (then (call $print_i64 (call $opop)) (br $loop)))
         (br $halt)))
     (global.set $last_steps (local.get $fuel)))

@@ -1,0 +1,56 @@
+# architecture-update.lm
+#
+# The Lumen half of the self-updating ARCHITECTURE.md. Lumen has no filesystem access (console
+# and raw memory only), so the host harness (tools/architecture-update.mjs) gathers the repo
+# facts and this program RENDERS them into markdown - exactly the repo's pattern of "logic in
+# Lumen, I/O in a thin host seam". It is a pure byte-in / byte-out kernel like the HTTP kernels.
+#
+# Input (host writes it): newline-separated names in the buffer at 600000, byte length at 599996.
+# Output (host reads it): a markdown bullet list, one "- `name`" line per input name, written from
+# 700000 with its byte length stored at 699996. Empty input lines are skipped.
+
+fn in_base() -> Int { return 600000 }
+fn in_len_addr() -> Int { return 599996 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+
+fn ilen() -> Int { return load32(in_len_addr()) }
+fn b(i: Int) -> Int { return load8(in_base() + i) }
+
+# Write one byte to the output buffer at cursor o; return the next cursor.
+fn emit(o: Int, byte: Int) -> Int {
+  store8(out_base() + o, byte)
+  return o + 1
+}
+
+fn main(c: Console) -> Unit {
+  var i = 0
+  var o = 0
+  while i < ilen() {
+    if b(i) == 10 {
+      i = i + 1
+    } else {
+      # a line starts at i; find its end (next newline or end of input)
+      var j = i
+      while j < ilen() and b(j) != 10 {
+        j = j + 1
+      }
+      # emit "- `"
+      o = emit(o, 45)
+      o = emit(o, 32)
+      o = emit(o, 96)
+      # copy the line bytes [i, j)
+      var k = i
+      while k < j {
+        o = emit(o, b(k))
+        k = k + 1
+      }
+      # emit "`" then newline
+      o = emit(o, 96)
+      o = emit(o, 10)
+      i = j
+    }
+  }
+  store32(out_len_addr(), o)
+  return ()
+}

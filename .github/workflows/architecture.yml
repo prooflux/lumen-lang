@@ -1,0 +1,45 @@
+name: architecture
+
+# Keeps ARCHITECTURE.md self-updating: on every push to main it re-runs the Lumen renderer
+# (tools/architecture-update.lm via tools/architecture-update.mjs) to refresh the AUTO:* blocks
+# from the current repo, and commits the result if anything changed. So the doc is up to date by
+# definition after each merge. The bot commit carries [skip ci] and, being a GITHUB_TOKEN push,
+# does not re-trigger workflows - no loop.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: architecture-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install the deps the Lumen renderer needs (wabt assembles the seed)
+        working-directory: native
+        run: npm install --no-audit --no-fund
+      - name: Regenerate ARCHITECTURE.md from the current repo
+        run: node tools/architecture-update.mjs
+      - name: Commit the refresh if the doc changed
+        run: |
+          if git diff --quiet -- ARCHITECTURE.md; then
+            echo "ARCHITECTURE.md already current."
+          else
+            git config user.name "lumen-architecture-bot"
+            git config user.email "actions@github.com"
+            git add ARCHITECTURE.md
+            git commit -m "docs(architecture): auto-refresh ARCHITECTURE.md [skip ci]"
+            git push
+          fi

@@ -1,0 +1,36 @@
+# Signed decimal integer parser, written in pure Lumen over a raw-memory byte buffer.
+#
+# The host seam (test harness, later a real I/O source) writes ASCII decimal digit bytes to
+# IN_BASE and the byte count to IN_LEN_ADDR; this program reads them and prints the single
+# parsed integer value via c.print_int.
+#
+# Accepts an optional single leading '-' (byte 45) followed by one or more ASCII digits
+# ('0'..'9', bytes 48..57). Uses ONLY load8 + arithmetic - no new builtin, no compiler
+# feature - so it is perf-neutral by construction.
+
+fn in_base() -> Int { return 600000 }
+fn in_len_addr() -> Int { return 599996 }
+fn ilen() -> Int { return load32(in_len_addr()) }
+fn b(i: Int) -> Int { return load8(in_base() + i) }
+
+fn main(c: Console) -> Unit {
+  let n = ilen()
+  var neg = 0
+  var i = 0
+  if n > 0 {
+    if b(0) == 45 {
+      neg = 1
+      i = 1
+    }
+  }
+  var value = 0
+  while i < n {
+    value = value * 10 + (b(i) - 48)
+    i = i + 1
+  }
+  if neg == 1 {
+    value = 0 - value
+  }
+  c.print_int(value)
+  return ()
+}

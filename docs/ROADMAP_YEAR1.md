@@ -32,6 +32,30 @@ Where this stands today: Lumen already compiles itself in source (`SELF: MATCH`)
 is nearly complete. The one place it still reaches outside itself is the final step of turning its
 output into a runnable binary. Removing that is the first thing the year does.
 
+## Progress ledger (updated 2026-07-04)
+
+- The plan of record itself is committed (PR #15).
+- Q3 HTTP layer is substantially underway: 11 pure-Lumen HTTP/core kernels are landed, each with a
+  CI oracle gate, all zero-compiler-change and perf-neutral: the request line parser (parse_request),
+  and Wave 1 (PR #14): http_headers, http_response, url_decode, http_chunked; Wave 2 (PR #17):
+  http_request_body, http_router, query_parse, http_status_line, hex_encode, hex_decode.
+- Q1 native backend: emit_fn (C) and emit_llvm emitters are gated bit-identical to the interpreter;
+  the native-fixpoint heap-collision blocker is fixed (PR #11) and emit_fn now emits the full
+  compiler; the remaining native-fixpoint step is clang-clean codegen (an undeclared frame-slot bug)
+  then the native driver.
+- Tooling: MCP full compiler access landed (PR #2).
+
+### Known issues and not-yet-started
+
+- The purity gate is specified in this plan but NOT yet implemented.
+- The seed interpreter bug where a top-level `return` in `main` underflowed the call stack and
+  looped is FIXED (PR #18): a top-level RET now halts. The int_parse kernel that was held on it is
+  restored in Wave 3.
+- Bitwise operators are not yet in the language; they gate all Q4 crypto and HTTP/2 framing and are
+  the next seed change.
+- Not started: the socket capability seam, async runtime, native code generator + executable writer,
+  and crypto.
+
 ## The full self-hosted stack (all Lumen)
 
 ```
@@ -46,7 +70,7 @@ output into a runnable binary. Removing that is the first thing the year does.
   the machine            Lumen runs here, directly
 ```
 
-## Q1 (months 1-3): Lumen builds Lumen
+## Q1 (months 1-3): Lumen builds Lumen (in progress)
 
 Lumen turns itself into a native binary with its own toolchain and runs with nothing beneath it.
 1. Native code generator, in Lumen: its own IR to machine instructions, with register allocation.
@@ -58,7 +82,7 @@ Lumen turns itself into a native binary with its own toolchain and runs with not
 **Exit:** `lumen` is a native binary that Lumen built, and it compiles Lumen to native binaries with
 no toolchain but itself. Self-compilation is bit-exact and performance-gated. The purity gate is green.
 
-## Q2 (months 4-6): The self-hosted core and runtime
+## Q2 (months 4-6): The self-hosted core and runtime (not started)
 
 Everything a real program needs, in Lumen, over raw memory.
 1. Memory: a Lumen allocator with reclamation, so long-running programs stay flat.
@@ -68,7 +92,7 @@ Everything a real program needs, in Lumen, over raw memory.
 
 **Exit:** substantial Lumen programs run natively and concurrently with stable memory, entirely in Lumen.
 
-## Q3 (months 7-9): Lumen serves the internet
+## Q3 (months 7-9): Lumen serves the internet (HTTP protocol layer underway)
 
 A fully self-hosted Lumen server answering real traffic and hosting Lumen code.
 1. Networking: Lumen opens and drives sockets through the machine interface, all Lumen.
@@ -81,7 +105,7 @@ A fully self-hosted Lumen server answering real traffic and hosting Lumen code.
 **Exit:** a single Lumen-built binary serves real concurrent HTTP/1.1+2 traffic and hosts sandboxed
 Lumen handlers, benchmarked and adversarially fuzzed, Lumen from the machine up.
 
-## Q4 (months 10-12): Secure transport, hardening, and the platform
+## Q4 (months 10-12): Secure transport, hardening, and the platform (blocked on bitwise)
 
 Encrypted, robust, complete, and public.
 1. Cryptographic primitives in Lumen, verified against known test vectors: the symmetric ciphers with

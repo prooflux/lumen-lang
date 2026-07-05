@@ -1,0 +1,54 @@
+# Whitespace trimmer, written in pure Lumen over a raw-memory byte buffer.
+#
+# Removes leading and trailing whitespace (space, tab) from the input buffer, preserving
+# interior whitespace, and copies the trimmed bytes to the output buffer. Uses ONLY load8/
+# store8 + arithmetic - no new builtin, no compiler feature - so it is perf-neutral by
+# construction (perf.mjs still gates it every cycle).
+#
+# Memory convention: input bytes at 600000, input length (32-bit int) at 599996.
+# Output bytes written from 700000, output length (32-bit int) stored at 699996.
+
+fn in_base() -> Int { return 600000 }
+fn in_len_addr() -> Int { return 599996 }
+fn out_base() -> Int { return 700000 }
+fn out_len_addr() -> Int { return 699996 }
+fn ilen() -> Int { return load32(in_len_addr()) }
+fn b(i: Int) -> Int { return load8(in_base() + i) }
+
+# Is byte v a whitespace char (space or tab)? Returns 1 (true) or 0 (false).
+fn is_ws(v: Int) -> Int {
+  if v == 32 { return 1 }
+  if v == 9 { return 1 }
+  return 0
+}
+
+fn main(c: Console) -> Unit {
+  var start = 0
+  while start < ilen() {
+    if is_ws(b(start)) == 1 { start = start + 1 } else { return trim_rest(start) }
+  }
+  store32(out_len_addr(), 0)
+  return ()
+}
+
+# Given the first non-whitespace index `start`, find the last non-whitespace index and copy.
+fn trim_rest(start: Int) -> Unit {
+  var end = ilen() - 1
+  while end >= start {
+    if is_ws(b(end)) == 1 { end = end - 1 } else { return copy_out(start, end) }
+  }
+  store32(out_len_addr(), 0)
+  return ()
+}
+
+# Copy input[start..end] inclusive to the output buffer and record its length.
+fn copy_out(start: Int, end: Int) -> Unit {
+  let n = end - start + 1
+  var i = 0
+  while i < n {
+    store8(out_base() + i, b(start + i))
+    i = i + 1
+  }
+  store32(out_len_addr(), n)
+  return ()
+}

@@ -65,3 +65,8 @@ jobs:
           node http_status_line_test.mjs
           node hex_encode_test.mjs
           node hex_decode_test.mjs
+          node int_parse_test.mjs
+          node trim_test.mjs
+          node to_lower_test.mjs
+          node http_keepalive_test.mjs
+          node content_type_value_test.mjs

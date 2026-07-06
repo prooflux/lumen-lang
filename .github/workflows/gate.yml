@@ -70,3 +70,4 @@ jobs:
           node to_lower_test.mjs
           node http_keepalive_test.mjs
           node content_type_value_test.mjs
+          node http_serve_test.mjs

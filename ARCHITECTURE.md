@@ -88,8 +88,22 @@ remaining work is clang-clean codegen and the native driver. See `docs/NATIVE_BA
 The HTTP protocol layer, written entirely in Lumen over raw-memory byte buffers (no compiler
 feature beyond `load8`/`store8` and arithmetic, so it is perf-neutral by construction). The host
 seam writes request bytes into the input buffer; a kernel reads them and emits parsed fields or
-response bytes. Live socket serving is a future capability seam and is not yet built - these kernels
-parse and build HTTP messages, they do not yet answer a live connection.
+response bytes.
+
+`http_serve.lm` closes the loop into an actual server: given a raw request and a route table (both
+staged in raw memory), it parses the request line, linear-scans the table for a method+path match,
+and frames the exact HTTP/1.1 response bytes. `seed/lumen_serve.mjs` is the socket seam in front of
+it: a thin host shim that owns only the TCP socket (the one thing a wasm program cannot do, the same
+class of capability as `console_print`) and, per connection, copies the request into the kernel's
+memory, runs the kernel, and writes the response bytes back. The routing is the kernel's; the socket
+is the machine's. All runtime offsets stay inside the window the interpreter and the native binary
+both agree on (above the interpreter's compile pages, below the native heap cap), so the same kernel
+source runs in the interpreter (the correctness oracle) and, compiled through `emit_fn.lm` to native
+code, as the fast artifact. `native/http_serve_bench.mjs` measures that native artifact against an
+identical scripting-language implementation of the same parse/route/build work: byte-for-byte the
+same responses, and the native kernel runs the serving hot path many times faster (measured, not
+asserted). Live TLS and HTTP/2 framing are terminated at the platform edge today; native in-language
+sockets are the capability that retires even the socket shim.
 
 <!-- AUTO:kernels -->
 - `content_type_value`
@@ -101,6 +115,7 @@ parse and build HTTP messages, they do not yet answer a live connection.
 - `http_request_body`
 - `http_response`
 - `http_router`
+- `http_serve`
 - `http_status_line`
 - `int_parse`
 - `parse_request`
@@ -118,6 +133,8 @@ not ship as the real artifact:
 - `seed/compiler_core.mjs` - a warm, reusable compile/run/ir surface over the assembled seed.
 - `seed/lumen.mjs` - the CLI (`run` / `check` / `ir`).
 - `seed/lumend.mjs` - the warm Unix-socket daemon (sub-millisecond compiles).
+- `seed/lumen_serve.mjs` - the TCP socket seam for `http_serve.lm`: binds a port, hands each
+  connection's bytes to the kernel, writes back the response the kernel built.
 - `seed/lumen_mcp.mjs` - the MCP server exposing the full compiler to LLM clients (check, fix, run,
   ir, explain, tokens, types, optimize, emit_c, emit_llvm).
 
@@ -159,6 +176,7 @@ regression; the Forge adds adversarial coverage. The full gate list run by `.git
 - `to_lower_test.mjs`
 - `http_keepalive_test.mjs`
 - `content_type_value_test.mjs`
+- `http_serve_test.mjs`
 <!-- /AUTO:gates -->
 
 ## How this document stays current

@@ -21,8 +21,8 @@ const ROUTE_COUNT_ADDR = 598000;
 const PROXY_MODE_ADDR = 598008;
 const ROUTE_BASE = 598016;
 const BLOB_BASE = 604000;
-const OUT_LEN_ADDR = 829996;
-const OUT_BASE = 830000;
+const OUT_LEN_ADDR = 7299996;
+const OUT_BASE = 7300000;
 
 const METHOD = { GET: 1, POST: 2, PUT: 3, DELETE: 4, HEAD: 5, PATCH: 6, OPTIONS: 7 };
 
@@ -40,6 +40,12 @@ function expectResponse(status, reason, ctype, body) {
     `Content-Length: ${Buffer.byteLength(body, 'latin1')}\r\nConnection: keep-alive\r\n\r\n${body}`;
 }
 
+// The HEAD form of a response: same status line and headers (incl. the GET Content-Length), no body.
+function expectHead(status, reason, ctype, body) {
+  const full = expectResponse(status, reason, ctype, body);
+  return full.slice(0, full.indexOf('\r\n\r\n') + 4);
+}
+
 // Each case: [raw request, expected full response string]
 const NOT_FOUND = expectResponse(404, 'Not Found', 'text/plain', 'Not Found');
 const CASES = [
@@ -50,6 +56,12 @@ const CASES = [
   ['GET /missing HTTP/1.1\r\n\r\n', NOT_FOUND],            // unknown path
   ['DELETE / HTTP/1.1\r\n\r\n', NOT_FOUND],                // method mismatch on a known path
   ['POST / HTTP/1.1\r\n\r\n', NOT_FOUND],                  // method mismatch, POST vs GET "/"
+  // query string is cut from the match key: versioned asset URLs hit the same route
+  ['GET /home?v=abc123 HTTP/1.1\r\n\r\n', expectResponse(200, 'OK', 'text/html; charset=utf-8', '<h1>Home</h1>')],
+  ['GET /health?a=1&b=2 HTTP/1.1\r\n\r\n', expectResponse(200, 'OK', 'text/plain', 'ok')],
+  // HEAD serves the GET route's headers (true Content-Length) with no body
+  ['HEAD /home HTTP/1.1\r\n\r\n', expectHead(200, 'OK', 'text/html; charset=utf-8', '<h1>Home</h1>')],
+  ['HEAD /missing HTTP/1.1\r\n\r\n', expectHead(404, 'Not Found', 'text/plain', 'Not Found')],
 ];
 
 // Stage the route table + blob into the instance's memory once (the host's startup step).

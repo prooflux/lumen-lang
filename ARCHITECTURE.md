@@ -31,7 +31,8 @@ bit-exact against a Lumen reference), **never slower** (`perf.mjs` gates through
 The bootstrap compiler and interpreter, written in pure WebAssembly text, with no dependency on any
 other language. It lexes, parses, type-checks, and lowers **Lumen-mu** (the runnable subset) to a
 compact stack-machine IR, and interprets that IR. Its only host seam is a single `console_print`
-import; everything else is arithmetic over a flat linear memory (100 pages, ~6.5 MB).
+import; everything else is arithmetic over a flat linear memory (128 pages, ~8.4 MB - the same size
+as the native binary's heap, so raw-memory programs run identically in both).
 
 - **IR / opcode model.** A stack machine: `PUSH`, `GETARG`, arithmetic and comparisons, `JZ`/`JMP`,
   `CALL`/`RET`, `RESERVE`/`SETLOCAL` (call frames), `PRINTINT`/`PRINTTEXT`, text ops, sum-type ops,

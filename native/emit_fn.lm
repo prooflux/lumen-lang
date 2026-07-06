@@ -684,7 +684,7 @@ static inline float64x2_t neon_exp(float64x2_t x){
 #endif
 #define AHEAP_CAP 9072
 #define LM_CAP_BYTES 36288
-#define LMEM_CAP 1048576
+#define LMEM_CAP 8388608
 static int64_t AHEAP[AHEAP_CAP];
 static unsigned char LMEM[LMEM_CAP];
 static int64_t AHP=0;

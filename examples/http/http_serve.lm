@@ -12,8 +12,9 @@
 # It uses ONLY load8/store8/load32/store32 + arithmetic - no new builtin, no compiler feature - so
 # it is perf-neutral by construction (perf.mjs still gates it every cycle).
 #
-# --- Memory map (all offsets in (589824, 1048576), agreed by interpreter and native) ---
-# The host stages these before calling; the kernel reads them and writes the response.
+# --- Memory map (all offsets in (589824, 8388608), agreed by interpreter and native) ---
+# The window is the 128 wasm pages of the interpreter and the native binary's LMEM_CAP, so the same
+# kernel source runs in both. The host stages these before calling; the kernel writes the response.
 #   REQ_LEN_ADDR   590000  i32  request byte length            (host writes, per connection)
 #   REQ_BASE       590016  ...  request bytes                  (host writes, per connection)
 #   ROUTE_COUNT    598000  i32  number of routes in the table  (host writes, once at startup)
@@ -28,19 +29,24 @@
 #       +12  status        HTTP status code to return (e.g. 200)
 #       +16  ctype_off     absolute address of the Content-Type bytes in the blob
 #       +20  ctype_len     Content-Type byte length
-#       +24  body_off      absolute address of the body bytes in the blob
+#       +24  body_off      absolute address of the body bytes (blob or body window)
 #       +28  body_len      body byte length
-#   BLOB           604000  ...  path / content-type / body bytes packed by the host
-#   OUT_LEN_ADDR   829996  i32  response byte length           (kernel writes)
-#   OUT_BASE       830000  ...  response bytes                 (kernel writes)
+#   BLOB           604000  ...  path / content-type bytes packed by the host (small strings)
+#   BODY WINDOW  1000000  ...  route body bytes (pages, assets), staged by the host, to 7000000
+#   OUT_LEN_ADDR  7299996  i32  response byte length           (kernel writes)
+#   OUT_BASE      7300000  ...  response bytes (to ~8388608, so ~1 MB max response) (kernel writes)
+#
+# Matching: the request path is compared with the query string cut off (everything from '?'), so
+# "/a.css?v=1" and "/a.css" hit the same route. HEAD matches GET routes and emits the same response
+# headers (including the GET Content-Length) with no body, per HTTP semantics.
 
 fn req_len_addr() -> Int { return 590000 }
 fn req_base() -> Int { return 590016 }
 fn route_count_addr() -> Int { return 598000 }
 fn proxy_mode_addr() -> Int { return 598008 }
 fn route_base() -> Int { return 598016 }
-fn out_len_addr() -> Int { return 829996 }
-fn out_base() -> Int { return 830000 }
+fn out_len_addr() -> Int { return 7299996 }
+fn out_base() -> Int { return 7300000 }
 
 fn rlen() -> Int { return load32(req_len_addr()) }
 fn rb(i: Int) -> Int { return load8(req_base() + i) }
@@ -244,8 +250,9 @@ fn write_int(pos: Int, n: Int) -> Int {
 }
 
 # Frame a full HTTP/1.1 response with the given status, content-type bytes, and body bytes into the
-# output buffer, and store the total byte length. Returns nothing.
-fn frame(status: Int, ctype_off: Int, ctype_len: Int, body_off: Int, body_len: Int) -> Unit {
+# output buffer, and store the total byte length. include_body 0 emits the same headers (including
+# the true Content-Length) with no body bytes - the HEAD form of the response. Returns nothing.
+fn frame(status: Int, ctype_off: Int, ctype_len: Int, body_off: Int, body_len: Int, include_body: Int) -> Unit {
   var pos = out_base()
   pos = write_http_prefix(pos)
   pos = write_int(pos, status)
@@ -261,7 +268,9 @@ fn frame(status: Int, ctype_off: Int, ctype_len: Int, body_off: Int, body_len: I
   pos = write_conn_keepalive(pos)
   pos = write_crlf(pos)
   pos = write_crlf(pos)
-  pos = wbytes(pos, body_off, body_len)
+  if include_body == 1 {
+    pos = wbytes(pos, body_off, body_len)
+  }
   store32(out_len_addr(), pos - out_base())
   return ()
 }
@@ -283,14 +292,33 @@ fn write_fallback_body(pos: Int) -> Int {
   return p
 }
 
+# Scan the span [start, end) for byte `target`; return its index, or end if absent.
+fn scan_to(start: Int, end: Int, target: Int) -> Int {
+  var i = start
+  while i < end {
+    if rb(i) == target { return i }
+    i = i + 1
+  }
+  return end
+}
+
 fn main(c: Console) -> Unit {
   let sp1 = scan(0, 32)                 # first space: end of method
   let method = method_code(sp1)
   let path_off = sp1 + 1
   let sp2 = scan(path_off, 32)          # second space: end of path
-  let path_len = sp2 - path_off
+  let qpos = scan_to(path_off, sp2, 63) # '?': cut the query string off the match key
+  let path_len = qpos - path_off
 
-  let e = match_route(method, path_off, path_len)
+  # HEAD is served from the GET route table: same headers, no body.
+  var lookup = method
+  var include_body = 1
+  if method == 5 {
+    lookup = 1
+    include_body = 0
+  }
+
+  let e = match_route(lookup, path_off, path_len)
   if e == 0 - 1 {
     if load32(proxy_mode_addr()) == 1 {
       # No local route, and an origin is configured: emit an empty response so the host proxies
@@ -303,9 +331,9 @@ fn main(c: Console) -> Unit {
     let ctend = write_fallback_ct(ct)
     let body = ctend
     let bodyend = write_fallback_body(body)
-    frame(404, ct, ctend - ct, body, bodyend - body)
+    frame(404, ct, ctend - ct, body, bodyend - body, include_body)
     return ()
   }
-  frame(e_status(e), e_ctype_off(e), e_ctype_len(e), e_body_off(e), e_body_len(e))
+  frame(e_status(e), e_ctype_off(e), e_ctype_len(e), e_body_off(e), e_body_len(e), include_body)
   return ()
 }

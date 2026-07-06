@@ -10,6 +10,34 @@ bit-identical to it).
 
 ---
 
+## 2026-07-06 : Serve capacity x8 + HEAD + query-cut routing - a full page (HTML + all assets) native
+
+Root-caused a slow, buggy page on the live edge and fixed it at the language level. The evidence: a
+real page load proxied every asset (fonts, CSS, logo at 9-22 ms each vs 1 ms native), and the page
+snapshot had been taken through a CDN edge, which had injected an email-obfuscation script that 404s
+when self-hosted (the visible "[email protected]" bug). Serving the page's assets natively needs
+~600 KB of bodies and a ~415 KB single response - beyond the old ~210 KB body window and ~218 KB
+output buffer. So the capacity grew:
+
+- **Memory x8, both runtimes in lockstep:** the seed's wasm memory 100 -> 128 pages and the native
+  `LMEM_CAP` 1 MB -> 8 MB (8,388,608 = 128 pages exactly), keeping the same-kernel-both-runtimes
+  invariant. Perf gate PASS (compile 109%, interpret 100% of baseline) - the growth costs nothing.
+- **Memory map v2 for the serve kernel:** bodies stage in [1,000,000..7,000,000) (6 MB) and the
+  output buffer moved to 7,300,000 (~1 MB max response). Route table and request window unchanged.
+- **Query-cut routing:** the match key stops at `?`, so `/a.css?v=1` and `/a.css` hit one route
+  (versioned asset URLs work without duplicate entries).
+- **HEAD:** matches GET routes and emits the same headers (true Content-Length) with no body.
+- Host shims: bodies stream into the big window; the proxy path uses keep-alive agents so unmatched
+  requests reuse origin connections.
+
+Gates: oracle 13/13 (adds query + HEAD cases), native serve self-test 3/3, npm test green,
+`selfhost_diff` 16/17 0-diff `SELF: MATCH`, `native_diff` 17/17, float gates green.
+
+Measured on the live edge (same machine, keep-alive): each asset 9-22 ms proxied -> 0.8-1.5 ms
+native; a full page load (HTML + CSS + two fonts + logo, ~520 KB) completes in 7.4 ms with zero
+proxied requests, byte-identical to the origin, and the CDN-artifact bug gone (snapshots now come
+from the origin).
+
 ## 2026-07-06 : emit_fn native output compiles on amd64, not just ARM (NEON guarded)
 
 The emitted C included `#include <arm_neon.h>` plus a NEON `neon_exp` and a NEON map loop

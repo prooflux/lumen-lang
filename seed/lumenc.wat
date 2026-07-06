@@ -41,7 +41,7 @@
 ;;                     Compile materializes string literals here; run continues above them.
 (module
   (import "lumen" "console_print" (func $console_print (param i32 i32)))
-  (memory (export "mem") 100)   ;; page 9 [524288..589824) holds the compile-time type tables (slot/return types)
+  (memory (export "mem") 128)   ;; page 9 [524288..589824) holds the compile-time type tables (slot/return types); pages above it are runtime scratch (the HTTP serve kernel's request/route/body/output windows live in [590000..8388608), matching the native LMEM_CAP)
 
   (data (i32.const 248000) "fn")
   (data (i32.const 248010) "if")

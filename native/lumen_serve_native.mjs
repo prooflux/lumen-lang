@@ -31,8 +31,8 @@ const KERNEL = fs.readFileSync(path.join(__dirname, '../examples/http/http_serve
 export const REQ_LEN_ADDR = 590000, REQ_BASE = 590016, REQ_CAP = 598000 - 590016;
 const ROUTE_COUNT_ADDR = 598000, PROXY_MODE_ADDR = 598008, STAGED_ADDR = 598012;
 const ROUTE_BASE = 598016, BLOB_BASE = 604000, BLOB_CEIL = 610000;   // paths + content-types (baked in source)
-const BODY_BASE = 610000, BODY_CAP = 820000 - 610000;                // bodies (streamed to the binary at startup)
-export const OUT_LEN_ADDR = 829996, OUT_BASE = 830000;
+const BODY_BASE = 1000000, BODY_CAP = 7000000 - 1000000;             // bodies (streamed to the binary at startup)
+export const OUT_LEN_ADDR = 7299996, OUT_BASE = 7300000;
 const METHOD = { GET: 1, POST: 2, PUT: 3, DELETE: 4, HEAD: 5, PATCH: 6, OPTIONS: 7 };
 
 // Emit a Lumen stage() that bakes the route table + proxy flag + small strings (paths, content-types)
@@ -191,6 +191,11 @@ function nextRequest(buf) {
   return { req: buf.subarray(0, end), rest: buf.subarray(end) };
 }
 
+// Keep-alive agents so proxied requests reuse origin connections instead of paying a TCP (and TLS)
+// handshake per request - page assets fan out many requests at once.
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 128 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 128 });
+
 // Proxy an unmatched request to the origin over HTTP or HTTPS (so a TLS origin like a managed
 // platform works), buffer the response, and rebuild it with a clean Content-Length so the client
 // connection can stay alive. Returns the full response bytes (or a 502).
@@ -207,11 +212,12 @@ function proxyRequest(origin, reqBytes) {
     }
     headers.host = origin.host;                          // present the origin's host to the origin
     const body = reqBytes.subarray(he + 4);
-    const mod = origin.protocol === 'https:' ? https : http;
-    const req = mod.request({
+    const secure = origin.protocol === 'https:';
+    const req = (secure ? https : http).request({
       hostname: origin.hostname,
-      port: origin.port || (origin.protocol === 'https:' ? 443 : 80),
+      port: origin.port || (secure ? 443 : 80),
       method, path: pathname, headers,
+      agent: secure ? httpsAgent : httpAgent,
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));

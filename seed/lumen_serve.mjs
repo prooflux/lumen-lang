@@ -25,8 +25,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Memory map - must match examples/http/http_serve.lm.
 const REQ_LEN_ADDR = 590000, REQ_BASE = 590016;
 const ROUTE_COUNT_ADDR = 598000, PROXY_MODE_ADDR = 598008;
-const ROUTE_BASE = 598016, BLOB_BASE = 604000, BLOB_CEIL = 820000;
-const OUT_LEN_ADDR = 829996, OUT_BASE = 830000;
+const ROUTE_BASE = 598016, BLOB_BASE = 604000, BLOB_CEIL = 610000;   // paths + content-types
+const BODY_BASE = 1000000, BODY_CEIL = 7000000;                      // route bodies (pages, assets)
+const OUT_LEN_ADDR = 7299996, OUT_BASE = 7300000;
 const REQ_CAP = ROUTE_COUNT_ADDR - REQ_BASE;   // largest request the kernel will read
 const METHOD = { GET: 1, POST: 2, PUT: 3, DELETE: 4, HEAD: 5, PATCH: 6, OPTIONS: 7 };
 
@@ -54,17 +55,28 @@ function routeBody(route, dir) {
 }
 
 // Stage the route table + blob into the kernel's raw memory once (the server's startup step).
+// Small strings (paths, content-types) pack into the blob; bodies go to the big body window.
 function stageRoutes(mem, routes, dir) {
   const u8 = new Uint8Array(mem.buffer);
   const dv = new DataView(mem.buffer);
   let blob = BLOB_BASE;
+  let body = BODY_BASE;
   const packBytes = (bytes) => {
     if (blob + bytes.length > BLOB_CEIL) {
-      throw new Error(`route table too large: bodies exceed ${BLOB_CEIL - BLOB_BASE} bytes of blob space`);
+      throw new Error(`route table too large: paths/content-types exceed ${BLOB_CEIL - BLOB_BASE} bytes of blob space`);
     }
     const off = blob;
     u8.set(bytes, off);
     blob += bytes.length;
+    return [off, bytes.length];
+  };
+  const packBody = (bytes) => {
+    if (body + bytes.length > BODY_CEIL) {
+      throw new Error(`route bodies exceed ${BODY_CEIL - BODY_BASE} bytes of body space`);
+    }
+    const off = body;
+    u8.set(bytes, off);
+    body += bytes.length;
     return [off, bytes.length];
   };
   dv.setInt32(ROUTE_COUNT_ADDR, routes.length, true);
@@ -72,7 +84,7 @@ function stageRoutes(mem, routes, dir) {
     const base = ROUTE_BASE + i * 32;
     const [pathOff, pathLen] = packBytes(Buffer.from(r.path, 'latin1'));
     const [ctOff, ctLen] = packBytes(Buffer.from(r.contentType || 'text/plain', 'latin1'));
-    const [bodyOff, bodyLen] = packBytes(routeBody(r, dir));
+    const [bodyOff, bodyLen] = packBody(routeBody(r, dir));
     const code = METHOD[(r.method || 'GET').toUpperCase()];
     if (!code) throw new Error(`unknown method ${r.method} for ${r.path}`);
     dv.setInt32(base + 0, code, true);

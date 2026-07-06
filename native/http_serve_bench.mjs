@@ -96,7 +96,7 @@ fn main(c: Console) -> Unit {
   var i = 0
   while i < ${n} {
     serve_one()
-    acc = acc + load32(829996)
+    acc = acc + load32(7299996)
     i = i + 1
   }
   c.print_int(acc)

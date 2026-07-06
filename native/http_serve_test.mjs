@@ -37,7 +37,7 @@ const ROUTES = [
 // Build the expected full response string for a matched route (or the 404 fallback).
 function expectResponse(status, reason, ctype, body) {
   return `HTTP/1.1 ${status} ${reason}\r\nContent-Type: ${ctype}\r\n` +
-    `Content-Length: ${Buffer.byteLength(body, 'latin1')}\r\nConnection: close\r\n\r\n${body}`;
+    `Content-Length: ${Buffer.byteLength(body, 'latin1')}\r\nConnection: keep-alive\r\n\r\n${body}`;
 }
 
 // Each case: [raw request, expected full response string]

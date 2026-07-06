@@ -102,8 +102,17 @@ source runs in the interpreter (the correctness oracle) and, compiled through `e
 code, as the fast artifact. `native/http_serve_bench.mjs` measures that native artifact against an
 identical scripting-language implementation of the same parse/route/build work: byte-for-byte the
 same responses, and the native kernel runs the serving hot path many times faster (measured, not
-asserted). Live TLS and HTTP/2 framing are terminated at the platform edge today; native in-language
-sockets are the capability that retires even the socket shim.
+asserted).
+
+`native/lumen_serve_native.mjs` is the live fast path: it compiles the same kernel to native code and
+drives it behind a keep-alive TCP socket (the emitter's one-shot `main` is replaced with a
+length-framed serve loop that calls the compiled entry per request; the route table self-stages, and
+body bytes stream into the binary at startup). On a fair over-the-wire test - both servers returning
+the identical page as a cached blob, keep-alive on both, single worker each - the native edge serves
+several times the throughput of a scripting web stack, so the win survives an honest wire benchmark
+and not just the in-process one. Live TLS and HTTP/2 framing are terminated at the platform edge
+today; native in-language sockets (which retire even the socket shim) and a native child pool are the
+next steps.
 
 A proxy-mode flag lets the kernel front a whole existing site while routes migrate onto it one at a
 time: it serves the routes it owns and, for anything unmatched, emits an empty response so the shim
@@ -182,6 +191,7 @@ regression; the Forge adds adversarial coverage. The full gate list run by `.git
 - `http_keepalive_test.mjs`
 - `content_type_value_test.mjs`
 - `http_serve_test.mjs`
+- `lumen_serve_native.mjs`
 <!-- /AUTO:gates -->
 
 ## How this document stays current

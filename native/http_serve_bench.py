@@ -40,7 +40,7 @@ def serve_one(req):
         + ctype
         + b"\r\nContent-Length: "
         + str(len(body)).encode()
-        + b"\r\nConnection: close\r\n\r\n"
+        + b"\r\nConnection: keep-alive\r\n\r\n"
         + body
     )
     return len(resp)

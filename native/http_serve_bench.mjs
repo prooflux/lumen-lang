@@ -47,7 +47,7 @@ function expectedResponseLen(req) {
     ? [r.status, 'OK', r.ctype, r.body]
     : [404, 'Not Found', 'text/plain', 'Not Found'];
   const resp = `HTTP/1.1 ${status} ${reason}\r\nContent-Type: ${ctype}\r\n` +
-    `Content-Length: ${Buffer.byteLength(body, 'latin1')}\r\nConnection: close\r\n\r\n${body}`;
+    `Content-Length: ${Buffer.byteLength(body, 'latin1')}\r\nConnection: keep-alive\r\n\r\n${body}`;
   return Buffer.byteLength(resp, 'latin1');
 }
 

@@ -10,6 +10,44 @@ bit-identical to it).
 
 ---
 
+## 2026-07-05 : Native serve path + keep-alive, and it wins the fair over-the-wire fight
+
+The interpreter path serves for correctness; this is the fast path made real. `lumen_serve_native.mjs`
+compiles the SAME `examples/http/http_serve.lm` through `emit_fn.lm` -> C -> clang -O2 into a
+request/response serve loop, and drives it behind a TCP socket:
+
+- The route table is baked into the kernel by a generated `stage()` the Lumen `main` runs once
+  (guarded by a flag in raw memory), so the entry both self-stages and serves. The native emitter
+  turns that entry into a C function; the emitter's one-shot `main` is then replaced with a
+  length-framed stdin/stdout serve loop that calls the same entry per request. Body bytes are not
+  baked into the source (a large page blows the compiler's source cap) - they are streamed into the
+  binary once at startup as a preload block.
+- The socket host serializes requests through the one native child (FIFO-correlated over the pipe),
+  keeps client connections alive, and proxies empty (no-match) responses to the origin.
+- The kernel now emits `Connection: keep-alive` (persistent connections are the server default).
+
+Self-test gate `node lumen_serve_native.mjs --selftest` (wired into `gate.yml`): builds the binary,
+preloads bodies, pipes framed requests, checks response bytes (3/3, including proxy-empty). Verified
+live over `curl`: `/home` served natively, byte-identical to a 24,958-byte page, keep-alive; unmatched
+routes proxied.
+
+### The fair over-the-wire benchmark (the honest one)
+Both servers serving the identical 24,958-byte page as a cached blob (no template render either side),
+keep-alive on both, `ab -k`, single worker each. This is not the in-process microbenchmark; it is real
+HTTP over sockets:
+
+| concurrency | reference stack (uvicorn, 1 worker) | Lumen native edge | ratio |
+|---|---|---|---|
+| 1  | 3,645 req/s  | 15,192 req/s | 4.2x |
+| 10 | 6,758 req/s  | 36,400 req/s | 5.4x |
+| 50 | 6,765 req/s  | 40,801 req/s | 6.0x |
+
+So the win survives an honest wire test with keep-alive on both and identical bytes, not just the
+compiled-framing microbenchmark. Floors held: `perf.mjs` PASS (compile 112% / interpret 102%),
+`selfhost_diff` 16/17 0-diff `SELF: MATCH`, framing bench 23.1x. Caveats kept honest: single worker
+each (both scale with workers/children); this is the static/cacheable surface (compute routes still
+proxy); a child pool and native in-language sockets are the next steps.
+
 ## 2026-07-05 : Table-driven HTTP/1.1 server kernel + socket seam, native beats scripting 23x
 
 Closed the HTTP kernels into an actual server. `examples/http/http_serve.lm` is a pure-Lumen,

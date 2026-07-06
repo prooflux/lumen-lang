@@ -1,0 +1,299 @@
+# Table-driven HTTP/1.1 request server, written in pure Lumen over raw-memory byte buffers.
+#
+# This is the piece that turns the parse/route/build kernels into an actual server: given a raw
+# request and a route table, it produces the exact response bytes for that request. The protocol
+# logic lives entirely in the LANGUAGE (deterministic functions over bytes); the only thing it does
+# not do is own the socket, which is a host capability seam (the machine boundary), kept off the
+# compiler's hot path so serving traffic never touches the compiler and cannot slow the language
+# down. The same source runs in the interpreter (as the correctness oracle) and, compiled to native
+# code, as the fast artifact - so every runtime offset stays inside the window both agree on:
+# above the interpreter's compile pages and below the native heap cap.
+#
+# It uses ONLY load8/store8/load32/store32 + arithmetic - no new builtin, no compiler feature - so
+# it is perf-neutral by construction (perf.mjs still gates it every cycle).
+#
+# --- Memory map (all offsets in (589824, 1048576), agreed by interpreter and native) ---
+# The host stages these before calling; the kernel reads them and writes the response.
+#   REQ_LEN_ADDR   590000  i32  request byte length            (host writes, per connection)
+#   REQ_BASE       590016  ...  request bytes                  (host writes, per connection)
+#   ROUTE_COUNT    598000  i32  number of routes in the table  (host writes, once at startup)
+#   ROUTE_BASE     598016  ...  route entries, 32 bytes each:   (host writes, once at startup)
+#        +0  method_code   (GET=1 POST=2 PUT=3 DELETE=4 HEAD=5 PATCH=6 OPTIONS=7)
+#        +4  path_off      absolute address of the path bytes in the blob
+#        +8  path_len      path byte length
+#       +12  status        HTTP status code to return (e.g. 200)
+#       +16  ctype_off     absolute address of the Content-Type bytes in the blob
+#       +20  ctype_len     Content-Type byte length
+#       +24  body_off      absolute address of the body bytes in the blob
+#       +28  body_len      body byte length
+#   BLOB           604000  ...  path / content-type / body bytes packed by the host
+#   OUT_LEN_ADDR   829996  i32  response byte length           (kernel writes)
+#   OUT_BASE       830000  ...  response bytes                 (kernel writes)
+
+fn req_len_addr() -> Int { return 590000 }
+fn req_base() -> Int { return 590016 }
+fn route_count_addr() -> Int { return 598000 }
+fn route_base() -> Int { return 598016 }
+fn out_len_addr() -> Int { return 829996 }
+fn out_base() -> Int { return 830000 }
+
+fn rlen() -> Int { return load32(req_len_addr()) }
+fn rb(i: Int) -> Int { return load8(req_base() + i) }
+fn route_count() -> Int { return load32(route_count_addr()) }
+
+# Field accessors for route entry `e` (0-based). Each entry is 32 bytes = 8 i32 fields.
+fn entry_addr(e: Int) -> Int { return route_base() + e * 32 }
+fn e_method(e: Int) -> Int { return load32(entry_addr(e) + 0) }
+fn e_path_off(e: Int) -> Int { return load32(entry_addr(e) + 4) }
+fn e_path_len(e: Int) -> Int { return load32(entry_addr(e) + 8) }
+fn e_status(e: Int) -> Int { return load32(entry_addr(e) + 12) }
+fn e_ctype_off(e: Int) -> Int { return load32(entry_addr(e) + 16) }
+fn e_ctype_len(e: Int) -> Int { return load32(entry_addr(e) + 20) }
+fn e_body_off(e: Int) -> Int { return load32(entry_addr(e) + 24) }
+fn e_body_len(e: Int) -> Int { return load32(entry_addr(e) + 28) }
+
+# Scan the request forward from `start` for byte `target`; return its index, or rlen() if absent.
+fn scan(start: Int, target: Int) -> Int {
+  var i = start
+  while i < rlen() {
+    if rb(i) == target { return i }
+    i = i + 1
+  }
+  return rlen()
+}
+
+# Classify the request method from its byte span [0, mlen) with exact ASCII compares.
+fn method_code(mlen: Int) -> Int {
+  if mlen == 3 {
+    if rb(0) == 71 and rb(1) == 69 and rb(2) == 84 { return 1 }              # GET
+    if rb(0) == 80 and rb(1) == 85 and rb(2) == 84 { return 3 }              # PUT
+    return 0
+  }
+  if mlen == 4 {
+    if rb(0) == 80 and rb(1) == 79 and rb(2) == 83 and rb(3) == 84 { return 2 }   # POST
+    if rb(0) == 72 and rb(1) == 69 and rb(2) == 65 and rb(3) == 68 { return 5 }   # HEAD
+    return 0
+  }
+  if mlen == 5 {
+    if rb(0) == 80 and rb(1) == 65 and rb(2) == 84 and rb(3) == 67 and rb(4) == 72 { return 6 }   # PATCH
+    return 0
+  }
+  if mlen == 6 {
+    if rb(0) == 68 and rb(1) == 69 and rb(2) == 76 and rb(3) == 69 and rb(4) == 84 and rb(5) == 69 { return 4 }   # DELETE
+    return 0
+  }
+  if mlen == 7 {
+    if rb(0) == 79 and rb(1) == 80 and rb(2) == 84 and rb(3) == 73 and rb(4) == 79 and rb(5) == 78 and rb(6) == 83 { return 7 }   # OPTIONS
+    return 0
+  }
+  return 0
+}
+
+# 1 if the request path span [REQ_BASE+path_off, +path_len) equals the entry path bytes
+# [e_path_off, +e_path_len), else 0. Method must be checked by the caller.
+fn path_matches(path_off: Int, path_len: Int, e: Int) -> Int {
+  if path_len != e_path_len(e) { return 0 }
+  var k = 0
+  let ea = e_path_off(e)
+  while k < path_len {
+    if rb(path_off + k) != load8(ea + k) { return 0 }
+    k = k + 1
+  }
+  return 1
+}
+
+# Return the matching route index for (method, path), or -1 if none matches. First match wins.
+fn match_route(method: Int, path_off: Int, path_len: Int) -> Int {
+  var e = 0
+  let n = route_count()
+  while e < n {
+    if e_method(e) == method {
+      if path_matches(path_off, path_len, e) == 1 { return e }
+    }
+    e = e + 1
+  }
+  return 0 - 1
+}
+
+# Write one byte at `pos`, return the next position.
+fn w1(pos: Int, ch: Int) -> Int {
+  store8(pos, ch)
+  return pos + 1
+}
+
+# Copy `n` bytes from absolute address `src` to `pos`, return the next position.
+fn wbytes(pos: Int, src: Int, n: Int) -> Int {
+  var p = pos
+  var k = 0
+  while k < n {
+    store8(p, load8(src + k))
+    p = p + 1
+    k = k + 1
+  }
+  return p
+}
+
+# Write "HTTP/1.1 " (9 bytes: H T T P / 1 . 1 space).
+fn write_http_prefix(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 72)  p = w1(p, 84)  p = w1(p, 84)  p = w1(p, 80)  p = w1(p, 47)
+  p = w1(p, 49)  p = w1(p, 46)  p = w1(p, 49)  p = w1(p, 32)
+  return p
+}
+
+# Write "\r\n".
+fn write_crlf(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 13)
+  p = w1(p, 10)
+  return p
+}
+
+fn write_reason_ok(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 79)  p = w1(p, 75)                                              # OK
+  return p
+}
+
+fn write_reason_not_found(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 78)  p = w1(p, 111) p = w1(p, 116) p = w1(p, 32)                # "Not "
+  p = w1(p, 70)  p = w1(p, 111) p = w1(p, 117) p = w1(p, 110) p = w1(p, 100)  # "Found"
+  return p
+}
+
+fn write_reason_internal_error(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 73)  p = w1(p, 110) p = w1(p, 116) p = w1(p, 101) p = w1(p, 114)
+  p = w1(p, 110) p = w1(p, 97)  p = w1(p, 108) p = w1(p, 32)                # "Internal "
+  p = w1(p, 83)  p = w1(p, 101) p = w1(p, 114) p = w1(p, 118) p = w1(p, 101) p = w1(p, 114) p = w1(p, 32)  # "Server "
+  p = w1(p, 69)  p = w1(p, 114) p = w1(p, 114) p = w1(p, 111) p = w1(p, 114)  # "Error"
+  return p
+}
+
+# Map a status code to its reason phrase; unrecognized codes get "OK".
+fn write_reason(pos: Int, code: Int) -> Int {
+  if code == 404 { return write_reason_not_found(pos) }
+  if code == 500 { return write_reason_internal_error(pos) }
+  return write_reason_ok(pos)
+}
+
+# Write "Content-Type: " (14 bytes).
+fn write_ct_header(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 67)  p = w1(p, 111) p = w1(p, 110) p = w1(p, 116) p = w1(p, 101) p = w1(p, 110) p = w1(p, 116)  # Content
+  p = w1(p, 45)                                                            # -
+  p = w1(p, 84)  p = w1(p, 121) p = w1(p, 112) p = w1(p, 101)              # Type
+  p = w1(p, 58)  p = w1(p, 32)                                             # ": "
+  return p
+}
+
+# Write "Content-Length: " (16 bytes).
+fn write_cl_header(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 67)  p = w1(p, 111) p = w1(p, 110) p = w1(p, 116) p = w1(p, 101) p = w1(p, 110) p = w1(p, 116)  # Content
+  p = w1(p, 45)                                                            # -
+  p = w1(p, 76)  p = w1(p, 101) p = w1(p, 110) p = w1(p, 103) p = w1(p, 116) p = w1(p, 104)  # Length
+  p = w1(p, 58)  p = w1(p, 32)                                             # ": "
+  return p
+}
+
+# Write "Connection: close" (17 bytes).
+fn write_conn_close(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 67)  p = w1(p, 111) p = w1(p, 110) p = w1(p, 110) p = w1(p, 101) p = w1(p, 99)  p = w1(p, 116) p = w1(p, 105) p = w1(p, 111) p = w1(p, 110)  # Connection
+  p = w1(p, 58)  p = w1(p, 32)                                             # ": "
+  p = w1(p, 99)  p = w1(p, 108) p = w1(p, 111) p = w1(p, 115) p = w1(p, 101)  # close
+  return p
+}
+
+# Format a non-negative int as decimal ASCII digits (handles 0), return the next position.
+fn write_int(pos: Int, n: Int) -> Int {
+  if n == 0 {
+    return w1(pos, 48)
+  }
+  var digits = 0
+  var temp = n
+  while temp > 0 {
+    digits = digits + 1
+    temp = temp / 10
+  }
+  var divisor = 1
+  var i = 0
+  while i < digits - 1 {
+    divisor = divisor * 10
+    i = i + 1
+  }
+  var p = pos
+  var rem = n
+  var j = 0
+  while j < digits {
+    let d = rem / divisor
+    p = w1(p, 48 + d)
+    rem = rem - d * divisor
+    divisor = divisor / 10
+    j = j + 1
+  }
+  return p
+}
+
+# Frame a full HTTP/1.1 response with the given status, content-type bytes, and body bytes into the
+# output buffer, and store the total byte length. Returns nothing.
+fn frame(status: Int, ctype_off: Int, ctype_len: Int, body_off: Int, body_len: Int) -> Unit {
+  var pos = out_base()
+  pos = write_http_prefix(pos)
+  pos = write_int(pos, status)
+  pos = w1(pos, 32)
+  pos = write_reason(pos, status)
+  pos = write_crlf(pos)
+  pos = write_ct_header(pos)
+  pos = wbytes(pos, ctype_off, ctype_len)
+  pos = write_crlf(pos)
+  pos = write_cl_header(pos)
+  pos = write_int(pos, body_len)
+  pos = write_crlf(pos)
+  pos = write_conn_close(pos)
+  pos = write_crlf(pos)
+  pos = write_crlf(pos)
+  pos = wbytes(pos, body_off, body_len)
+  store32(out_len_addr(), pos - out_base())
+  return ()
+}
+
+# The fallback body/content-type for an unmatched route (404). Staged into the output tail area so
+# it does not depend on the host packing a 404 entry. "Not Found" body, "text/plain" content-type.
+fn write_fallback_ct(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 116) p = w1(p, 101) p = w1(p, 120) p = w1(p, 116)              # text
+  p = w1(p, 47)                                                            # /
+  p = w1(p, 112) p = w1(p, 108) p = w1(p, 97)  p = w1(p, 105) p = w1(p, 110)  # plain
+  return p
+}
+
+fn write_fallback_body(pos: Int) -> Int {
+  var p = pos
+  p = w1(p, 78)  p = w1(p, 111) p = w1(p, 116) p = w1(p, 32)               # "Not "
+  p = w1(p, 70)  p = w1(p, 111) p = w1(p, 117) p = w1(p, 110) p = w1(p, 100)  # "Found"
+  return p
+}
+
+fn main(c: Console) -> Unit {
+  let sp1 = scan(0, 32)                 # first space: end of method
+  let method = method_code(sp1)
+  let path_off = sp1 + 1
+  let sp2 = scan(path_off, 32)          # second space: end of path
+  let path_len = sp2 - path_off
+
+  let e = match_route(method, path_off, path_len)
+  if e == 0 - 1 {
+    # No route matched: build the 404 content just below the output buffer, then frame it.
+    let ct = out_base() - 32
+    let ctend = write_fallback_ct(ct)
+    let body = ctend
+    let bodyend = write_fallback_body(body)
+    frame(404, ct, ctend - ct, body, bodyend - body)
+    return ()
+  }
+  frame(e_status(e), e_ctype_off(e), e_ctype_len(e), e_body_off(e), e_body_len(e))
+  return ()
+}

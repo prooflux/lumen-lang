@@ -10,6 +10,42 @@ bit-identical to it).
 
 ---
 
+## 2026-07-05 : Table-driven HTTP/1.1 server kernel + socket seam, native beats scripting 23x
+
+Closed the HTTP kernels into an actual server. `examples/http/http_serve.lm` is a pure-Lumen,
+table-driven request server: given a raw request and a route table staged in raw memory, it parses
+the request line, linear-scans the table for a method+path match, and frames the exact HTTP/1.1
+response bytes (status line, `Content-Type`, `Content-Length`, `Connection: close`, body), with a
+404 fallback for no match. It adds no compiler feature (only `load8`/`store8`/`load32`/`store32` +
+arithmetic), so it is perf-neutral by construction.
+
+Every runtime offset lives in the window `(589824, 1048576)` - above the interpreter's compile
+pages, below the native `LMEM_CAP` - so the SAME source runs both as the interpreter oracle and as
+a native binary.
+
+- `native/http_serve_test.mjs` (oracle gate, wired into `gate.yml`): stages a fixture route table
+  once, then serves 7 fixture requests (matches, method-mismatch, unknown path) and asserts the
+  response bytes exactly. 7/7.
+- `native/http_serve_bench.mjs` + `http_serve_bench.py`: the native artifact vs a byte-identical
+  scripting-language implementation of the same parse/route/build work. Checksums prove both emit
+  the same responses; two-point timing (cancels startup) measures throughput.
+- `seed/lumen_serve.mjs`: the socket seam. A thin host shim that owns only the TCP socket (the one
+  capability a wasm program lacks, same class as `console_print`), stages a JSON route table into
+  the kernel, and per connection copies the request in, runs the kernel, writes the response back.
+  Verified live over `curl` (200 / 404 with correct bytes).
+
+### Measured (this machine, clang -O2, CPython 3, same algorithm + same bytes)
+- Lumen (native, emit_fn.lm -> clang -O2): **31.62 M req/s**
+- Scripting (pure): **1.34 M req/s**
+- **Lumen native is 23.6x faster** on the serving hot path.
+
+Floors held: `perf.mjs` PASS (compile 109% / interpret 99% of baseline), `selfhost_diff` 16/17
+bit-identical, 0 diff, `SELF: MATCH`. The interpreter serves live for correctness; the native
+compile of the same kernel is the speed artifact; native in-language sockets are the next capability
+that retires even the socket shim.
+
+---
+
 ## 2026-07-01-2030 : Fix float test build flags to match determinism banner claims
 
 Corrected the mismatched compilation flags in `native_float_test.mjs` by switching `-ffp-contract=fast` to `-ffp-contract=off`. This aligns the test harness build process with the pipeline's default determinism rules (#183) and the banner claim `(clang -O3 -ffp-contract=off -fno-fast-math)`.

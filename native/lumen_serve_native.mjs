@@ -17,6 +17,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
@@ -189,9 +191,52 @@ function nextRequest(buf) {
   return { req: buf.subarray(0, end), rest: buf.subarray(end) };
 }
 
+// Proxy an unmatched request to the origin over HTTP or HTTPS (so a TLS origin like a managed
+// platform works), buffer the response, and rebuild it with a clean Content-Length so the client
+// connection can stay alive. Returns the full response bytes (or a 502).
+function proxyRequest(origin, reqBytes) {
+  return new Promise((resolve) => {
+    const text = reqBytes.toString('latin1');
+    const he = text.indexOf('\r\n\r\n');
+    const headLines = text.slice(0, he).split('\r\n');
+    const [method, pathname] = headLines[0].split(' ');
+    const headers = {};
+    for (const l of headLines.slice(1)) {
+      const i = l.indexOf(':');
+      if (i > 0) headers[l.slice(0, i).trim()] = l.slice(i + 1).trim();
+    }
+    headers.host = origin.host;                          // present the origin's host to the origin
+    const body = reqBytes.subarray(he + 4);
+    const mod = origin.protocol === 'https:' ? https : http;
+    const req = mod.request({
+      hostname: origin.hostname,
+      port: origin.port || (origin.protocol === 'https:' ? 443 : 80),
+      method, path: pathname, headers,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const rbody = Buffer.concat(chunks);
+        let head = `HTTP/1.1 ${res.statusCode} ${res.statusMessage || ''}\r\n`;
+        for (let i = 0; i < res.rawHeaders.length; i += 2) {
+          const k = res.rawHeaders[i];
+          if (/^(transfer-encoding|connection|content-length|keep-alive)$/i.test(k)) continue;
+          head += `${k}: ${res.rawHeaders[i + 1]}\r\n`;
+        }
+        head += `Content-Length: ${rbody.length}\r\nConnection: keep-alive\r\n\r\n`;
+        resolve(Buffer.concat([Buffer.from(head, 'latin1'), rbody]));
+      });
+    });
+    req.on('error', () => resolve(Buffer.from('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n', 'latin1')));
+    if (body.length) req.write(body);
+    req.end();
+  });
+}
+
 async function runServer(cfgPath) {
   const cfg = loadConfig(cfgPath);
   const origin = cfg.proxyPass ? new URL(cfg.proxyPass) : null;
+  const port = process.env.PORT ? Number(process.env.PORT) : cfg.port;   // Cloud Run injects PORT
   const { bin, bodyBlock } = await buildNativeServe(cfg.routes, !!origin);
   const serve = makeServer(bin, bodyBlock);
 
@@ -204,25 +249,21 @@ async function runServer(cfgPath) {
       while ((slice = nextRequest(buf))) {
         buf = slice.rest;
         const line = slice.req.slice(0, slice.req.indexOf('\r\n')).toString('latin1');
-        const resp = await serve(slice.req);
-        if (resp.length === 0) {                        // unmatched -> proxy to origin, then close
-          const up = net.connect(Number(origin.port) || 80, origin.hostname, () => up.write(slice.req));
-          up.on('data', (d) => socket.write(d));
-          up.on('end', () => socket.end());
-          up.on('error', () => socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'));
-          process.stdout.write(`${line} -> proxied\n`);
-          return;                                        // stop keep-alive loop for this connection
+        let resp = await serve(slice.req);
+        if (resp.length === 0) {                          // unmatched -> proxy to origin (keep-alive)
+          if (!origin) { resp = Buffer.from('HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: keep-alive\r\n\r\nNot Found', 'latin1'); }
+          else { resp = await proxyRequest(origin, slice.req); process.stdout.write(`${line} -> proxied\n`); }
         }
-        socket.write(resp);                              // keep-alive: write and continue
+        socket.write(resp);                               // keep-alive: write and continue the loop
       }
       busy = false;
     };
-    socket.on('data', (chunk) => { buf = Buffer.concat([buf, chunk]); if (buf.length > REQ_CAP) buf = buf.subarray(0, REQ_CAP); pump(); });
+    socket.on('data', (chunk) => { buf = Buffer.concat([buf, chunk]); pump(); });
     socket.on('error', () => socket.destroy());
   });
 
-  server.listen(cfg.port, () => {
-    console.log(`Lumen HTTP server (NATIVE, kernel compiled via emit_fn.lm) listening on :${cfg.port}`);
+  server.listen(port, () => {
+    console.log(`Lumen HTTP server (NATIVE, kernel compiled via emit_fn.lm) listening on :${port}`);
     console.log(`routes: ${cfg.routes.map((r) => `${r.method} ${r.path}`).join(', ')} (keep-alive)`);
     if (origin) console.log(`proxy: unmatched requests -> ${origin.origin}`);
   });

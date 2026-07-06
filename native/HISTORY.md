@@ -10,6 +10,15 @@ bit-identical to it).
 
 ---
 
+## 2026-07-05 : Edge proxy speaks HTTP/HTTPS + honors PORT (deployable behind a managed platform)
+
+Made the native edge deployable in front of a real origin. The proxy path in `lumen_serve_native.mjs`
+no longer does raw TCP: it reissues the unmatched request over `http`/`https` (so a TLS origin works),
+buffers the response, and rebuilds it with a clean `Content-Length` so the client connection stays
+alive for proxied requests too (previously it closed). The listen port now honors the `PORT` env var
+(managed platforms inject it), falling back to the config port. Verified live: native `/home` and a
+proxied route served on ONE keep-alive connection; `PORT` override honored; self-test 3/3.
+
 ## 2026-07-05 : Native serve path + keep-alive, and it wins the fair over-the-wire fight
 
 The interpreter path serves for correctness; this is the fast path made real. `lumen_serve_native.mjs`

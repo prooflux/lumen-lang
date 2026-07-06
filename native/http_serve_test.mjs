@@ -18,6 +18,7 @@ const SRC = fs.readFileSync(new URL('../examples/http/http_serve.lm', import.met
 const REQ_LEN_ADDR = 590000;
 const REQ_BASE = 590016;
 const ROUTE_COUNT_ADDR = 598000;
+const PROXY_MODE_ADDR = 598008;
 const ROUTE_BASE = 598016;
 const BLOB_BASE = 604000;
 const OUT_LEN_ADDR = 829996;
@@ -98,15 +99,41 @@ function serve(raw) {
 }
 
 let fail = 0;
+let checks = 0;
 console.log('== Lumen-native table-driven HTTP/1.1 server (oracle gate) ==');
 for (const [raw, want] of CASES) {
+  checks++;
   const got = serve(raw);
   const ok = got === want;
   const label = JSON.stringify(raw.split('\r\n')[0]);
   if (ok) { console.log(`PASS  ${label}  -> ${JSON.stringify(got.split('\r\n')[0])} (${Buffer.byteLength(got, 'latin1')} bytes)`); }
   else { console.log(`FAIL  ${label}\n  got  ${JSON.stringify(got)}\n  want ${JSON.stringify(want)}`); fail++; }
 }
+
+// Proxy mode: with PROXY_MODE=1, an unmatched request emits an empty response (out length 0) so the
+// host proxies it to an origin; a matched route is still served locally. Default (0) stays 404.
+const pdv = new DataView(mem.buffer);
+pdv.setInt32(PROXY_MODE_ADDR, 1, true);
+{
+  checks++;
+  const bytes = Buffer.from('GET /a-legacy-route HTTP/1.1\r\n\r\n', 'latin1');
+  new Uint8Array(mem.buffer).set(bytes, REQ_BASE);
+  pdv.setInt32(REQ_LEN_ADDR, bytes.length, true);
+  I.ex.run(I.ex.dbg_main());
+  const outLen = pdv.getInt32(OUT_LEN_ADDR, true);
+  if (outLen === 0) { console.log('PASS  proxy-mode unmatched  -> empty (host proxies to origin)'); }
+  else { console.log(`FAIL  proxy-mode unmatched  -> outLen ${outLen}, want 0`); fail++; }
+}
+{
+  checks++;
+  const want = expectResponse(200, 'OK', 'text/html; charset=utf-8', '<h1>Home</h1>');
+  const got = serve('GET /home HTTP/1.1\r\n\r\n');
+  if (got === want) { console.log('PASS  proxy-mode matched /home -> served locally by the kernel'); }
+  else { console.log(`FAIL  proxy-mode matched /home\n  got ${JSON.stringify(got)}`); fail++; }
+}
+pdv.setInt32(PROXY_MODE_ADDR, 0, true);
+
 console.log(fail === 0
-  ? `\n${CASES.length}/${CASES.length} requests served correctly by the Lumen HTTP server kernel.`
-  : `\nFAIL: ${fail}/${CASES.length} cases failed.`);
+  ? `\n${checks}/${checks} server checks passed (routing, 404, and proxy-mode fallback).`
+  : `\nFAIL: ${fail}/${checks} checks failed.`);
 process.exit(fail === 0 ? 0 : 1);

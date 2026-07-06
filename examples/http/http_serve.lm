@@ -17,6 +17,10 @@
 #   REQ_LEN_ADDR   590000  i32  request byte length            (host writes, per connection)
 #   REQ_BASE       590016  ...  request bytes                  (host writes, per connection)
 #   ROUTE_COUNT    598000  i32  number of routes in the table  (host writes, once at startup)
+#   PROXY_MODE     598008  i32  0 = 404 on no match (standalone); 1 = signal the host to proxy an
+#                               unmatched request to an origin by emitting an empty response
+#                               (out length 0). Lets Lumen front a legacy origin: it serves the
+#                               routes it owns and defers the rest. (host writes, once at startup)
 #   ROUTE_BASE     598016  ...  route entries, 32 bytes each:   (host writes, once at startup)
 #        +0  method_code   (GET=1 POST=2 PUT=3 DELETE=4 HEAD=5 PATCH=6 OPTIONS=7)
 #        +4  path_off      absolute address of the path bytes in the blob
@@ -33,6 +37,7 @@
 fn req_len_addr() -> Int { return 590000 }
 fn req_base() -> Int { return 590016 }
 fn route_count_addr() -> Int { return 598000 }
+fn proxy_mode_addr() -> Int { return 598008 }
 fn route_base() -> Int { return 598016 }
 fn out_len_addr() -> Int { return 829996 }
 fn out_base() -> Int { return 830000 }
@@ -286,6 +291,12 @@ fn main(c: Console) -> Unit {
 
   let e = match_route(method, path_off, path_len)
   if e == 0 - 1 {
+    if load32(proxy_mode_addr()) == 1 {
+      # No local route, and an origin is configured: emit an empty response so the host proxies
+      # this request to the origin instead of answering it here.
+      store32(out_len_addr(), 0)
+      return ()
+    }
     # No route matched: build the 404 content just below the output buffer, then frame it.
     let ct = out_base() - 32
     let ctend = write_fallback_ct(ct)

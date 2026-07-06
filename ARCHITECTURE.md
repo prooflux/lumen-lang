@@ -105,6 +105,11 @@ same responses, and the native kernel runs the serving hot path many times faste
 asserted). Live TLS and HTTP/2 framing are terminated at the platform edge today; native in-language
 sockets are the capability that retires even the socket shim.
 
+A proxy-mode flag lets the kernel front a whole existing site while routes migrate onto it one at a
+time: it serves the routes it owns and, for anything unmatched, emits an empty response so the shim
+forwards the request to a configured origin. The routes Lumen owns run at native speed; the rest are
+transparently proxied until they too are moved onto the kernel. Default (no origin) stays a plain 404.
+
 <!-- AUTO:kernels -->
 - `content_type_value`
 - `hex_decode`

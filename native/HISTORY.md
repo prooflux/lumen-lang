@@ -44,6 +44,16 @@ bit-identical, 0 diff, `SELF: MATCH`. The interpreter serves live for correctnes
 compile of the same kernel is the speed artifact; native in-language sockets are the next capability
 that retires even the socket shim.
 
+### Proxy-mode edge (same day)
+Added a `PROXY_MODE` flag (i32 at 598008) so the kernel can front an existing site while routes
+migrate onto it. On no match with the flag set, the kernel emits an empty response (out length 0);
+`seed/lumen_serve.mjs` reads that as "not mine" and forwards the request to a configured `proxyPass`
+origin, streaming the response back. Routes the kernel owns run at native speed; everything else is
+transparently proxied until it too is moved onto the kernel. Default (no origin) stays a plain 404.
+Oracle gate extended to 9/9 (adds unmatched-in-proxy-mode -> empty and matched-in-proxy-mode ->
+served-locally). Native still 23.5x scripting after the change; `selfhost_diff` 16/17 0-diff.
+Verified live: `/home` served by the kernel, `/yield-curve` proxied to the origin, over `curl`.
+
 ---
 
 ## 2026-07-01-2030 : Fix float test build flags to match determinism banner claims

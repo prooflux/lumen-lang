@@ -24,7 +24,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Memory map - must match examples/http/http_serve.lm.
 const REQ_LEN_ADDR = 590000, REQ_BASE = 590016;
-const ROUTE_COUNT_ADDR = 598000, ROUTE_BASE = 598016, BLOB_BASE = 604000, BLOB_CEIL = 820000;
+const ROUTE_COUNT_ADDR = 598000, PROXY_MODE_ADDR = 598008;
+const ROUTE_BASE = 598016, BLOB_BASE = 604000, BLOB_CEIL = 820000;
 const OUT_LEN_ADDR = 829996, OUT_BASE = 830000;
 const REQ_CAP = ROUTE_COUNT_ADDR - REQ_BASE;   // largest request the kernel will read
 const METHOD = { GET: 1, POST: 2, PUT: 3, DELETE: 4, HEAD: 5, PATCH: 6, OPTIONS: 7 };
@@ -98,27 +99,47 @@ const u8 = new Uint8Array(mem.buffer);
 const blobUsed = stageRoutes(mem, cfg.routes, cfg.dir);
 const mainEntry = I.ex.dbg_main();
 
+// Optional origin: when set, the kernel runs in proxy mode - it serves the routes it owns and, for
+// anything unmatched, emits an empty response so this shim forwards the request to the origin. That
+// makes Lumen the front door for a whole site while routes migrate onto the kernel one at a time.
+const origin = cfg.proxyPass ? new URL(cfg.proxyPass) : null;
+dv.setInt32(PROXY_MODE_ADDR, origin ? 1 : 0, true);
+
 // Serve one request synchronously: copy bytes in, run the kernel, copy the response out. Running is
 // synchronous, so per-connection handling is atomic within one event-loop tick (no memory interleave).
+// Returns null when the kernel matched no route and proxy mode is on (the caller proxies instead).
 function serve(reqBytes) {
   const n = Math.min(reqBytes.length, REQ_CAP);
   u8.set(reqBytes.subarray(0, n), REQ_BASE);
   dv.setInt32(REQ_LEN_ADDR, n, true);
   I.ex.run(mainEntry);
   const outLen = dv.getInt32(OUT_LEN_ADDR, true);
+  if (outLen === 0) return null;
   return Buffer.from(u8.subarray(OUT_BASE, OUT_BASE + outLen));   // copy out of the wasm heap
+}
+
+function proxy(socket, reqBytes, line) {
+  const up = net.connect(Number(origin.port) || 80, origin.hostname, () => up.write(reqBytes));
+  up.on('data', (d) => socket.write(d));
+  up.on('end', () => socket.end());
+  up.on('error', () => socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'));
+  process.stdout.write(`${line} -> proxied to ${origin.hostname}:${origin.port}\n`);
 }
 
 const server = net.createServer((socket) => {
   let buf = Buffer.alloc(0);
+  let handled = false;
   socket.on('data', (chunk) => {
+    if (handled) return;
     buf = Buffer.concat([buf, chunk]);
     if (buf.indexOf('\r\n\r\n') === -1) {                          // wait for the full header block
       if (buf.length > REQ_CAP) socket.destroy();
       return;
     }
+    handled = true;
     const line = buf.slice(0, buf.indexOf('\r\n')).toString('latin1');
     const resp = serve(buf);
+    if (resp === null) { proxy(socket, buf, line); return; }       // unmatched -> origin
     const status = resp.slice(9, 12).toString('latin1');
     process.stdout.write(`${line} -> ${status} (${resp.length} bytes)\n`);
     socket.end(resp);
@@ -129,4 +150,5 @@ const server = net.createServer((socket) => {
 server.listen(cfg.port, () => {
   console.log(`Lumen HTTP server (kernel: examples/http/http_serve.lm) listening on :${cfg.port}`);
   console.log(`routes: ${cfg.routes.map(r => `${r.method} ${r.path}`).join(', ')}  (blob ${blobUsed} bytes)`);
+  if (origin) console.log(`proxy: unmatched requests -> ${origin.origin}`);
 });

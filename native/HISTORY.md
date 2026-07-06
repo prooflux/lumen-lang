@@ -10,6 +10,18 @@ bit-identical to it).
 
 ---
 
+## 2026-07-06 : emit_fn native output compiles on amd64, not just ARM (NEON guarded)
+
+The emitted C included `#include <arm_neon.h>` plus a NEON `neon_exp` and a NEON map loop
+unconditionally, so it only compiled on ARM; on amd64 (e.g. a managed container platform) clang
+failed with "NEON intrinsics not available with the soft-float ABI" even for an integer-only program.
+Guarded all NEON emission with `#if defined(__ARM_NEON)`: the preamble include + `neon_exp`, and the
+vectorized map loop in `emit_vec_map` (its existing scalar tail loop now covers the whole range when
+NEON is absent). ARM is bit-identical (the guard is true there), so `native_diff` 17/17,
+`native_fn_test` and `native_float_test` stay green; verified the amd64 path by compiling a float-map
+program with `-U__ARM_NEON` (NEON excluded) and confirming it compiles and produces the same result
+as the ARM/NEON build. This unblocks running the native edge on an amd64 platform.
+
 ## 2026-07-05 : Edge proxy speaks HTTP/HTTPS + honors PORT (deployable behind a managed platform)
 
 Made the native edge deployable in front of a real origin. The proxy path in `lumen_serve_native.mjs`

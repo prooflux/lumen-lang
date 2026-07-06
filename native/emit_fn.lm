@@ -557,6 +557,7 @@ fn emit_vec_map(c: Console) -> Unit {
   let f_pc = ls_get(6)
   let fs = ir_word(f_pc + 1)
   c.print("{ double* vin=(double*)&AHEAP[F") num(c, ls_get(5)) c.print("+1]; double* vout=(double*)&AHEAP[F") num(c, ls_get(4)) c.print("+1]; int64_t vn=F") num(c, ls_get(3)) c.print("; int64_t vi=0;\n")
+  c.print("#if defined(__ARM_NEON)\n")
   c.print("for(; vi<=vn-2; vi+=2){\n")
   c.print("    float64x2_t vres;\n")
   var j = 0
@@ -569,6 +570,7 @@ fn emit_vec_map(c: Console) -> Unit {
   emit_vec_body(c, f_pc)
   c.print("    vst1q_f64(&vout[vi], vres);\n")
   c.print("}\n")
+  c.print("#endif\n")
   c.print("for(; vi<vn; vi++){ vout[vi] = f") num(c, f_pc) c.print("(vin[vi]); }\n")
   c.print("}\n")
 }
@@ -655,6 +657,7 @@ static int64_t f2i_sat(double x){if(isnan(x))return 0; if(x>=9223372036854775808
 static double f_exp(double x){return exp(x);}
 static double f_ln(double x){return log(x);}
 static double f_pow(double x,double y){return pow(x,y);}
+#if defined(__ARM_NEON)
 #include <arm_neon.h>
 // General vectorized exp (minimax, Cody-Waite range reduction, <= 1 ULP). Used by emit_fn.lm's SIMD
 // map-lowering pass for any straight-line Float-array map. Not benchmark-specific: pure math, called
@@ -678,6 +681,7 @@ static inline float64x2_t neon_exp(float64x2_t x){
   int64x2_t kb = vshlq_n_s64(vaddq_s64(vcvtq_s64_f64(k_f), vdupq_n_s64(1023)), 52);
   return vmulq_f64(s, vreinterpretq_f64_s64(kb));
 }
+#endif
 #define AHEAP_CAP 9072
 #define LM_CAP_BYTES 36288
 #define LMEM_CAP 1048576

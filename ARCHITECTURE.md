@@ -22,10 +22,14 @@ disposable bootstrap).
 
 ```
   web traffic          pure-Lumen HTTP protocol kernels (parse/build over raw memory)
+  native toolchain     lumenc / lumopt / lumemit: the compiler stages as native binaries,
+                       each a Lumen program compiled by the Lumen toolchain (the fixpoint)
   native backend       Lumen-written emitters (IR -> C / LLVM) + a Lumen optimizer
   self-hosting         lumenc.lm: the compiler written in Lumen, compiles itself
-  the seed             seed/lumenc.wat: pure-WAT bootstrap compiler + interpreter
-  the machine          a wasm engine today; native machine code is the endgame
+  the seed             seed/lumenc.wat: pure-WAT bootstrap compiler + interpreter,
+                       kept forever as the reference oracle
+  the machine          native machine code (clang assembles the emitted C: the scoped
+                       machine-boundary assistant)
 ```
 
 ## The seed (`seed/lumenc.wat`)
@@ -69,9 +73,11 @@ The path from IR to native code, written in Lumen and driven by a disposable hos
 - `native/emit_llvm.lm` - an LLVM-IR emitter over the same IR.
 - `native/optimize.lm` - a Lumen-written optimizer (jump-threading, constant folding, dead-code
   elimination) that also optimizes the compiler itself.
-- `native/pipeline.mjs` - the disposable driver: it compiles a `.lm` with the seed, snapshots the IR
-  into a fresh instance's scratch region, runs the chosen Lumen emitter, and assembles the result.
-  It is re-derived in Lumen at the native fixpoint.
+- `native/pipeline.mjs` - the bootstrap-and-gate harness: it compiles a `.lm` with the seed,
+  snapshots the IR, runs the chosen Lumen emitter, and assembles the result. Since the fixpoint,
+  the production compile-and-emit path is the native binaries themselves (built by
+  `lumenc_native.mjs`, `lumemit_native.mjs`, `lumopt_native.mjs`); the harness remains as the
+  seed-side reference every native stage is gated bit-identical against.
 
 The **native fixpoint is achieved and gated**. The toolchain runs as piped native binaries, each a
 Lumen program compiled by the language's own emitter: `lumenc` (source in, IR + main entry +

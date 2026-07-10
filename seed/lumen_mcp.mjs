@@ -27,7 +27,7 @@ import wabtInit from 'wabt';
 import { createCompiler, SRC_BASE } from './compiler_core.mjs';
 import { buildDiagnostics, applyFixes, fixableCount, explain } from './diagnostics.mjs';
 import { cacheKey, CACHE_DIR_PATH } from './cache.mjs';
-import { compileToIR, optimizeIR, emitC, emitLlvm } from '../native/pipeline.mjs';
+import { compileToIR, optimizeIR, emitC, emitLlvm, buildAndRunFn } from '../native/pipeline.mjs';
 
 const lumen = await createCompiler();
 
@@ -402,6 +402,18 @@ async function emitLlvmFromSource(src) {
   return { ok: true, llvm: await emitLlvm(src) };
 }
 
+// Compile and run through the self-compiled native toolchain: IR -> optimizer -> emit_fn.lm C ->
+// clang -O2 -> execute. The compiler, optimizer, and emitter are all Lumen programs; the same
+// toolchain rebuilds itself bit-identically (native/native_fixpoint_test.mjs gates it in CI).
+async function runNativeFromSource(src) {
+  const c = lumen.compile(src);
+  if (!c.ok) return { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
+  const t0 = performance.now();
+  const r = await buildAndRunFn(src, '-O2');
+  const totalMs = performance.now() - t0;
+  return { ok: r.exit === 0, stdout: r.stdout, exit: r.exit, totalMs: Math.round(totalMs * 10) / 10 };
+}
+
 const TOOLS = [
   { name: 'lumen_check', description: 'Compile Lumen source and return structured diagnostics (the canonical Diagnostic stream). Empty diagnostics means it compiles.',
     inputSchema: { type: 'object', properties: { source: { type: 'string', description: 'Lumen (.lm) source' } }, required: ['source'] } },
@@ -427,6 +439,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
   { name: 'lumen_emit_c', description: 'The native C source the Lumen C-emitter (emit_fn.lm) produces for this program. The emitter is itself a Lumen program run on the seed.',
     inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
+  { name: 'lumen_run_native', description: 'Compile and run Lumen source through the SELF-COMPILED native toolchain: IR -> Lumen optimizer -> emit_fn.lm C -> clang -O2 -> execute the binary. Returns stdout, exit code, and total wall ms; diagnostics if it does not compile. The compiler, optimizer, and emitter are all Lumen programs, and the same toolchain rebuilds itself bit-identically (the native fixpoint, gated in CI).',
+    inputSchema: { type: 'object', properties: { source: { type: 'string', description: 'Lumen (.lm) source' } }, required: ['source'] } },
   { name: 'lumen_emit_llvm', description: 'The LLVM IR the Lumen LLVM-emitter (emit_llvm.lm) produces for this program. The emitter is itself a Lumen program run on the seed.',
     inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
 ];
@@ -459,6 +473,7 @@ async function callTool(name, args) {
   if (name === 'lumen_optimize') return await optimizeFromSource(src);
   if (name === 'lumen_emit_c') return await emitCFromSource(src);
   if (name === 'lumen_emit_llvm') return await emitLlvmFromSource(src);
+  if (name === 'lumen_run_native') return await runNativeFromSource(src);
   throw new Error(`unknown tool ${name}`);
 }
 
@@ -470,7 +485,7 @@ function send(msg) { process.stdout.write(JSON.stringify(msg) + '\n'); }
 export async function dispatch(req) {
   const { id, method, params } = req;
   if (method === 'initialize')
-    return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'lumen-mcp', version: '0.1.0' } } };
+    return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'lumen-mcp', version: '0.2.0' } } };
   if (method === 'notifications/initialized' || method === 'initialized') return null;   // notification
   if (method === 'ping') return { jsonrpc: '2.0', id, result: {} };
   if (method === 'tools/list') return { jsonrpc: '2.0', id, result: { tools: TOOLS } };

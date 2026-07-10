@@ -154,6 +154,37 @@ fn restore_orig(orig_len: Int, orig_main: Int) -> Unit {
   store32(589820, 0)
 }
 
+fn kill_dead_function_span(start: Int, orig_len: Int) -> Int {
+  # Structural invariant: a function body is only ever entered via CALL to its own
+  # op-13 header, so once the header itself is unreachable (already dropped by the
+  # terminator-DCE scan above) the ENTIRE body up to the next header is unreachable
+  # too - even where a stray target sits inside it. (A CALL inside the dead function
+  # marks its own return-address as a target during the decode/marking pass, which
+  # walks the whole program before dead functions are known; that self-inflicted
+  # target must not stop this span's removal, and must not survive as a target either
+  # - the relocation-rewrite pass fails safe if a kept-alive target loses its keep bit.)
+  # Kills start..next-header (exclusive); returns the pc where it stopped so the caller
+  # can resume scanning from there.
+  var pc = start
+  var done = 0
+  while done == 0 {
+    let op = ir_word(pc)
+    let ilen = 1 + oplen(pc, op)
+    var w = 0
+    while w < ilen {
+      set_keep(pc + w, 0)
+      set_target(pc + w, 0)
+      w = w + 1
+    }
+    pc = pc + ilen
+    if pc >= orig_len { done = 1 }
+    if done == 0 {
+      if ir_word(pc) == 13 { done = 1 }
+    }
+  }
+  return pc
+}
+
 fn optimize_passes(c: Console) -> Int {
   let orig_len = ir_len()
   let orig_main = load32(524292)
@@ -367,6 +398,24 @@ fn optimize_passes(c: Console) -> Int {
         pc = pc + 1 + oplen(pc, op)
       }
     }
+  }
+
+  # Pass D: dead-function full-span elimination. The terminator-DCE scan above stops the
+  # instant it hits ANY word marked as a target, including a target created by a dead
+  # function's own internal CALL (its return-address). That leaves a dead function's
+  # header+prologue removed but its remaining body orphaned as unreachable code glued
+  # onto the previous function. Sweep again and force the full span dead wherever the
+  # header itself was already dropped.
+  var dpc = 0
+  while dpc < orig_len {
+    let dop = ir_word(dpc)
+    var next_dpc = dpc + 1 + oplen(dpc, dop)
+    if dop == 13 {
+      if get_keep(dpc) == 0 {
+        next_dpc = kill_dead_function_span(dpc, orig_len)
+      }
+    }
+    dpc = next_dpc
   }
 
   # Relocate and compact

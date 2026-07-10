@@ -313,5 +313,38 @@ if (INLINE_ENABLED) {
   if (identical) pass++; else fail++;
 }
 
-console.log(`\n${pass}/${SCALAR.length + 12} checks: optimize.lm (Lumen) is output-identical to the interpreter; size delta: -${totalWordsRemoved} words, total folds: ${totalFolds} (fail ${fail})`);
+// dead-function full-span elimination: when a zero-caller function's op-13 header is dropped,
+// its ENTIRE body must go with it, not just the header+arity(+one CALL word) prefix. Regression
+// (found on seed/lumenc.lm, raw pc 9293, fs=3): only the prefix was removed, leaving ~19 orphaned
+// body words glued onto the end of the previous function, referencing a field slot (F2) beyond
+// the surviving function's declared frame size (fs). Walk the optimized IR with the standard
+// variable-length decode and assert no function body references a field/local index >= its own
+// header's declared fs. Before the fix this found exactly 1 violation on lumenc.lm; must be 0.
+{
+  const lmSrc = fs.readFileSync(new URL('../seed/lumenc.lm', import.meta.url), 'utf8');
+  const { words: rawWords, main: rawMain } = await compileToIR(lmSrc);
+  const { words: optWords } = await optimizeIR(rawWords, rawMain);
+  const oplenStd = (ws, pc, op) => {
+    if ([1, 2, 6, 7, 13, 14, 15, 25].includes(op)) return 1;
+    if ([8, 29].includes(op)) return 2;
+    if (op === 57) return ws[pc + 1] + 2;
+    return 0;
+  };
+  let violations = 0;
+  let curFs = -1;
+  let pc = 0;
+  while (pc < optWords.length) {
+    const op = optWords[pc];
+    if (op === 13) curFs = optWords[pc + 1];
+    if ((op === 2 || op === 14) && curFs >= 0) {
+      if (optWords[pc + 1] >= curFs) violations++;
+    }
+    pc = pc + 1 + oplenStd(optWords, pc, op);
+  }
+  const okDeadFn = violations === 0;
+  console.log(`${okDeadFn ? 'PASS' : 'FAIL'}  dead-function-full-span  lumenc.lm IR ${rawWords.length} -> ${optWords.length} words; field-slot violations=${violations}`);
+  if (okDeadFn) pass++; else fail++;
+}
+
+console.log(`\n${pass}/${SCALAR.length + 13} checks: optimize.lm (Lumen) is output-identical to the interpreter; size delta: -${totalWordsRemoved} words, total folds: ${totalFolds} (fail ${fail})`);
 process.exit(fail === 0 ? 0 : 1);

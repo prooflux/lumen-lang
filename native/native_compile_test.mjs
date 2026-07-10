@@ -140,7 +140,9 @@ async function main() {
     const src = readSrc(rel);
     const name = path.basename(rel);
     const native = runNative(bin, src);
-    if (native.crashed) {
+    if (native.crashed && native.status === 70) {
+      console.log(`INFO  ${name}: native binary hit a wild memory access, but the preamble's SIGBUS/SIGSEGV handler converted it to a controlled exit (status=70) - lumenc.lm still has no bounds-safety net in C for unlexed syntax; the seed interpreter degrades to nerr>0 on the same input instead of trapping. See the trap-hardening gate below for the scored assertion.`);
+    } else if (native.crashed) {
       console.log(`INFO  ${name}: native binary crashed (signal=${native.signal}, status=${native.status}) - lumenc.lm has no bounds-safety net in C for unlexed syntax; the seed interpreter degrades to nerr>0 on the same input instead of trapping`);
     } else if (native.nerr > 0) {
       console.log(`INFO  ${name}: native nerr=${native.nerr} (graceful, matches interpreter's SELFHOST-ERROR)`);
@@ -149,7 +151,42 @@ async function main() {
     }
   }
 
-  console.log(`\nSummary: ${pass} pass, ${fail} fail (corpus=${CORPUS.length}, SELF=1, known-unsupported=${KNOWN_UNSUPPORTED.length} not scored)`);
+  // ---------------------------------------------------------------------------------------
+  // TRAP HARDENING: safe_div.lm / propagate.lm (KNOWN_UNSUPPORTED above) drive the native
+  // binary's own sum-type-unaware code path into a wild memory access. Before the signal
+  // handler installed in emit_fn.lm's preamble, this was a raw SIGBUS (exit 138) or SIGSEGV
+  // (exit 139) with no diagnostic. Assert the controlled outcome instead: exit 70 (EX_SOFTWARE),
+  // a clean stderr message, and no bogus success frame on stdout.
+  // ---------------------------------------------------------------------------------------
+  console.log('\n== trap hardening: wild memory access converts to a controlled exit, not a raw crash ==');
+  let trapFail = 0;
+  for (const rel of KNOWN_UNSUPPORTED) {
+    const src = readSrc(rel);
+    const name = path.basename(rel);
+    let status = null, stderrText = '', stdoutLen = 0, threw = null;
+    try {
+      const out = execFileSync(bin, { input: Buffer.from(src, 'utf8'), maxBuffer: 64 * 1024 * 1024 });
+      stdoutLen = out.length;
+      status = 0;
+    } catch (e) {
+      status = e.status ?? null;
+      stderrText = e.stderr ? e.stderr.toString('utf8') : '';
+      stdoutLen = e.stdout ? e.stdout.length : 0;
+      threw = e.signal || null;
+    }
+    const okStatus = status === 70;
+    const okStderr = stderrText.includes('lumen: memory trap');
+    const okStdout = stdoutLen === 0;
+    if (okStatus && okStderr && okStdout) {
+      console.log(`PASS  ${name}: exit=70, stderr="lumen: memory trap", stdout empty (raw signal was ${threw || '(process signal masked by handler)'})`);
+    } else {
+      console.log(`FAIL  ${name}: exit=${status} (want 70), signal=${threw}, stderr=${JSON.stringify(stderrText)}, stdoutLen=${stdoutLen} (want 0)`);
+      trapFail++;
+    }
+  }
+  fail += trapFail;
+
+  console.log(`\nSummary: ${pass} pass, ${fail} fail (corpus=${CORPUS.length}, SELF=1, known-unsupported=${KNOWN_UNSUPPORTED.length} not scored, trap-hardening=${KNOWN_UNSUPPORTED.length} scored)`);
   if (fail > 0) {
     console.log('\nFirst divergence(s):');
     for (const d of firstDivergence) console.log(`  ${JSON.stringify(d)}`);

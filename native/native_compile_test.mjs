@@ -46,6 +46,11 @@ function readSrc(rel) {
   return fs.readFileSync(path.join(__dirname, rel), 'utf8');
 }
 
+// Extended native output format (all little-endian): [nerr:i32][count:i32][words:count*i32]
+// [main_entry:i32][literal_heap: LIT_HEAP_BYTES bytes]. See lumenc_native.mjs's
+// patchMainToCompileDriver for the exact contract.
+const LIT_HEAP_BYTES = 524288 - 488000;   // 36288
+
 // Run the native binary, feeding src on stdin. Never throws: a crash (SIGBUS/SIGSEGV from
 // lumenc.lm's own unhandled-syntax paths) is reported as a status, not an exception.
 function runNative(bin, src) {
@@ -56,7 +61,13 @@ function runNative(bin, src) {
     const emitCount = out.readInt32LE(4);
     const words = new Int32Array(emitCount);
     for (let i = 0; i < emitCount; i++) words[i] = out.readInt32LE(8 + i * 4);
-    return { crashed: false, nerr, emitCount, words };
+    const mainOff = 8 + emitCount * 4;
+    if (out.length < mainOff + 4 + LIT_HEAP_BYTES) {
+      return { crashed: true, signal: null, bytes: out.length, reason: 'truncated-extended-output' };
+    }
+    const mainEntry = out.readInt32LE(mainOff);
+    const literalHeap = out.subarray(mainOff + 4, mainOff + 4 + LIT_HEAP_BYTES);
+    return { crashed: false, nerr, emitCount, words, mainEntry, literalHeap };
   } catch (e) {
     return { crashed: true, signal: e.signal || null, status: e.status ?? null };
   }
@@ -101,14 +112,20 @@ async function main() {
       continue;
     }
     const diff = compareWords(seedIR.words, native.words);
-    if (diff.ok) {
-      console.log(`PASS  ${name}: nerr=0, ${native.emitCount} IR words, bit-identical`);
-      pass++;
-    } else {
+    if (!diff.ok) {
       console.log(`FAIL  ${name}: diverge at word ${diff.index} (seed ${diff.seedWord} vs native ${diff.nativeWord})`);
       fail++;
       firstDivergence.push({ name, reason: 'ir-diff', index: diff.index, seedWord: diff.seedWord, nativeWord: diff.nativeWord });
+      continue;
     }
+    if (native.mainEntry !== seedIR.main) {
+      console.log(`FAIL  ${name}: main entry mismatch (seed ${seedIR.main} vs native ${native.mainEntry})`);
+      fail++;
+      firstDivergence.push({ name, reason: 'main-mismatch', seedMain: seedIR.main, nativeMain: native.mainEntry });
+      continue;
+    }
+    console.log(`PASS  ${name}: nerr=0, ${native.emitCount} IR words, main=f${native.mainEntry}, bit-identical`);
+    pass++;
   }
 
   console.log('\n== SELF: lumenc.lm compiling itself ==');
@@ -124,14 +141,18 @@ async function main() {
     fail++;
   } else {
     const diff = compareWords(seedSelfIR.words, nativeSelf.words);
-    if (diff.ok) {
-      console.log(`PASS  SELF(lumenc.lm): nerr=0, ${nativeSelf.emitCount} IR words, bit-identical`);
-      selfOk = true;
-      pass++;
-    } else {
+    if (!diff.ok) {
       console.log(`FAIL  SELF(lumenc.lm): diverge at word ${diff.index} (seed ${diff.seedWord} vs native ${diff.nativeWord})`);
       fail++;
       firstDivergence.push({ name: 'SELF(lumenc.lm)', reason: 'ir-diff', index: diff.index, seedWord: diff.seedWord, nativeWord: diff.nativeWord });
+    } else if (nativeSelf.mainEntry !== seedSelfIR.main) {
+      console.log(`FAIL  SELF(lumenc.lm): main entry mismatch (seed ${seedSelfIR.main} vs native ${nativeSelf.mainEntry})`);
+      fail++;
+      firstDivergence.push({ name: 'SELF(lumenc.lm)', reason: 'main-mismatch', seedMain: seedSelfIR.main, nativeMain: nativeSelf.mainEntry });
+    } else {
+      console.log(`PASS  SELF(lumenc.lm): nerr=0, ${nativeSelf.emitCount} IR words, main=f${nativeSelf.mainEntry}, bit-identical`);
+      selfOk = true;
+      pass++;
     }
   }
 

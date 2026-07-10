@@ -42,16 +42,14 @@ function patchMainToOptimizeDriver(csrc, base) {
   const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);(f\d+)\(\);return 0;\}/);
   if (!m) throw new Error('could not find the emitted main entry to patch');
   const entry = m[1];
-  const driver = `int main(void){
-  setvbuf(stdout,0,_IONBF,0);
-  unsigned char h[4];
-  if(fread(h,1,4,stdin)!=4)return 1;
-  uint32_t n=(uint32_t)h[0]|((uint32_t)h[1]<<8)|((uint32_t)h[2]<<16)|((uint32_t)h[3]<<24);
-  if(n>0){ if(fread(LMEM+${base},1,n,stdin)!=n)return 1; }
-  *(int32_t*)(LMEM+${CNT_THREADED})=0;
-  *(int32_t*)(LMEM+${CNT_FOLDED})=0;
-  *(int32_t*)(LMEM+${CNT_CHANGED})=0;
-  ${entry}();
+  // optimize.lm's own emitted main body ends in a HALT opcode, which emit_fn.lm lowers to
+  // exit(0), so entry() below never returns to this driver. Register the output write as an
+  // atexit handler (installed before the call) so it still runs when exit(0) fires inside
+  // entry(); guard with g_written so a normal (non-exit) return path never double-writes.
+  const driver = `static int32_t g_written=0;
+static void write_output(void){
+  if(g_written)return;
+  g_written=1;
   int32_t newlen=*(int32_t*)(LMEM+${base});
   int32_t newmain=*(int32_t*)(LMEM+${base + 4});
   int32_t threaded=*(int32_t*)(LMEM+${CNT_THREADED});
@@ -60,6 +58,20 @@ function patchMainToOptimizeDriver(csrc, base) {
   int32_t hdrs[5]={newlen,newmain,threaded,folded,changed};
   fwrite(hdrs,4,5,stdout);
   if(newlen>0)fwrite(LMEM+${base + 8},1,(size_t)newlen*4,stdout);
+  fflush(stdout);
+}
+int main(void){
+  setvbuf(stdout,0,_IONBF,0);
+  unsigned char h[4];
+  if(fread(h,1,4,stdin)!=4)return 1;
+  uint32_t n=(uint32_t)h[0]|((uint32_t)h[1]<<8)|((uint32_t)h[2]<<16)|((uint32_t)h[3]<<24);
+  if(n>0){ if(fread(LMEM+${base},1,n,stdin)!=n)return 1; }
+  *(int32_t*)(LMEM+${CNT_THREADED})=0;
+  *(int32_t*)(LMEM+${CNT_FOLDED})=0;
+  *(int32_t*)(LMEM+${CNT_CHANGED})=0;
+  atexit(write_output);
+  ${entry}();
+  write_output();
   return 0;
 }`;
   return csrc.replace(m[0], driver);

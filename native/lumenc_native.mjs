@@ -30,6 +30,9 @@ const SYMTAB_CEIL = 157000;   // same scan window selfhost_diff.mjs uses
 const OUT_EMIT_COUNT_ADDR = 0;
 const OUT_NERR_ADDR = 28;
 const OUT_IR_BASE = 211328;
+const LIT_HEAP_BASE = 488000;    // seed/lumenc.wat $hp start; matches compiler_core's Text heap
+const LIT_HEAP_CEIL = 524288;    // page-9 boundary; heap is bump-allocated, never exceeds this
+const LIT_HEAP_BYTES = LIT_HEAP_CEIL - LIT_HEAP_BASE;   // 36288
 
 const EMIT_FN_SRC = fs.readFileSync(new URL('./emit_fn.lm', import.meta.url), 'utf8');
 const LUMENC_SRC = fs.readFileSync(new URL('../seed/lumenc.lm', import.meta.url), 'utf8');
@@ -84,8 +87,19 @@ async function compileLumencRaw() {
 // Replace the emitter's one-shot `int main(void){...f<main>();return 0;}` with a driver that
 // reads all of stdin (capped at SRC_CAP, the SRC region size) into LMEM at SRC_BASE, calls the
 // lex_compile entry directly (not lumenc.lm's own `main`, which is a self-test driver, not a
-// stdin-facing compile entry point), then writes nerr, emit count, and the emitted IR words to
-// stdout, all little-endian, nothing else.
+// stdin-facing compile entry point), then writes nerr, emit count, the emitted IR words, the
+// program's main entry, and the raw literal (string) heap bytes to stdout, all little-endian,
+// nothing else.
+//
+// Extended output format (all little-endian): [nerr:i32][count:i32][words:count*i32]
+// [main_entry:i32][literal_heap: LIT_HEAP_BYTES bytes, verbatim LMEM[LIT_HEAP_BASE,LIT_HEAP_CEIL)].
+// The literal heap is dumped wholesale, no logic in the seam: each string in it is already laid
+// out as [len:i32][utf8 bytes] at the pointer an MKTEXT operand names, mirroring exactly how
+// compileToIR/compileLumencRaw construct their strings sidecars by reading getInt32(ptr) then
+// ptr+4..ptr+4+len (see compileToIR in pipeline.mjs and the strings walk above). The main entry
+// is found by a logic-free scan of the symbol table (12-byte records name_off/name_len/entry in
+// [150000,157000), names in [100000,150000)) for the 4-byte name "main", the same region/stride
+// selfhost_diff.mjs and compileLumencRaw already scan for lex_compile.
 function patchMainToCompileDriver(csrc, lexCompileEntry) {
   const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);f\d+\(\);return 0;\}/);
   if (!m) throw new Error('could not find the emitted main entry to patch');
@@ -95,11 +109,27 @@ function patchMainToCompileDriver(csrc, lexCompileEntry) {
   f${lexCompileEntry}((int64_t)srclen);
   int32_t nerr=*(int32_t*)(LMEM+${OUT_NERR_ADDR});
   int32_t emitc=*(int32_t*)(LMEM+${OUT_EMIT_COUNT_ADDR});
+  int32_t mainentry=0;   // matches lumenc.wat's $main_entry default (i32.const 0): if no
+                         // function literally named "main" exists in the compiled input, the
+                         // seed's dbg_main() reports this same uninitialized default, not a
+                         // sentinel - mirror that convention exactly rather than inventing one.
+  for(int32_t addr=150000;addr<157000;addr+=12){
+    int32_t name_off=*(int32_t*)(LMEM+addr);
+    int32_t name_len=*(int32_t*)(LMEM+addr+4);
+    int32_t entry=*(int32_t*)(LMEM+addr+8);
+    if(name_len==4 && name_off>=100000 && name_off<150000
+       && LMEM[name_off]=='m' && LMEM[name_off+1]=='a' && LMEM[name_off+2]=='i' && LMEM[name_off+3]=='n'){
+      mainentry=entry;
+    }
+  }
   unsigned char h1[4]={(unsigned char)nerr,(unsigned char)(nerr>>8),(unsigned char)(nerr>>16),(unsigned char)(nerr>>24)};
   unsigned char h2[4]={(unsigned char)emitc,(unsigned char)(emitc>>8),(unsigned char)(emitc>>16),(unsigned char)(emitc>>24)};
+  unsigned char h3[4]={(unsigned char)mainentry,(unsigned char)(mainentry>>8),(unsigned char)(mainentry>>16),(unsigned char)(mainentry>>24)};
   fwrite(h1,1,4,stdout);
   fwrite(h2,1,4,stdout);
   if(emitc>0)fwrite(LMEM+${OUT_IR_BASE},1,(size_t)emitc*4,stdout);
+  fwrite(h3,1,4,stdout);
+  fwrite(LMEM+${LIT_HEAP_BASE},1,${LIT_HEAP_BYTES},stdout);
   return 0;
 }`;
   return csrc.replace(m[0], driver);

@@ -132,22 +132,6 @@ async function main() {
       pass++;
     } else {
       reportDivergence('SELF(lumenc.lm)', refC, natC);
-      console.log(`  ROOT CAUSE (documented, not a staging bug): every C program emit_fn.lm emits`);
-      console.log(`  hard-codes a runtime array/text heap capped at AHEAP_CAP=9072 slots /`);
-      console.log(`  LM_CAP_BYTES=36288 bytes (emit_fn.lm lines ~736-757, printed as fixed literal`);
-      console.log(`  text - independent of the program being compiled). lm_alloc_bytes/lm_anew`);
-      console.log(`  silently call fflush(stdout);exit(0) when that fixed ceiling is exceeded, with`);
-      console.log(`  exit code 0 (no crash, no signal - verified by direct shell invocation, not an`);
-      console.log(`  execFileSync artifact). Small/medium programs (the 16-program corpus above,`);
-      console.log(`  <=116 IR words) never approach 9072 allocations at runtime and pass bit-`);
-      console.log(`  identical. Running the native lumemit binary on lumenc.lm's own IR (9319`);
-      console.log(`  words) means emit_fn.lm, AT RUNTIME, performs far more than 9072 num()/`);
-      console.log(`  int_to_text calls while translating that much IR to C text, so it hits its`);
-      console.log(`  own emitted ceiling mid-emission and the driver silently truncates. This is`);
-      console.log(`  intrinsic to emit_fn.lm's own emitted C (same for ANY native binary emit_fn.lm`);
-      console.log(`  produces, not specific to this driver's staging) and out of scope to fix here`);
-      console.log(`  (would require editing emit_fn.lm's AHEAP_CAP/LM_CAP_BYTES literals, which are`);
-      console.log(`  not among the files this task may touch).`);
       fail++;
     }
   }
@@ -185,8 +169,6 @@ async function main() {
         if (chainedC === refC) { console.log(`PASS  SELF chain: bit-identical (${chainedC.length}B)`); pass++; }
         else {
           reportDivergence('SELF chain', refC, chainedC);
-          console.log('  (same AHEAP_CAP root cause documented above - the native lumemit binary');
-          console.log('   cannot complete an emission this large regardless of how its input arrived.)');
           fail++;
         }
       } catch (e) {
@@ -217,7 +199,7 @@ async function main() {
     // Native: spawn included (one-shot binary, reads one framed input, exits).
     const nativeStart = process.hrtime.bigint();
     for (let i = 0; i < N; i++) {
-      try { runLumemitNative(emitBin, ir.words, ir.main, ir.strings); } catch { /* truncates; still spawns+runs */ }
+      runLumemitNative(emitBin, ir.words, ir.main, ir.strings);
     }
     const nativeMs = Number(process.hrtime.bigint() - nativeStart) / 1e6 / N;
 
@@ -227,18 +209,13 @@ async function main() {
     const floorMs = Number(process.hrtime.bigint() - floorStart) / 1e6 / FLOOR_N;
 
     console.log(`interpreted (emitWith on lumenc.lm-sized IR, ${N} runs): ${interpMs.toFixed(2)}ms/run`);
-    console.log(`native lumemit (spawn included, ${N} runs, truncated output per the AHEAP_CAP`);
-    console.log(`  blocker above - reports wall time to exit(0), NOT a complete/correct emission):`);
-    console.log(`  ${nativeMs.toFixed(2)}ms/run`);
+    console.log(`native lumemit (spawn included, ${N} runs, complete emission now that the shared`);
+    console.log(`  heap's physical storage covers lumenc.lm-sized output): ${nativeMs.toFixed(2)}ms/run`);
     console.log(`spawn floor (/usr/bin/true): ${floorMs.toFixed(3)}ms/call`);
     console.log(`native minus spawn floor: ~${(nativeMs - floorMs).toFixed(2)}ms/run`);
     console.log(`ratio (native/interpreted, as measured): ${(nativeMs / interpMs).toFixed(2)}x`);
-    console.log('HONEST CAVEAT: because the native binary truncates on lumenc.lm-sized input (Part B');
-    console.log('root cause above), this native number times a PARTIAL emission (56264 of 113821');
-    console.log('bytes, ~49%), not the same amount of work as the interpreted number. It is reported');
-    console.log('for completeness, not as an apples-to-apples throughput comparison. A same-size,');
-    console.log('complete comparison uses the largest corpus program the native binary completes');
-    console.log('correctly (fizzbuzz.lm, 116 IR words):');
+    console.log('For reference, the same comparison on the largest corpus program (fizzbuzz.lm,');
+    console.log('116 IR words):');
     {
       const src2 = readSrc('../mu/examples/fizzbuzz.lm');
       const ir2 = await compileToIR(src2);

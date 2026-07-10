@@ -740,8 +740,9 @@ static inline float64x2_t neon_exp(float64x2_t x){
 #endif
 #define AHEAP_CAP 9072
 #define LM_CAP_BYTES 36288
+#define AHEAP_PHYS 1048576
 #define LMEM_CAP 8388608
-static int64_t AHEAP[AHEAP_CAP];
+static int64_t AHEAP[AHEAP_PHYS];
 static unsigned char LMEM[LMEM_CAP];
 static int64_t AHP=0;
 static int64_t LM_HP=0;
@@ -751,7 +752,7 @@ static void lm_aset(int64_t a,int64_t i,int64_t x){int64_t len=AHEAP[a]; if(i<0|
 static int64_t lm_alen(int64_t a){return AHEAP[a];}
 static int64_t lm_alloc_bytes(int64_t num_bytes) {
   int64_t words = (num_bytes + 7) / 8;
-  if (LM_HP + num_bytes > LM_CAP_BYTES || AHP + words > AHEAP_CAP) { fflush(stdout); exit(0); }
+  if (AHP + words > AHEAP_PHYS) { fflush(stdout); exit(0); }
   LM_HP += num_bytes;
   int64_t h = AHP;
   for (int64_t i = 0; i < words; i++) AHEAP[h + i] = 0;

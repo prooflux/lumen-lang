@@ -100,7 +100,7 @@ async function compileLumencRaw() {
 // is found by a logic-free scan of the symbol table (12-byte records name_off/name_len/entry in
 // [150000,157000), names in [100000,150000)) for the 4-byte name "main", the same region/stride
 // selfhost_diff.mjs and compileLumencRaw already scan for lex_compile.
-function patchMainToCompileDriver(csrc, lexCompileEntry) {
+export function patchMainToCompileDriver(csrc, lexCompileEntry) {
   const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);f\d+\(\);return 0;\}/);
   if (!m) throw new Error('could not find the emitted main entry to patch');
   const driver = `int main(void){
@@ -135,21 +135,30 @@ function patchMainToCompileDriver(csrc, lexCompileEntry) {
   return csrc.replace(m[0], driver);
 }
 
-// Build the native lumenc binary. Returns { bin, variant, entry }: the binary path, the IR
-// variant it was built from ('raw'), and the lex_compile entry pc used to name the driven fn.
-export async function buildLumencNative(opt = '-O2') {
-  const { words, main, strings, lexCompileEntry } = await compileLumencRaw();
-  const csrc = await emitWith(EMIT_FN_SRC, words, main, strings, EMIT_FN_BASE, EMIT_FN_CEIL);
-  const patched = patchMainToCompileDriver(csrc, lexCompileEntry);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumenc-native-'));
-  const cfile = path.join(dir, 'lumenc.c'), bin = path.join(dir, 'lumenc');
-  fs.writeFileSync(cfile, patched);
+// Compile a C source string to a native binary with the flags used everywhere in this pipeline
+// (-ffp-contract=off -fno-fast-math, plus the requested optimization level). Returns the binary
+// path (in a fresh tmp dir named with `tag`). Shared by buildLumencNative and any caller that
+// needs to clang a patched C source directly (e.g. the fixpoint gate's generation-2 build).
+export function buildNativeBinaryFromC(csrc, { opt = '-O2', tag = 'native', name = 'bin' } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${tag}-`));
+  const cfile = path.join(dir, `${name}.c`), bin = path.join(dir, name);
+  fs.writeFileSync(cfile, csrc);
   try {
     execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', opt, '-o', bin, cfile],
       { stdio: ['ignore', 'ignore', 'pipe'] });
   } catch (e) {
     throw new Error(`clang failed: ${String(e.stderr || e.message).slice(0, 500)}`);
   }
+  return bin;
+}
+
+// Build the native lumenc binary. Returns { bin, variant, entry }: the binary path, the IR
+// variant it was built from ('raw'), and the lex_compile entry pc used to name the driven fn.
+export async function buildLumencNative(opt = '-O2') {
+  const { words, main, strings, lexCompileEntry } = await compileLumencRaw();
+  const csrc = await emitWith(EMIT_FN_SRC, words, main, strings, EMIT_FN_BASE, EMIT_FN_CEIL);
+  const patched = patchMainToCompileDriver(csrc, lexCompileEntry);
+  const bin = buildNativeBinaryFromC(patched, { opt, tag: 'lumenc-native', name: 'lumenc' });
   return { bin, variant: 'raw', entry: lexCompileEntry };
 }
 

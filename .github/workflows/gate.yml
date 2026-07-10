@@ -56,6 +56,7 @@ jobs:
           node fixpoint_emit_test.mjs
           node native_compile_test.mjs
           node native_pipeline_test.mjs
+          node native_fixpoint_test.mjs
           node http_parse_test.mjs
           node http_headers_test.mjs
           node http_response_test.mjs

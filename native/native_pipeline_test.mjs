@@ -49,17 +49,17 @@ const CORPUS = [
   '../mu/examples/sum_loop.lm',
   '../mu/examples/bitwise.lm',
 ];
-const LIT_HEAP_BASE = 488000, LIT_HEAP_CEIL = 524288, LIT_HEAP_BYTES = LIT_HEAP_CEIL - LIT_HEAP_BASE;
+export const LIT_HEAP_BASE = 488000, LIT_HEAP_CEIL = 524288, LIT_HEAP_BYTES = LIT_HEAP_CEIL - LIT_HEAP_BASE;
 
 function readSrc(rel) { return fs.readFileSync(path.join(__dirname, rel), 'utf8'); }
 
-function firstDiverge(a, b) {
+export function firstDiverge(a, b) {
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i;
   return a.length === b.length ? -1 : n;
 }
 
-function reportDivergence(label, a, b) {
+export function reportDivergence(label, a, b) {
   const i = firstDiverge(a, b);
   console.log(`FAIL  ${label}: diverge at byte ${i} (ref len ${a.length}, native len ${b.length})`);
   console.log(`  ref  context: ${JSON.stringify(a.slice(Math.max(0, i - 40), i + 40))}`);
@@ -67,7 +67,9 @@ function reportDivergence(label, a, b) {
 }
 
 // Extended native-lumenc output parser (matches lumenc_native.mjs's patchMainToCompileDriver).
-function runNativeLumenc(bin, src) {
+// Exported for reuse by native_fixpoint_test.mjs (the fixpoint gate needs the same extended
+// stdout parsing to read generation-1's compile of lumenc.lm's own source).
+export function runNativeLumenc(bin, src) {
   const out = execFileSync(bin, { input: Buffer.from(src, 'utf8'), maxBuffer: 64 * 1024 * 1024 });
   const nerr = out.readInt32LE(0);
   const emitc = out.readInt32LE(4);
@@ -82,7 +84,7 @@ function runNativeLumenc(bin, src) {
 // Rebuild the strings sidecar from the raw literal-heap blob via the same op-15 walk
 // compileToIR/compileLumencRaw use: find MKTEXT operand pointers in the words, then read
 // [len:i32][bytes] at (ptr - LIT_HEAP_BASE) inside the blob.
-function stringsFromBlob(words, blob) {
+export function stringsFromBlob(words, blob) {
   const ptrs = [];
   let pc = 0;
   while (pc < words.length) {
@@ -280,4 +282,8 @@ async function main() {
   process.exit(fail === 0 ? 0 : 1);
 }
 
-main().catch((err) => { console.error(err); process.exit(1); });
+// Only run the test suite when this file is executed directly (node native_pipeline_test.mjs),
+// not when its helpers above are imported by another module (e.g. native_fixpoint_test.mjs).
+if (process.argv[1] && process.argv[1].endsWith('native_pipeline_test.mjs')) {
+  main().catch((err) => { console.error(err); process.exit(1); });
+}

@@ -10,11 +10,13 @@
 
 Lumen aims to be self-hosted to the metal: it compiles itself, and the goal is that every shipped
 artifact is Lumen source compiled by Lumen, with the machine as the only thing underneath. Today it
-is **self-hosted in source** (`lumenc.lm` compiles itself bit-identically, `SELF: MATCH`) and the
-native backend is substantially built; the remaining gap is emitting its own runnable binary
-(the native fixpoint). Three invariants hold on every change: **oracle-gated** (every layer is
-bit-exact against a Lumen reference), **never slower** (`perf.mjs` gates throughput), and
-**self-hosted** (no foreign language becomes the real artifact; host shims are disposable bootstrap).
+is **self-hosted in source** (`lumenc.lm` compiles itself bit-identically, `SELF: MATCH`) **and at
+the native fixpoint**: the compiler and the emitter both run as native binaries, and a
+generation-2 compiler built from the native pipeline's own C output produces byte-identical output
+(`native/native_fixpoint_test.mjs`, in CI). Three invariants hold on every change: **oracle-gated**
+(every layer is bit-exact against a Lumen reference), **never slower** (`perf.mjs` gates
+throughput), and **self-hosted** (no foreign language becomes the real artifact; host shims are
+disposable bootstrap).
 
 ## The layered stack
 
@@ -71,9 +73,18 @@ The path from IR to native code, written in Lumen and driven by a disposable hos
   into a fresh instance's scratch region, runs the chosen Lumen emitter, and assembles the result.
   It is re-derived in Lumen at the native fixpoint.
 
-The **native fixpoint** (the compiler compiling itself to a native binary and retiring the seed) is
-in progress: the heap/IR-injection blocker is fixed and `emit_fn.lm` now emits the whole compiler;
-remaining work is clang-clean codegen and the native driver. See `docs/NATIVE_BACKEND_PLAN.md`.
+The **native fixpoint is achieved and gated**. The toolchain runs as piped native binaries, each a
+Lumen program compiled by the language's own emitter: `lumenc` (source in, IR + main entry +
+literal heap out), `lumemit` (framed IR in, C out - the emitter compiled by itself, emitting), and
+`lumopt` (the optimizer). `native/native_fixpoint_test.mjs` proves the loop closes: the native
+pipe's C for the compiler is byte-identical to the seed path, and a generation-2 compiler binary
+built from that output (no seed emit in the loop) produces byte-identical output on the compiler
+source and the whole corpus. Measured at compiler scale: the native compile stage runs ~23x faster
+than the interpreted self-hosted compiler (spawn included; ~59x work-only); the emit stage ~3-4x
+(currently bound by unbuffered per-token output, the next speed item). The emitted runtime's heap
+mirrors the interpreter faithfully: one shared cursor, arrays/sums guarded at the interpreter's
+logical bound (halt-parity gated), text free to the physical arena. The seed remains the reference
+oracle forever. See `docs/NATIVE_BACKEND_PLAN.md` for history.
 
 ### Lumen-written emitters and passes
 
@@ -175,6 +186,9 @@ regression; the Forge adds adversarial coverage. The full gate list run by `.git
 - `standalone_diff.mjs`
 - `heapcap_test.mjs`
 - `fixpoint_emit_test.mjs`
+- `native_compile_test.mjs`
+- `native_pipeline_test.mjs`
+- `native_fixpoint_test.mjs`
 - `http_parse_test.mjs`
 - `http_headers_test.mjs`
 - `http_response_test.mjs`

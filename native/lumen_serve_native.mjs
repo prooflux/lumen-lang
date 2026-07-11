@@ -32,6 +32,13 @@ export const REQ_LEN_ADDR = 590000, REQ_BASE = 590016, REQ_CAP = 598000 - 590016
 const ROUTE_COUNT_ADDR = 598000, PROXY_MODE_ADDR = 598008, STAGED_ADDR = 598012;
 const ROUTE_BASE = 598016, BLOB_BASE = 604000, BLOB_CEIL = 610000;   // paths + content-types (baked in source)
 const BODY_BASE = 1000000, BODY_CAP = 7000000 - 1000000;             // bodies (streamed to the binary at startup)
+// Host-keyed multi-tenant routing (Stone D): a per-route host span table, kept SEPARATE from the
+// 32-byte route entry (not folded into it) so the entry stays byte-identical for every existing
+// caller (http_serve_test.mjs, http_serve_bench.mjs, seed/lumen_serve.mjs) that stages routes at a
+// hardcoded stride of 32 and knows nothing about tenants - their host table region is simply never
+// written, reads back zero (wasm/BSS memory is zero-initialized), and zero means "wildcard", which
+// is exactly their pre-existing single-tenant behavior. See examples/http/http_serve.lm's map.
+const HOST_TABLE_BASE = 7000000, HOST_TABLE_CEIL = 7100000;          // 8 bytes/route: host_off, host_len
 export const OUT_LEN_ADDR = 7299996, OUT_BASE = 7300000;
 const METHOD = { GET: 1, POST: 2, PUT: 3, DELETE: 4, HEAD: 5, PATCH: 6, OPTIONS: 7 };
 
@@ -55,10 +62,12 @@ function genServeSrc(routes, proxyMode) {
   };
   let bodyOff = BODY_BASE;                            // bodies, streamed at startup
   const bodyChunks = [];
+  if (HOST_TABLE_BASE + routes.length * 8 > HOST_TABLE_CEIL) throw new Error('route table exceeds host table space');
   routes.forEach((r, i) => {
     const base = ROUTE_BASE + i * 32;
     const [pathOff, pathLen] = pack(Buffer.from(r.path, 'latin1'));
     const [ctOff, ctLen] = pack(Buffer.from(r.contentType || 'text/plain', 'latin1'));
+    const [hostOff, hostLen] = r.host ? pack(Buffer.from(r.host, 'latin1')) : [0, 0];
     const body = r.bodyBytes;
     const bOff = bodyOff;
     bodyOff += body.length;
@@ -70,6 +79,9 @@ function genServeSrc(routes, proxyMode) {
       [16, ctOff], [20, ctLen], [24, bOff], [28, body.length]]) {
       lines.push(`  store32(${base + k}, ${v})`);
     }
+    const hbase = HOST_TABLE_BASE + i * 8;
+    lines.push(`  store32(${hbase}, ${hostOff})`);
+    lines.push(`  store32(${hbase + 4}, ${hostLen})`);
   });
   const src = `${serveBody}
 fn stage() -> Unit {
@@ -128,10 +140,15 @@ function genHandlerServeSrc(routes, proxyMode, handlersSrc, handlerNames) {
   };
   let bodyOff = BODY_BASE;
   const bodyChunks = [];
+  if (HOST_TABLE_BASE + routes.length * 8 > HOST_TABLE_CEIL) throw new Error('route table exceeds host table space');
   routes.forEach((r, i) => {
     const base = ROUTE_BASE + i * 32;
     const [pathOff, pathLen] = pack(Buffer.from(r.path, 'latin1'));
     const [ctOff, ctLen] = pack(Buffer.from(r.contentType || 'text/plain', 'latin1'));
+    const [hostOff, hostLen] = r.host ? pack(Buffer.from(r.host, 'latin1')) : [0, 0];
+    const hbase = HOST_TABLE_BASE + i * 8;
+    lines.push(`  store32(${hbase}, ${hostOff})`);
+    lines.push(`  store32(${hbase + 4}, ${hostLen})`);
     const code = METHOD[(r.method || 'GET').toUpperCase()];
     if (!code) throw new Error(`unknown method ${r.method}`);
     let bodyOffExpr, bLen;
@@ -181,6 +198,7 @@ fn main(c: Console) -> Unit {
   let sp2 = scan(path_off, 32)          # second space: end of path
   let qpos = scan_to(path_off, sp2, 63) # '?': cut the query string off the match key
   let path_len = qpos - path_off
+  find_host()
   var query_off = 0
   var query_len = 0
   if qpos < sp2 {

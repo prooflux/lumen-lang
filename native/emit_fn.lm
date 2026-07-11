@@ -11,6 +11,17 @@ fn ir_word(i: Int) -> Int { return load32(hdr() + 8 + i * 4) }
 fn arity_base() -> Int { return 2200000 }
 fn arity_of(e: Int) -> Int { return load32(arity_base() + e * 4) }
 
+# Opt-in native fuel counter (SaaS Stone C: metering/billing/hard-isolation primitive).
+# The harness sets these two words in the emit instance's memory BEFORE running emit_fn.
+# FUEL_MODE==0 (default) is byte-for-byte identical to today's emission: nothing below reads
+# these unless a caller has deliberately opted in. FUEL_MODE==1 additionally emits a fuel
+# counter in the C preamble and a decrement-and-trap check at every basic-block label, so a
+# runaway loop/recursion (every back-edge crosses a label) cannot outlive its instruction budget.
+fn fuel_mode_addr() -> Int { return 2500000 }
+fn fuel_budget_addr() -> Int { return 2500004 }
+fn fuel_mode() -> Int { return load32(fuel_mode_addr()) }
+fn fuel_budget() -> Int { return load32(fuel_budget_addr()) }
+
 fn dir_base() -> Int { return hdr() + 8 + ir_len() * 4 }
 fn dir_word_count() -> Int { return load32(dir_base()) }
 fn num_strings() -> Int { return dir_word_count() / 3 }
@@ -648,6 +659,7 @@ fn emit_bodies(c: Console) -> Unit {
       if op == 57 { pc = pc + 3 + ir_word(pc + 1) } else {
         if ls_get(0) == pc {
           c.print("L") num(c, pc) c.print(": ;\n")
+          if fuel_mode() == 1 { c.print("if(--LM_FUEL<0)lm_out_of_fuel();\n") }
           emit_vec_map(c)
           c.print("goto L") num(c, ls_get(1)) c.print(";\n")
           pc = ls_get(1)
@@ -656,6 +668,7 @@ fn emit_bodies(c: Console) -> Unit {
         } else {
           if resetnext == 1 { d = 0 resetnext = 0 }
           c.print("L") num(c, pc) c.print(": ")
+          if fuel_mode() == 1 { c.print("if(--LM_FUEL<0)lm_out_of_fuel();") }
           d = emit_op(c, pc, d, func_pc)
           if op == 0 { resetnext = 1 }
           if op == 7 { resetnext = 1 }
@@ -702,7 +715,15 @@ fn main(c: Console) -> Unit {
 static const unsigned char lm_trap_msg[19] = {108,117,109,101,110,58,32,109,101,109,111,114,121,32,116,114,97,112,10};
 static void lm_trap(int sig){ write(2, lm_trap_msg, 19); _exit(70); }
 __attribute__((constructor)) static void lm_install_traps(void){ signal(SIGBUS, lm_trap); signal(SIGSEGV, lm_trap); }
-static void pic(int64_t v){uint64_t u; int n; char b[24];
+")
+  if fuel_mode() == 1 {
+    c.print("static int64_t LM_FUEL_BUDGET = ") num(c, fuel_budget()) c.print(";\n")
+    c.print("static int64_t LM_FUEL = 0;\n")
+    c.print("static void lm_fuel_reset(void){ LM_FUEL = LM_FUEL_BUDGET; }\n")
+    c.print("static const unsigned char lm_fuel_msg[19] = {108,117,109,101,110,58,32,111,117,116,32,111,102,32,102,117,101,108,10};\n")
+    c.print("static void lm_out_of_fuel(void){ write(2, lm_fuel_msg, 19); _exit(71); }\n")
+  }
+  c.print("static void pic(int64_t v){uint64_t u; int n; char b[24];
 if(v<0){putchar(45);u=0-(uint64_t)v;}else{u=(uint64_t)v;}
 if(u==0){putchar(48);putchar(10);return;}
 n=0; while(u!=0){b[n]=(char)(48+(int)(u%10));n=n+1;u=u/10;}
@@ -829,6 +850,8 @@ static void lm_printtext(int64_t a) {
     if op == 13 { c.print("__attribute__((always_inline)) ") emit_sig(c, pc) c.print(";\n") }
     if op == 57 { pc = pc + 3 + ir_word(pc + 1) } else { pc = pc + 1 + oplen(op) }
   }
-  c.print("int main(void){setvbuf(stdout,0,_IONBF,0);f") num(c, ir_main()) c.print("();return 0;}\n")
+  c.print("int main(void){setvbuf(stdout,0,_IONBF,0);")
+  if fuel_mode() == 1 { c.print("lm_fuel_reset();") }
+  c.print("f") num(c, ir_main()) c.print("();return 0;}\n")
   emit_bodies(c)
 }

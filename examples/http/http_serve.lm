@@ -31,14 +31,27 @@
 #       +20  ctype_len     Content-Type byte length
 #       +24  body_off      absolute address of the body bytes (blob or body window)
 #       +28  body_len      body byte length
-#   BLOB           604000  ...  path / content-type bytes packed by the host (small strings)
+#   BLOB           604000  ...  path / content-type / host bytes packed by the host (small strings)
 #   BODY WINDOW  1000000  ...  route body bytes (pages, assets), staged by the host, to 7000000
+#   HOST_TABLE   7000000  ...  per-route host span table, 8 bytes each, up to 7100000:  (host-keyed
+#                               multi-tenant routing; host, not the route entry, carries these so
+#                               the 32-byte route entry stays byte-identical for every caller that
+#                               does not know about tenants)
+#        +0  host_off   absolute address of the route's required Host header value in the blob
+#        +4  host_len   byte length; 0 means "no host required" (matches ANY tenant - the default/
+#                       wildcard route, and the only case a config predating this feature ever hits)
+#   REQ_HOST_OFF  7100000  i32  matched request's Host header value offset (relative to REQ_BASE),
+#                               cached once per request by find_host(); 0 if no Host header present
+#   REQ_HOST_LEN  7100004  i32  matched request's Host header value length; 0 if absent
 #   OUT_LEN_ADDR  7299996  i32  response byte length           (kernel writes)
 #   OUT_BASE      7300000  ...  response bytes (to ~8388608, so ~1 MB max response) (kernel writes)
 #
 # Matching: the request path is compared with the query string cut off (everything from '?'), so
 # "/a.css?v=1" and "/a.css" hit the same route. HEAD matches GET routes and emits the same response
-# headers (including the GET Content-Length) with no body, per HTTP semantics.
+# headers (including the GET Content-Length) with no body, per HTTP semantics. A route additionally
+# matches only if its host_len is 0 (wildcard) or its host bytes equal the request's Host header
+# value exactly - this is the density lever: ONE binary can front N tenant hostnames by staging
+# host-specific routes ahead of the wildcard ones (first match wins).
 
 fn req_len_addr() -> Int { return 590000 }
 fn req_base() -> Int { return 590016 }
@@ -113,13 +126,44 @@ fn path_matches(path_off: Int, path_len: Int, e: Int) -> Int {
   return 1
 }
 
-# Return the matching route index for (method, path), or -1 if none matches. First match wins.
+# Host-keyed multi-tenant routing (Stone D): a per-route host span table, separate from the route
+# entry above, plus a cached span for the current request's Host header value.
+fn host_table_base() -> Int { return 7000000 }
+fn req_host_off_addr() -> Int { return 7100000 }
+fn req_host_len_addr() -> Int { return 7100004 }
+
+fn e_host_off(e: Int) -> Int { return load32(host_table_base() + e * 8) }
+fn e_host_len(e: Int) -> Int { return load32(host_table_base() + e * 8 + 4) }
+
+fn req_host_off() -> Int { return load32(req_host_off_addr()) }
+fn req_host_len() -> Int { return load32(req_host_len_addr()) }
+
+# 1 if route `e` accepts the current request's host: host_len 0 is the wildcard (matches ANY host,
+# including no Host header at all); otherwise the request's cached Host span must equal it exactly.
+fn host_matches(e: Int) -> Int {
+  let hl = e_host_len(e)
+  if hl == 0 { return 1 }
+  if hl != req_host_len() { return 0 }
+  var k = 0
+  let ha = e_host_off(e)
+  let rho = req_host_off()
+  while k < hl {
+    if rb(rho + k) != load8(ha + k) { return 0 }
+    k = k + 1
+  }
+  return 1
+}
+
+# Return the matching route index for (method, path, host), or -1 if none matches. First match
+# wins, so a config should stage specific-host routes before wildcard ones.
 fn match_route(method: Int, path_off: Int, path_len: Int) -> Int {
   var e = 0
   let n = route_count()
   while e < n {
     if e_method(e) == method {
-      if path_matches(path_off, path_len, e) == 1 { return e }
+      if path_matches(path_off, path_len, e) == 1 {
+        if host_matches(e) == 1 { return e }
+      }
     }
     e = e + 1
   }
@@ -302,6 +346,48 @@ fn scan_to(start: Int, end: Int, target: Int) -> Int {
   return end
 }
 
+# Find the byte index of the first CR (13) in [start, rlen()), or rlen() if absent.
+fn scan_cr(start: Int) -> Int { return scan_to(start, rlen(), 13) }
+
+# 1 if the 6 bytes at `start` equal "Host: " (exact case, per the seed's exact-match convention).
+fn is_host_prefix(start: Int) -> Int {
+  if start + 6 > rlen() { return 0 }
+  if rb(start) == 72 and rb(start + 1) == 111 and rb(start + 2) == 115 and rb(start + 3) == 116 and rb(start + 4) == 58 and rb(start + 5) == 32 { return 1 }
+  return 0
+}
+
+# Scan the request's header lines for "Host: " and cache its value span (offset relative to
+# REQ_BASE, byte length) at req_host_off_addr()/req_host_len_addr(). No Host header (or none found
+# before the blank line ending the headers) leaves both 0, which host_matches() treats as "this
+# request has no host" (only wildcard routes, host_len 0, can match it).
+fn find_host() -> Unit {
+  store32(req_host_off_addr(), 0)
+  store32(req_host_len_addr(), 0)
+  let first_cr = scan_cr(0)
+  var line = first_cr + 2
+  var found = 0
+  while found == 0 {
+    if line >= rlen() { found = 1 }
+    if found == 0 {
+      if rb(line) == 13 { found = 1 }
+    }
+    if found == 0 {
+      if is_host_prefix(line) == 1 {
+        let val = line + 6
+        let end = scan_cr(val)
+        store32(req_host_off_addr(), val)
+        store32(req_host_len_addr(), end - val)
+        found = 1
+      }
+    }
+    if found == 0 {
+      let next_cr = scan_cr(line)
+      line = next_cr + 2
+    }
+  }
+  return ()
+}
+
 fn main(c: Console) -> Unit {
   let sp1 = scan(0, 32)                 # first space: end of method
   let method = method_code(sp1)
@@ -309,6 +395,7 @@ fn main(c: Console) -> Unit {
   let sp2 = scan(path_off, 32)          # second space: end of path
   let qpos = scan_to(path_off, sp2, 63) # '?': cut the query string off the match key
   let path_len = qpos - path_off
+  find_host()
 
   # HEAD is served from the GET route table: same headers, no body.
   var lookup = method

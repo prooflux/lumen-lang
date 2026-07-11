@@ -3,14 +3,12 @@
 // Corpus: the mu/examples/*.lm programs used by seed/test.mjs / seed/selfhost_diff.mjs's
 // CONFORMANCE_LIST, plus lumenc.lm compiling ITSELF. For each program, the native binary's
 // stdout (nerr, emit count, IR words) is compared byte-for-byte against the seed's own
-// compileToIR on the same source. Two programs (safe_div.lm, propagate.lm) use sum-type syntax
-// lumenc.lm's own lexer does not yet support - selfhost_diff.mjs already excludes them from its
-// bit-identical floor for the same reason (see its EXPECTED_MATCH comment). They are reported,
-// not counted toward pass/fail, and not scored as a native-compiler regression: the seed
-// compiles them fine, lumenc.lm (interpreted OR native) does not, and that gap predates this
-// binary. seed/test.mjs also exercises native/test_load32.lm and ../examples/black_scholes.lm;
-// those are outside the mu/examples set selfhost_diff.mjs's floor already covers and are not
-// included here, logged explicitly rather than silently dropped.
+// compileToIR on the same source. safe_div.lm and propagate.lm (sum-type syntax: type decls,
+// match, ok/err constructors, the ? operator) joined the scored corpus once lumenc.lm's lexer
+// gained that syntax (selfhost_diff.mjs's EXPECTED_MATCH floor moved the same day, 16->18).
+// seed/test.mjs also exercises native/test_load32.lm and ../examples/black_scholes.lm; those
+// are outside the mu/examples set this corpus covers and are not included here, logged
+// explicitly rather than silently dropped.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,9 +36,17 @@ const CORPUS = [
   '../mu/examples/count.lm',
   '../mu/examples/sum_loop.lm',
   '../mu/examples/bitwise.lm',
+  '../mu/examples/safe_div.lm',
+  '../mu/examples/propagate.lm',
 ];
-const KNOWN_UNSUPPORTED = ['../mu/examples/safe_div.lm', '../mu/examples/propagate.lm'];
-const OUT_OF_SCOPE_LOGGED = ['native/test_load32.lm', '../examples/black_scholes.lm'];
+const OUT_OF_SCOPE_LOGGED = ['native/test_load32.lm'];
+// Trap-hardening probe: a program the native lumenc binary still cannot lex/parse at all
+// (Float syntax - literals, `Float` type annotations, arithmetic coercion - has no code path
+// anywhere in lumenc.lm, unlike the sum-type gap safe_div/propagate used to expose). Verified
+// empirically (see the report accompanying this commit) that it still drives the native
+// binary's unhandled-syntax path into a wild memory access, so it exercises the same
+// preamble trap the old KNOWN_UNSUPPORTED pair exercised before lumenc.lm learned sum types.
+const TRAP_PROBE = ['../examples/black_scholes.lm'];
 
 function readSrc(rel) {
   return fs.readFileSync(path.join(__dirname, rel), 'utf8');
@@ -156,32 +162,23 @@ async function main() {
     }
   }
 
-  console.log('\n== known-unsupported (not scored; sum-type syntax not lexed by lumenc.lm) ==');
-  for (const rel of KNOWN_UNSUPPORTED) {
-    const src = readSrc(rel);
-    const name = path.basename(rel);
-    const native = runNative(bin, src);
-    if (native.crashed && native.status === 70) {
-      console.log(`INFO  ${name}: native binary hit a wild memory access, but the preamble's SIGBUS/SIGSEGV handler converted it to a controlled exit (status=70) - lumenc.lm still has no bounds-safety net in C for unlexed syntax; the seed interpreter degrades to nerr>0 on the same input instead of trapping. See the trap-hardening gate below for the scored assertion.`);
-    } else if (native.crashed) {
-      console.log(`INFO  ${name}: native binary crashed (signal=${native.signal}, status=${native.status}) - lumenc.lm has no bounds-safety net in C for unlexed syntax; the seed interpreter degrades to nerr>0 on the same input instead of trapping`);
-    } else if (native.nerr > 0) {
-      console.log(`INFO  ${name}: native nerr=${native.nerr} (graceful, matches interpreter's SELFHOST-ERROR)`);
-    } else {
-      console.log(`INFO  ${name}: native nerr=0 unexpectedly (${native.emitCount} words) - lumenc.lm may have gained sum-type support; investigate before adding to the floor`);
-    }
-  }
-
   // ---------------------------------------------------------------------------------------
-  // TRAP HARDENING: safe_div.lm / propagate.lm (KNOWN_UNSUPPORTED above) drive the native
-  // binary's own sum-type-unaware code path into a wild memory access. Before the signal
-  // handler installed in emit_fn.lm's preamble, this was a raw SIGBUS (exit 138) or SIGSEGV
-  // (exit 139) with no diagnostic. Assert the controlled outcome instead: exit 70 (EX_SOFTWARE),
-  // a clean stderr message, and no bogus success frame on stdout.
+  // TRAP HARDENING: TRAP_PROBE drives the native binary's own unhandled-syntax code path
+  // (Float support has no code path in lumenc.lm at all) into a wild memory access. Before the
+  // signal handler installed in emit_fn.lm's preamble, this was a raw SIGBUS (exit 138) or
+  // SIGSEGV (exit 139) with no diagnostic. Assert the controlled outcome instead: exit 70
+  // (EX_SOFTWARE), a clean stderr message, and no bogus success frame on stdout.
+  //
+  // safe_div.lm/propagate.lm used to be the probes here (see git history before lumenc.lm
+  // learned sum types): once the native binary could lex/parse/emit them cleanly, they
+  // stopped exercising this path at all (verified: they now exit 0, nerr=0, bit-identical
+  // IR - see the corpus loop above) and were promoted into CORPUS instead. TRAP_PROBE was
+  // repointed at a construct with NO code path anywhere in lumenc.lm (Float) so this gate
+  // keeps asserting real trap behavior instead of silently degrading to a no-op.
   // ---------------------------------------------------------------------------------------
   console.log('\n== trap hardening: wild memory access converts to a controlled exit, not a raw crash ==');
   let trapFail = 0;
-  for (const rel of KNOWN_UNSUPPORTED) {
+  for (const rel of TRAP_PROBE) {
     const src = readSrc(rel);
     const name = path.basename(rel);
     let status = null, stderrText = '', stdoutLen = 0, threw = null;
@@ -207,7 +204,7 @@ async function main() {
   }
   fail += trapFail;
 
-  console.log(`\nSummary: ${pass} pass, ${fail} fail (corpus=${CORPUS.length}, SELF=1, known-unsupported=${KNOWN_UNSUPPORTED.length} not scored, trap-hardening=${KNOWN_UNSUPPORTED.length} scored)`);
+  console.log(`\nSummary: ${pass} pass, ${fail} fail (corpus=${CORPUS.length}, SELF=1, trap-hardening=${TRAP_PROBE.length} scored)`);
   if (fail > 0) {
     console.log('\nFirst divergence(s):');
     for (const d of firstDivergence) console.log(`  ${JSON.stringify(d)}`);

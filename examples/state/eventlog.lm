@@ -1,0 +1,237 @@
+# Pure-Lumen append-only event log with a last-write-wins KV read model, over raw-memory byte
+# buffers. This is Stone E of the cheap-SaaS architecture: state = fold(log), durability = the
+# log window bytes on disk/object storage, audit trail = the log itself. Because Lumen is
+# deterministic, replaying the log through this same kernel is bit-reproducible - the fold is
+# the database, and the persistence seam below (snapshot/restore of the window bytes) is
+# logic-free: bytes out, bytes in, no serialization format to drift.
+#
+# It uses ONLY load8/store8/load32/store32 + arithmetic - no new builtin, no compiler feature - so
+# it is perf-neutral by construction (perf.mjs still gates it every cycle), following the same
+# discipline as examples/http/http_serve.lm.
+#
+# --- Memory map (all offsets reserved, below OUT and clear of the HTTP serve kernel's regions) ---
+#   CMD staging   [5,990,000 .. 6,000,000)  the host writes one command per run:
+#        op            5,990,000  i32   1 = APPEND, 2 = GET, 3 = FOLD_COUNT
+#        (APPEND)  key_len        5,990,004  i32
+#                  val_len        5,990,008  i32
+#                  key bytes      5,990,016  ...  (key_len bytes)
+#                  val bytes      5,990,016 + key_len  ...  (val_len bytes)
+#        (GET)     key_len        5,990,004  i32
+#                  key bytes      5,990,016  ...  (key_len bytes)
+#        (FOLD_COUNT) no operands
+#   LOG window    [6,000,000 .. 6,900,000)  the persistent region - the ONLY bytes that must
+#                                            survive a process restart to reconstruct all state.
+#        total length   6,000,000  i32   total byte length of the packed records (from 6,000,016)
+#        records        6,000,016  ...   packed contiguously, no padding, no gaps:
+#            record = [key_len i32][val_len i32][key bytes][val bytes]
+#        capacity: 899,984 bytes of records (6,900,000 - 6,000,016). v1 fixed size; grows later
+#        via the established lockstep procedure (bump both runtimes' memory caps together).
+#   RESULT: OUT_LEN_ADDR 7,299,996 i32 (byte length), OUT_BASE 7,300,000 (bytes) - the same
+#           output convention as http_serve.lm.
+#        APPEND       -> "APPENDED" (8 bytes)
+#        APPEND, full -> "FULL" (4 bytes); nothing is appended, the log is left unchanged
+#        GET, found   -> the value bytes of the LAST record whose key matches (last write wins)
+#        GET, missing -> "NOT_FOUND" (9 bytes)
+#        FOLD_COUNT   -> decimal ASCII record count (proves a full fold over the log)
+#
+# Honesty notes:
+#   - GET is a linear backward-equivalent scan: it walks the log forward from byte 0 and keeps
+#     overwriting its "last match" as it goes, so the match standing at the end of the scan is
+#     the most recent write. This is the v1 read model; an index (e.g. an offset table keyed by
+#     key hash) is a later stone; for now every read costs O(log size).
+#   - The log window is a fixed 900KB in v1. It grows only through the established lockstep
+#     procedure that bumps the interpreter/native memory caps together (see http_serve.lm's own
+#     note on its window). There is no dynamic growth within a process.
+#   - Multi-tenant is one window per tenant (a later stone): this kernel operates on exactly one
+#     log window per invocation. Fan-out to N tenants means N windows (or N processes), not a
+#     multiplexed layout inside this one.
+
+fn cmd_op_addr() -> Int { return 5990000 }
+fn cmd_key_len_addr() -> Int { return 5990004 }
+fn cmd_val_len_addr() -> Int { return 5990008 }
+fn cmd_key_base() -> Int { return 5990016 }
+
+fn cmd_op() -> Int { return load32(cmd_op_addr()) }
+fn cmd_key_len() -> Int { return load32(cmd_key_len_addr()) }
+fn cmd_val_len() -> Int { return load32(cmd_val_len_addr()) }
+fn cmd_val_base() -> Int { return cmd_key_base() + cmd_key_len() }
+
+fn log_len_addr() -> Int { return 6000000 }
+fn log_base() -> Int { return 6000016 }
+fn log_cap() -> Int { return 899984 }
+fn log_len() -> Int { return load32(log_len_addr()) }
+
+fn out_len_addr() -> Int { return 7299996 }
+fn out_base() -> Int { return 7300000 }
+
+# Write one byte at `pos`, return the next position.
+fn w1(pos: Int, ch: Int) -> Int {
+  store8(pos, ch)
+  return pos + 1
+}
+
+# Copy `n` bytes from absolute address `src` to `pos`, return the next position.
+fn wbytes(pos: Int, src: Int, n: Int) -> Int {
+  var p = pos
+  var k = 0
+  while k < n {
+    store8(p, load8(src + k))
+    p = p + 1
+    k = k + 1
+  }
+  return p
+}
+
+# Format a non-negative int as decimal ASCII digits (handles 0), return the next position.
+fn write_int(pos: Int, n: Int) -> Int {
+  if n == 0 {
+    return w1(pos, 48)
+  }
+  var digits = 0
+  var temp = n
+  while temp > 0 {
+    digits = digits + 1
+    temp = temp / 10
+  }
+  var divisor = 1
+  var i = 0
+  while i < digits - 1 {
+    divisor = divisor * 10
+    i = i + 1
+  }
+  var p = pos
+  var rem = n
+  var j = 0
+  while j < digits {
+    let d = rem / divisor
+    p = w1(p, 48 + d)
+    rem = rem - d * divisor
+    divisor = divisor / 10
+    j = j + 1
+  }
+  return p
+}
+
+fn finish(pos: Int) -> Unit {
+  store32(out_len_addr(), pos - out_base())
+  return ()
+}
+
+fn write_appended() -> Unit {
+  var p = out_base()
+  p = w1(p, 65)  p = w1(p, 80)  p = w1(p, 80)  p = w1(p, 69)  p = w1(p, 78)  p = w1(p, 68)  p = w1(p, 69)  p = w1(p, 68)  # APPENDED
+  finish(p)
+  return ()
+}
+
+fn write_full() -> Unit {
+  var p = out_base()
+  p = w1(p, 70)  p = w1(p, 85)  p = w1(p, 76)  p = w1(p, 76)  # FULL
+  finish(p)
+  return ()
+}
+
+fn write_not_found() -> Unit {
+  var p = out_base()
+  p = w1(p, 78)  p = w1(p, 79)  p = w1(p, 84)  p = w1(p, 95)  # NOT_
+  p = w1(p, 70)  p = w1(p, 79)  p = w1(p, 85)  p = w1(p, 78)  p = w1(p, 68)  # FOUND
+  finish(p)
+  return ()
+}
+
+# 1 if the n bytes at a and b are equal, else 0.
+fn bytes_equal(a: Int, b: Int, n: Int) -> Int {
+  var k = 0
+  while k < n {
+    if load8(a + k) != load8(b + k) { return 0 }
+    k = k + 1
+  }
+  return 1
+}
+
+# APPEND: record = [key_len][val_len][key bytes][val bytes], packed at the tail of the log.
+# Bounds: if the record would not fit inside log_cap(), write "FULL" and append nothing.
+fn do_append() -> Unit {
+  let klen = cmd_key_len()
+  let vlen = cmd_val_len()
+  let rec_size = 8 + klen + vlen
+  let cur = log_len()
+  if cur + rec_size > log_cap() {
+    write_full()
+    return ()
+  }
+  let off = log_base() + cur
+  store32(off, klen)
+  store32(off + 4, vlen)
+  var p = off + 8
+  p = wbytes(p, cmd_key_base(), klen)
+  p = wbytes(p, cmd_val_base(), vlen)
+  store32(log_len_addr(), cur + rec_size)
+  write_appended()
+  return ()
+}
+
+# GET: linear scan forward over the whole log; each match overwrites the running "last found", so
+# the match standing after the full scan is the most recent write (last write wins).
+fn do_get() -> Unit {
+  let klen = cmd_key_len()
+  var pos = 0
+  var found = 0
+  var found_off = 0
+  var found_len = 0
+  let n = log_len()
+  while pos < n {
+    let rklen = load32(log_base() + pos)
+    let rvlen = load32(log_base() + pos + 4)
+    let key_addr = log_base() + pos + 8
+    let val_addr = key_addr + rklen
+    if rklen == klen {
+      if bytes_equal(key_addr, cmd_key_base(), klen) == 1 {
+        found = 1
+        found_off = val_addr
+        found_len = rvlen
+      }
+    }
+    pos = pos + 8 + rklen + rvlen
+  }
+  if found == 1 {
+    let p = wbytes(out_base(), found_off, found_len)
+    finish(p)
+    return ()
+  }
+  write_not_found()
+  return ()
+}
+
+# FOLD_COUNT: walk every record in the log; proves a full fold, not a cached counter.
+fn do_fold_count() -> Unit {
+  var pos = 0
+  var count = 0
+  let n = log_len()
+  while pos < n {
+    let rklen = load32(log_base() + pos)
+    let rvlen = load32(log_base() + pos + 4)
+    count = count + 1
+    pos = pos + 8 + rklen + rvlen
+  }
+  let p = write_int(out_base(), count)
+  finish(p)
+  return ()
+}
+
+fn main(c: Console) -> Unit {
+  let op = cmd_op()
+  if op == 1 {
+    do_append()
+    return ()
+  }
+  if op == 2 {
+    do_get()
+    return ()
+  }
+  if op == 3 {
+    do_fold_count()
+    return ()
+  }
+  return ()
+}

@@ -263,12 +263,22 @@ static void lm_serve_loop(void){
     if(n>${REQ_CAP}u)n=${REQ_CAP}u;
     if(n && fread(LMEM+${REQ_BASE},1,n,stdin)!=n)break;
     *(int32_t*)(LMEM+${REQ_LEN_ADDR})=(int32_t)n;
+    /* Stone B: arena reset. LM_HP/AHP are the bump-allocator cursors for the Text/array heap
+       (declared static int64_t earlier in this same translation unit - see lm_anew/lm_alloc_bytes
+       above). Save them before the request entry call and roll them back after the response is
+       framed: a per-request handler must not retain a pointer into last request's allocations
+       across the boundary (the request model already implies this - each call gets a fresh
+       SPANS/REQ staging and produces one response, nothing survives it by contract), so resetting
+       the cursors to their pre-request value is sound and makes the arena's *steady-state* memory
+       footprint flat forever, no matter how many requests the process serves. */
+    int64_t s_lm=LM_HP, s_ah=AHP;
     ${entry}();
     int32_t o=*(int32_t*)(LMEM+${OUT_LEN_ADDR});
     unsigned char oh[4]={(unsigned char)o,(unsigned char)(o>>8),(unsigned char)(o>>16),(unsigned char)(o>>24)};
     fwrite(oh,1,4,stdout);
     if(o>0)fwrite(LMEM+${OUT_BASE},1,(size_t)o,stdout);
     fflush(stdout);
+    LM_HP=s_lm; AHP=s_ah;
   }
 }
 int main(void){lm_preload();lm_serve_loop();return 0;}`;

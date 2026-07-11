@@ -285,6 +285,150 @@ int main(void){lm_preload();lm_serve_loop();return 0;}`;
   return csrc.replace(m[0], loop);
 }
 
+// Replace the emitter's one-shot `int main(){...}` with a driver that opens its OWN listening TCP
+// socket and serves HTTP directly - no Node process in the request path. This is the parallel of
+// patchMainToServeLoop above (that one stays untouched; both drivers coexist and are built from the
+// same composed .c source by the two build entries below).
+//
+// Body staging: v1 reuses the EXISTING preload-over-stdin mechanism unchanged (lm_preload(), the
+// same helper the stdin/stdout driver defines) - the host still streams the framed bodyBlock over
+// stdin exactly once at process start, before the socket is opened. This was chosen over "bake
+// bodies into the binary" because it needs zero new code (lm_preload/lm_rd4 already exist and are
+// proven by the pipeline gates) and keeps the two drivers' startup-time behavior identical, which
+// is what makes the byte-identity gate meaningful (same staged bytes, same entry, only the
+// transport - pipe vs socket - differs). Cost: the socket binary still requires ONE bootstrap write
+// to its stdin at launch (the bodyBlock frame); it does not read anything from stdin after that -
+// the accept loop below only touches the listening socket and per-connection fds.
+//
+// Request reading (v1 scope, documented): GET/HEAD only, no request body support. The loop reads
+// one byte at a time off the accepted connection until it has seen "\r\n\r\n" (or hits REQ_CAP),
+// mirroring nextRequest()'s header-boundary scan in the Node driver but with no Content-Length
+// buffering - a POST/PUT with a body would have its body bytes left unread on the socket. Proxying
+// unmatched routes to an upstream in C is out of scope for this stone (the point here is serving
+// the routes Lumen itself owns with zero Node in the path); an empty response (OUT_LEN 0, the same
+// proxy-mode "no local route" signal the pipe driver produces) gets a short 502 written back instead
+// of being forwarded anywhere.
+//
+// Connection handling (v1 scope): one request per accepted connection, then close - no HTTP
+// keep-alive multiplexing at the socket layer (the response BYTES still carry whatever
+// "Connection: keep-alive" header text the kernel's frame() baked in, since those bytes are
+// identical to the pipe driver's output; the TCP connection itself is simply closed by this driver
+// after writing them). Sequential connections is what "100 sequential connections, process still
+// up" in the gate is proving: the accept loop plus the arena reset survive repeated connect/serve/
+// close cycles indefinitely, which is the same claim patchMainToServeLoop's immortality gate makes
+// for the pipe transport.
+function patchMainToSocketServer(csrc) {
+  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);(f\d+)\(\);return 0;\}/);
+  if (!m) throw new Error('could not find the emitted main entry to patch');
+  const entry = m[1];
+  const loop = `#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+static uint32_t lm_rd4(void){unsigned char h[4]; if(fread(h,1,4,stdin)!=4)return 0xffffffffu; return (uint32_t)h[0]|((uint32_t)h[1]<<8)|((uint32_t)h[2]<<16)|((uint32_t)h[3]<<24);}
+static void lm_preload(void){
+  uint32_t n=lm_rd4();
+  if(n==0xffffffffu)return;
+  if(n>${BODY_CAP}u)n=${BODY_CAP}u;
+  if(n)fread(LMEM+${BODY_BASE},1,n,stdin);
+}
+/* Read one HTTP request's headers (GET/HEAD only - no request body) from fd into
+   LMEM+REQ_BASE, one byte at a time, stopping at "\\r\\n\\r\\n" or REQ_CAP. Returns the byte
+   count, or -1 on a connection that produced no bytes at all (e.g. an immediate close). */
+static int lm_read_request(int fd){
+  uint32_t n=0;
+  for(;;){
+    if(n>=${REQ_CAP}u)break;
+    ssize_t r=read(fd,LMEM+${REQ_BASE}+n,1);
+    if(r<=0)return n>0?(int)n:-1;
+    n=n+1;
+    if(n>=4 && LMEM[${REQ_BASE}+n-4]=='\\r' && LMEM[${REQ_BASE}+n-3]=='\\n'
+            && LMEM[${REQ_BASE}+n-2]=='\\r' && LMEM[${REQ_BASE}+n-1]=='\\n') break;
+  }
+  return (int)n;
+}
+static const char lm_502[] = "HTTP/1.1 502 Bad Gateway\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n";
+static void lm_socket_accept_loop(int srv){
+  for(;;){
+    int c=accept(srv,0,0);
+    if(c<0)continue;
+    int n=lm_read_request(c);
+    if(n<0){close(c);continue;}
+    *(int32_t*)(LMEM+${REQ_LEN_ADDR})=(int32_t)n;
+    /* Same per-request arena reset as the pipe driver (Stone B) - see patchMainToServeLoop's
+       comment above for why saving/restoring LM_HP/AHP around the entry call is sound and keeps
+       the process's heap footprint flat across an unbounded number of connections. */
+    int64_t s_lm=LM_HP, s_ah=AHP;
+    ${entry}();
+    int32_t o=*(int32_t*)(LMEM+${OUT_LEN_ADDR});
+    if(o>0) write(c,LMEM+${OUT_BASE},(size_t)o);
+    else write(c,lm_502,sizeof(lm_502)-1);
+    LM_HP=s_lm; AHP=s_ah;
+    close(c);
+  }
+}
+static int lm_socket_listen(int port){
+  int srv=socket(AF_INET,SOCK_STREAM,0);
+  if(srv<0){perror("socket");exit(1);}
+  int opt=1;
+  setsockopt(srv,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
+  struct sockaddr_in addr;
+  memset(&addr,0,sizeof(addr));
+  addr.sin_family=AF_INET;
+  addr.sin_addr.s_addr=htonl(INADDR_ANY);
+  addr.sin_port=htons((uint16_t)port);
+  if(bind(srv,(struct sockaddr*)&addr,sizeof(addr))<0){perror("bind");exit(1);}
+  if(listen(srv,64)<0){perror("listen");exit(1);}
+  if(port==0){
+    socklen_t alen=sizeof(addr);
+    if(getsockname(srv,(struct sockaddr*)&addr,&alen)==0)
+      fprintf(stderr,"LUMEN_NATIVE_SOCKET_PORT=%d\\n",(int)ntohs(addr.sin_port));
+  }
+  return srv;
+}
+int main(int argc,char**argv){
+  lm_preload();
+  int port=8080;
+  const char*pe=getenv("PORT");
+  if(pe)port=atoi(pe);
+  if(argc>1)port=atoi(argv[1]);
+  int srv=lm_socket_listen(port);
+  fflush(stderr);
+  lm_socket_accept_loop(srv);
+  return 0;
+}`;
+  return csrc.replace(m[0], loop);
+}
+
+// Build the native SOCKET-server binary (self-listening, no Node in the request path) for a plain
+// route table. Mirrors buildNativeServe but patches in patchMainToSocketServer instead. Returns
+// { bin, bodyBlock }: bin is the standalone executable, bodyBlock is the framed preload the caller
+// must still write to the child's stdin ONCE at launch (see patchMainToSocketServer's comment).
+export async function buildNativeSocketServer(routes, proxyMode) {
+  const { src, bodyBlock } = genServeSrc(routes, proxyMode);
+  const { csrc } = await buildAndRunFn(src, '-O2');
+  const patched = patchMainToSocketServer(csrc);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-serve-native-socket-'));
+  const cfile = path.join(dir, 'serve.c'), bin = path.join(dir, 'serve');
+  fs.writeFileSync(cfile, patched);
+  execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, cfile],
+    { stdio: ['ignore', 'ignore', 'pipe'] });
+  return { bin, bodyBlock };
+}
+
+// Same, for a route table that includes handler routes (dispatches to compiled Lumen functions).
+export async function buildNativeSocketServerHandlers(routes, proxyMode, handlersSrc) {
+  const handlerNames = [...new Set(routes.filter((r) => r.handler).map((r) => r.handler))];
+  const { src, bodyBlock } = genHandlerServeSrc(routes, proxyMode, handlersSrc, handlerNames);
+  const { csrc } = await buildAndRunFn(src, '-O2');
+  const patched = patchMainToSocketServer(csrc);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-serve-native-socket-handlers-'));
+  const cfile = path.join(dir, 'serve.c'), bin = path.join(dir, 'serve');
+  fs.writeFileSync(cfile, patched);
+  execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, cfile],
+    { stdio: ['ignore', 'ignore', 'pipe'] });
+  return { bin, bodyBlock, src, handlerNames };
+}
+
 // Build the native serve binary for a route table. Returns { bin, bodyBlock }: the binary path and
 // the concatenated route bodies the caller must stream into the binary at startup (the preload block).
 export async function buildNativeServe(routes, proxyMode) {

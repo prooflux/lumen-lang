@@ -89,6 +89,160 @@ fn main(c: Console) -> Unit {
   return { src, bodyBlock: Buffer.concat(bodyChunks) };
 }
 
+// --- Handler mode (Stone A): dynamic routes dispatch to a Lumen HANDLER FUNCTION compiled into
+// the same program, instead of serving a route table's static body bytes. A route entry is a
+// handler route when its body_off field is -1 (0 - 1, per this codebase's no-unary-minus
+// convention - see http_serve.lm); its body_len field then carries the handler id (>= 1). Status
+// and Content-Type still come from the route entry (data); the handler supplies ONLY the body.
+//
+// ABI (fixed addresses, in the free gap between the body window's end at 7,000,000 and
+// OUT_LEN_ADDR at 7,299,996 - see http_serve.lm's memory map comment):
+//   SPANS  7,200,000  4 x i32: path_off, path_len, query_off, query_len - ABSOLUTE addresses into
+//                      the request buffer (query_off/query_len are 0 when the request has no '?').
+//                      The kernel's own scan/qpos parse computes these; handlers just read them.
+//   HBODY  7,200,016  handler body output. A handler writes its response body bytes starting here
+//                      and RETURNS the byte length as its Int result. Capacity: 95,000 bytes
+//                      (7,200,016 + 95,000 = 7,295,016, comfortably below OUT_LEN_ADDR).
+// Handlers also see the whole raw request via the existing REQ map (590016, length at 590000)
+// since they are compiled into the same program as the kernel.
+export const SPANS = 7200000, HBODY = 7200016, HBODY_CAP = 95000;
+
+// Compose ONE program: http_serve.lm's non-main logic (scan/match_route/frame/accessors) + the
+// user's handler functions + a generated call_handler(id) dispatcher + a generated main that
+// duplicates http_serve.lm main's tiny parse/route control flow (so http_serve.lm itself stays
+// byte-untouched) and, for a handler route, calls call_handler then frames the response from
+// HBODY instead of the route table's body_off/body_len.
+function genHandlerServeSrc(routes, proxyMode, handlersSrc, handlerNames) {
+  const mainMarker = 'fn main(c: Console) -> Unit {';
+  const kernelNoMain = KERNEL.slice(0, KERNEL.indexOf(mainMarker));
+  const lines = [];
+  lines.push(`  store32(${PROXY_MODE_ADDR}, ${proxyMode ? 1 : 0})`);
+  lines.push(`  store32(${ROUTE_COUNT_ADDR}, ${routes.length})`);
+  let blob = BLOB_BASE;
+  const pack = (bytes) => {
+    if (blob + bytes.length > BLOB_CEIL) throw new Error('route paths/content-types exceed metadata space');
+    const off = blob;
+    bytes.forEach((b, i) => lines.push(`  store8(${off + i}, ${b})`));
+    blob += bytes.length;
+    return [off, bytes.length];
+  };
+  let bodyOff = BODY_BASE;
+  const bodyChunks = [];
+  routes.forEach((r, i) => {
+    const base = ROUTE_BASE + i * 32;
+    const [pathOff, pathLen] = pack(Buffer.from(r.path, 'latin1'));
+    const [ctOff, ctLen] = pack(Buffer.from(r.contentType || 'text/plain', 'latin1'));
+    const code = METHOD[(r.method || 'GET').toUpperCase()];
+    if (!code) throw new Error(`unknown method ${r.method}`);
+    let bodyOffExpr, bLen;
+    if (r.handler) {
+      const id = handlerNames.indexOf(r.handler) + 1;
+      if (id <= 0) throw new Error(`unknown handler ${r.handler}`);
+      bodyOffExpr = '0 - 1';   // this codebase's negative-literal convention (no unary minus)
+      bLen = id;
+    } else {
+      const body = r.bodyBytes || Buffer.alloc(0);
+      const bOff = bodyOff;
+      bodyOff += body.length;
+      if (bodyOff > BODY_BASE + BODY_CAP) throw new Error('route bodies exceed body space');
+      bodyChunks.push(body);
+      bodyOffExpr = String(bOff);
+      bLen = body.length;
+    }
+    for (const [k, v] of [[0, code], [4, pathOff], [8, pathLen], [12, r.status || 200],
+      [16, ctOff], [20, ctLen]]) {
+      lines.push(`  store32(${base + k}, ${v})`);
+    }
+    lines.push(`  store32(${base + 24}, ${bodyOffExpr})`);
+    lines.push(`  store32(${base + 28}, ${bLen})`);
+  });
+  const dispatch = handlerNames.map((name, i) => `  if id == ${i + 1} { return h_${name}() }`).join('\n');
+  const src = `${kernelNoMain}
+${handlersSrc}
+
+fn call_handler(id: Int) -> Int {
+${dispatch}
+  return 0
+}
+
+fn stage() -> Unit {
+${lines.join('\n')}
+  return ()
+}
+
+fn main(c: Console) -> Unit {
+  if load32(${STAGED_ADDR}) == 0 {
+    stage()
+    store32(${STAGED_ADDR}, 1)
+  }
+  let sp1 = scan(0, 32)                 # first space: end of method
+  let method = method_code(sp1)
+  let path_off = sp1 + 1
+  let sp2 = scan(path_off, 32)          # second space: end of path
+  let qpos = scan_to(path_off, sp2, 63) # '?': cut the query string off the match key
+  let path_len = qpos - path_off
+  var query_off = 0
+  var query_len = 0
+  if qpos < sp2 {
+    query_off = req_base() + qpos + 1
+    query_len = sp2 - qpos - 1
+  }
+  store32(${SPANS}, req_base() + path_off)
+  store32(${SPANS + 4}, path_len)
+  store32(${SPANS + 8}, query_off)
+  store32(${SPANS + 12}, query_len)
+
+  # HEAD is served from the GET route table: same headers, no body.
+  var lookup = method
+  var include_body = 1
+  if method == 5 {
+    lookup = 1
+    include_body = 0
+  }
+
+  let e = match_route(lookup, path_off, path_len)
+  if e == 0 - 1 {
+    if load32(${PROXY_MODE_ADDR}) == 1 {
+      store32(${OUT_LEN_ADDR}, 0)
+      return ()
+    }
+    let ct = out_base() - 32
+    let ctend = write_fallback_ct(ct)
+    let body = ctend
+    let bodyend = write_fallback_body(body)
+    frame(404, ct, ctend - ct, body, bodyend - body, include_body)
+    return ()
+  }
+  let bo = e_body_off(e)
+  if bo == 0 - 1 {
+    let hlen = call_handler(e_body_len(e))
+    frame(e_status(e), e_ctype_off(e), e_ctype_len(e), ${HBODY}, hlen, include_body)
+    return ()
+  }
+  frame(e_status(e), e_ctype_off(e), e_ctype_len(e), bo, e_body_len(e), include_body)
+  return ()
+}
+`;
+  return { src, bodyBlock: Buffer.concat(bodyChunks) };
+}
+
+// Build the native serve binary for a route table that includes handler routes. handlersSrc is
+// the .lm source of fn h_<name>() -> Int functions; handlerNames is the ordered id assignment
+// (id = index + 1). Returns { bin, bodyBlock, src, handlerNames } - src is exposed so the oracle
+// gate can run the IDENTICAL composed program through the interpreter.
+export async function buildNativeServeHandlers(routes, proxyMode, handlersSrc) {
+  const handlerNames = [...new Set(routes.filter((r) => r.handler).map((r) => r.handler))];
+  const { src, bodyBlock } = genHandlerServeSrc(routes, proxyMode, handlersSrc, handlerNames);
+  const { csrc } = await buildAndRunFn(src, '-O2');
+  const patched = patchMainToServeLoop(csrc);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-serve-native-handlers-'));
+  const cfile = path.join(dir, 'serve.c'), bin = path.join(dir, 'serve');
+  fs.writeFileSync(cfile, patched);
+  execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, cfile],
+    { stdio: ['ignore', 'ignore', 'pipe'] });
+  return { bin, bodyBlock, src, handlerNames };
+}
+
 // Replace the emitter's one-shot `int main(){ ...; fN(); return 0; }` with a length-framed serve loop
 // that calls the same entry fN per request over stdin/stdout.
 function patchMainToServeLoop(csrc) {
@@ -147,11 +301,12 @@ function frame(bytes) {
 function loadConfig(cfgPath) {
   const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
   const dir = path.dirname(cfgPath);
-  cfg.routes = cfg.routes.map((r) => ({
+  cfg.routes = cfg.routes.map((r) => (r.handler ? { ...r } : {
     ...r,
     bodyBytes: typeof r.body === 'string' ? Buffer.from(r.body, 'utf8')
       : r.bodyFile ? fs.readFileSync(path.resolve(dir, r.bodyFile)) : Buffer.alloc(0),
   }));
+  if (cfg.handlersFile) cfg.handlersSrc = fs.readFileSync(path.resolve(dir, cfg.handlersFile), 'utf8');
   return cfg;
 }
 
@@ -243,7 +398,9 @@ async function runServer(cfgPath) {
   const cfg = loadConfig(cfgPath);
   const origin = cfg.proxyPass ? new URL(cfg.proxyPass) : null;
   const port = process.env.PORT ? Number(process.env.PORT) : cfg.port;   // Cloud Run injects PORT
-  const { bin, bodyBlock } = await buildNativeServe(cfg.routes, !!origin);
+  const { bin, bodyBlock } = cfg.handlersSrc
+    ? await buildNativeServeHandlers(cfg.routes, !!origin, cfg.handlersSrc)
+    : await buildNativeServe(cfg.routes, !!origin);
   const serve = makeServer(bin, bodyBlock);
 
   const server = net.createServer((socket) => {

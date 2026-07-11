@@ -1,0 +1,229 @@
+# Demo handler functions for Stone A (dynamic routes): each fn h_<name>() -> Int reads the
+# staged request spans (SPANS, written by the composed serve program's generated main) and/or
+# the raw request buffer, writes its response body bytes starting at HBODY, and returns the body
+# byte length. The host (native/lumen_serve_native.mjs's genHandlerServeSrc) composes this file
+# together with examples/http/http_serve.lm's non-main logic and a generated call_handler(id)
+# dispatcher into ONE program; the same composed source runs unmodified under the interpreter
+# (the oracle) and, compiled through the native emitter, as the fast serve binary.
+#
+# --- ABI (must match native/lumen_serve_native.mjs's SPANS/HBODY/HBODY_CAP) ---
+#   SPANS  7,200,000  4 x i32: path_off, path_len, query_off, query_len - ABSOLUTE addresses into
+#                      the request buffer (query_off/query_len are 0 when there is no '?').
+#   HBODY  7,200,016  handler writes body bytes here; capacity 95,000 bytes.
+#
+# Uses ONLY load8/load32/store8/store32 + arithmetic (+ the existing Float builtins for h_bs) -
+# no new builtin, no compiler feature.
+
+fn spans_addr() -> Int { return 7200000 }
+fn spans_path_off() -> Int { return load32(spans_addr()) }
+fn spans_path_len() -> Int { return load32(spans_addr() + 4) }
+fn spans_query_off() -> Int { return load32(spans_addr() + 8) }
+fn spans_query_len() -> Int { return load32(spans_addr() + 12) }
+fn hbody() -> Int { return 7200016 }
+
+# Write one byte at `pos`, return the next position (same pattern as http_serve.lm's w1).
+fn h1(pos: Int, ch: Int) -> Int {
+  store8(pos, ch)
+  return pos + 1
+}
+
+# --- h_echo: proves request/query access by writing the query span straight back as the body. ---
+fn h_echo() -> Int {
+  let qoff = spans_query_off()
+  let qlen = spans_query_len()
+  var i = 0
+  while i < qlen {
+    store8(hbody() + i, load8(qoff + i))
+    i = i + 1
+  }
+  return qlen
+}
+
+# --- h_bs: parse s,k,v,t,r from the query string (e.g. "s=100&k=100&v=20&t=100&r=5"), each an
+# integer scaled by 100 (v=20 means 0.20), price a Black-Scholes European call, and write
+# {"call":10.450575}-style JSON. ---
+
+# Find the byte address just after "<key>=" within [start, end), where <key> is a single ASCII
+# byte immediately preceded by the span start or '&' (38) - so a byte inside a value never
+# false-matches a key. Returns -1 (0 - 1) if not found.
+fn find_param(start: Int, end: Int, key: Int) -> Int {
+  var i = start
+  while i < end {
+    var boundary = 0
+    if i == start { boundary = 1 }
+    if i > start {
+      if load8(i - 1) == 38 { boundary = 1 }
+    }
+    if boundary == 1 {
+      if load8(i) == key {
+        if i + 1 < end {
+          if load8(i + 1) == 61 { return i + 2 }
+        }
+      }
+    }
+    i = i + 1
+  }
+  return 0 - 1
+}
+
+# Parse a (possibly negative) decimal integer starting at absolute address `v`, stopping at `end`
+# or the next '&' (38). `v` may be -1 (not found): treated as 0.
+fn parse_int_at(v: Int, end: Int) -> Int {
+  if v == 0 - 1 { return 0 }
+  var i = v
+  var neg = 0
+  if load8(i) == 45 {
+    neg = 1
+    i = i + 1
+  }
+  var value = 0
+  while i < end {
+    let c = load8(i)
+    if c == 38 {
+      i = end
+    } else {
+      value = value * 10 + (c - 48)
+      i = i + 1
+    }
+  }
+  if neg == 1 { value = 0 - value }
+  return value
+}
+
+# Format a non-negative integer as decimal ASCII digits (handles 0), byte-writing version of
+# http_serve.lm's write_int, targeting HBODY instead of the response buffer.
+fn hwrite_int(pos: Int, n: Int) -> Int {
+  if n == 0 { return h1(pos, 48) }
+  var digits = 0
+  var temp = n
+  while temp > 0 {
+    digits = digits + 1
+    temp = temp / 10
+  }
+  var divisor = 1
+  var i = 0
+  while i < digits - 1 {
+    divisor = divisor * 10
+    i = i + 1
+  }
+  var p = pos
+  var rem = n
+  var j = 0
+  while j < digits {
+    let d = rem / divisor
+    p = h1(p, 48 + d)
+    rem = rem - d * divisor
+    divisor = divisor / 10
+    j = j + 1
+  }
+  return p
+}
+
+# Byte-writing version of black_scholes.lm's float_to_text: fixed 6-decimal digits, e.g.
+# "10.450576". Adapted (not shared) so this file stays self-contained per the brief.
+fn hwrite_float(pos: Int, x: Float) -> Int {
+  var p = pos
+  var v: Float = x
+  if v < 0.0 {
+    p = h1(p, 45)
+    v = 0.0 - v
+  }
+  let ip: Int = to_int(v)
+  let frac: Float = v - to_float(ip)
+  var scaled: Int = round(frac * 1000000.0)
+  var ipart: Int = ip
+  if scaled >= 1000000 {
+    scaled = scaled - 1000000
+    ipart = ipart + 1
+  }
+  var digits: Int = 1
+  var probe: Int = scaled
+  while probe >= 10 {
+    probe = probe / 10
+    digits = digits + 1
+  }
+  var need: Int = 6 - digits
+  p = hwrite_int(p, ipart)
+  p = h1(p, 46)
+  while need > 0 {
+    p = h1(p, 48)
+    need = need - 1
+  }
+  p = hwrite_int(p, scaled)
+  return p
+}
+
+# Black-Scholes European call, copied (not imported) from examples/black_scholes.lm per the brief
+# (that file is left untouched). Abramowitz & Stegun 26.2.17 normal-CDF approximation.
+fn norm_pdf(x: Float) -> Float {
+  let inv_sqrt_2pi: Float = 0.3989422804014327
+  return inv_sqrt_2pi * exp(-0.5 * x * x)
+}
+
+fn norm_cdf(x: Float) -> Float {
+  var neg: Int = 0
+  var z: Float = x
+  if z < 0.0 {
+    neg = 1
+    z = 0.0 - z
+  }
+  let t: Float = 1.0 / (1.0 + 0.2316419 * z)
+  let poly: Float = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+  let cdf: Float = 1.0 - norm_pdf(z) * poly
+  if neg == 1 {
+    return 1.0 - cdf
+  }
+  return cdf
+}
+
+fn bs_call(S: Float, K: Float, r: Float, sigma: Float, T: Float) -> Float {
+  let sqrtT: Float = sqrt(T)
+  let d1: Float = (ln(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrtT)
+  let d2: Float = d1 - sigma * sqrtT
+  return S * norm_cdf(d1) - K * exp(-r * T) * norm_cdf(d2)
+}
+
+fn h_bs() -> Int {
+  let qoff = spans_query_off()
+  let qend = qoff + spans_query_len()
+  let s_i = parse_int_at(find_param(qoff, qend, 115), qend)   # 's'
+  let k_i = parse_int_at(find_param(qoff, qend, 107), qend)   # 'k'
+  let v_i = parse_int_at(find_param(qoff, qend, 118), qend)   # 'v'
+  let t_i = parse_int_at(find_param(qoff, qend, 116), qend)   # 't'
+  let r_i = parse_int_at(find_param(qoff, qend, 114), qend)   # 'r'
+  # Deliberate per-request Text heap allocation (int_to_text + text_concat, growing on purpose).
+  # Not used by the response bytes below (which are written byte-level via hwrite_float/
+  # hwrite_int for determinism). Its purpose is to make h_bs an ALLOCATING handler: every
+  # request grows the runtime's Text heap (LM_HP/AHP), which is exactly the pressure the Stone B
+  # immortality gate (native/native_handlers_test.mjs) needs to prove the per-request arena reset
+  # actually matters - each request builds a ~12KB string via naive repeated concatenation (each
+  # concat reallocates the whole running total), so 10,000 requests without a reset would push
+  # the arena past its ~8MB fixed capacity partway through the run; WITH the reset (Stone B),
+  # every request starts from the same clean cursors, so the run completes regardless of count.
+  # The text_eq compares a dynamically-computed value (unknowable at compile time), so the
+  # optimizer cannot dead-code-eliminate the allocation chain feeding it; the branch it guards is
+  # never actually taken (the built string is never empty), so it has no effect on the real
+  # response - it exists purely to keep the allocation live under optimize.lm.
+  var waste: Text = ""
+  var wi = 0
+  while wi < 50 {
+    waste = text_concat(waste, "0123456789")
+    wi = wi + 1
+  }
+  if text_eq(waste, "") == 1 {
+    return 0
+  }
+  let S: Float = to_float(s_i)
+  let K: Float = to_float(k_i)
+  let vol: Float = to_float(v_i) / 100.0
+  let T: Float = to_float(t_i) / 100.0
+  let r: Float = to_float(r_i) / 100.0
+  let price: Float = bs_call(S, K, r, vol, T)
+  var p = hbody()
+  p = h1(p, 123)                                                       # {
+  p = h1(p, 34) p = h1(p, 99) p = h1(p, 97) p = h1(p, 108) p = h1(p, 108) p = h1(p, 34)  # "call"
+  p = h1(p, 58)                                                        # :
+  p = hwrite_float(p, price)
+  p = h1(p, 125)                                                       # }
+  return p - hbody()
+}

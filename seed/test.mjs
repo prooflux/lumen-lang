@@ -25,6 +25,7 @@ const cases = [
   ['../mu/examples/propagate.lm', '9\n'],
   ['../mu/examples/bools.lm', '1\n0\n1\n0\n1\n1\n1\n1\n42\n3\n'],
   ['../mu/examples/arrays.lm', '3\n15000\n45000\n2\n84388\n'],
+  ['../mu/examples/records.lm', '7\n4\n15000\n22500\n5\n40000\n'],
   ['../mu/examples/floats.lm', '15000\n2500\n60000\n6000\n104506\n3989\n-15000\n-3\n1\n7\n2\n2\n12247\n15000\n44817\n4055\n22500\n'],
   ['native/test_load32.lm', '7\n65\n'],   // raw-memory keystone: store32/load32 + store8/load8 round-trip
   ['../examples/black_scholes.lm', 'bs_call=10.450576\n'],

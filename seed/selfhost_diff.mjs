@@ -32,6 +32,7 @@ const CONFORMANCE_LIST = [
   '../examples/finance/black_scholes.lm',
   '../examples/finance/implied_vol.lm',
   '../mu/examples/arrays.lm',
+  '../mu/examples/records.lm',
 ];
 
 // expected match floor: every program here must stay bit-identical or the harness exits 1.
@@ -41,6 +42,10 @@ const CONFORMANCE_LIST = [
 // click_events (the analytics kernel, ~370 lines, and/or/not in production positions) joined
 // with the same change: 20/20 - the first real example whose authorship required the new
 // operators, compiled bit-identically by the compiler the language itself hosts.
+// floats + the three pricing kernels (black_scholes x2, implied_vol) joined with the Float
+// front-end: 24/24. arrays joined with ops 49-52 dispatch: 25/25. records joined with the
+// global-field-model record support: 26/26 - full seed-language parity for the self-hosted
+// compiler; every seed front-end feature now compiles bit-identically under lumenc.lm.
 const EXPECTED_MATCH = [
   '../mu/examples/fib_print.lm',
   '../mu/examples/add.lm',
@@ -67,6 +72,7 @@ const EXPECTED_MATCH = [
   '../examples/finance/black_scholes.lm',
   '../examples/finance/implied_vol.lm',
   '../mu/examples/arrays.lm',
+  '../mu/examples/records.lm',
 ];
 
 async function main() {

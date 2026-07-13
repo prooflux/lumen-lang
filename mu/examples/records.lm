@@ -1,0 +1,30 @@
+# Records, exercised end to end: two record types whose shared field names appear in REVERSED
+# declaration order (pinning the seed's global first-registration-wins field indexing: Fill
+# declares qty first, but qty still lives at global index 1 because Quote registered it
+# first), construction in literal order, field reads feeding arithmetic with coercion, a
+# record passed as a parameter, and a record returned from a function. Field types stay
+# consistent per name (px Float, qty Int) - the seed types fields globally by name too.
+# Compiles+runs on the seed AND (self-hosted) on lumenc.lm, bit-identically.
+# Expected stdout: "7\n4\n15000\n22500\n5\n40000\n".
+type Quote = { px: Float, qty: Int }
+type Fill = { qty: Int, px: Float }
+
+fn notional_x10000(q: Quote) -> Int {
+  return round(q.px * to_float(q.qty) * 10000.0)
+}
+
+fn mk_quote(p: Float, n: Int) -> Quote {
+  return Quote { px: p, qty: n }
+}
+
+fn main(c: Console) -> Unit {
+  let q = Quote { px: 1.5, qty: 7 }
+  c.print_int(q.qty)                          # 7
+  let f = Fill { qty: 4, px: 2.25 }
+  c.print_int(f.qty)                          # 4 (global index 1, registered by Quote)
+  c.print_int(round(q.px * 10000.0))          # 15000
+  c.print_int(round(f.px * 10000.0))          # 22500
+  let m = mk_quote(0.8, 5)
+  c.print_int(m.qty)                          # 5
+  c.print_int(notional_x10000(m))             # 0.8 * 5 = 4.0 -> 40000
+}

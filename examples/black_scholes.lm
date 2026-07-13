@@ -1,11 +1,11 @@
 # Black-Scholes European call: an independent pricing oracle written in Lumen.
 #
 # Dogfood purpose: reproduce, from first principles and by a DIFFERENT algorithm, the
-# vanilla call price FE-API computes with an erf-exact normal CDF. FE-API prices the
-# canonical case S=100 K=100 r=0.05 sigma=0.2 T=1 at 10.450583572185565. This oracle
+# canonical vanilla call price computed with an erf-exact normal CDF: for
+# S=100 K=100 r=0.05 sigma=0.2 T=1 the exact value is 10.450583572185565. This oracle
 # uses the Abramowitz & Stegun 26.2.17 rational approximation for the normal CDF
-# (|error| < 7.5e-8), so agreement is a genuine cross-check, not a copy. Lumen and
-# FE-API agree to 8e-6 (both round to 10.4506).
+# (|error| < 7.5e-8), so agreement is a genuine cross-check, not a copy. The two
+# methods agree to 8e-6 (both round to 10.4506).
 #
 # It also shows Lumen-mu is already expressive enough to format a Float to a decimal
 # string in userland (float_to_text below) with no compiler change: an oracle must be

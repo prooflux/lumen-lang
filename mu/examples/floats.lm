@@ -1,0 +1,67 @@
+# Float, exercised end to end: literals (short and 16-digit mantissa), arithmetic, all six
+# comparisons, automatic Int->Float coercion in mixed expressions (both operand orders),
+# unary minus (Float and Int), to_int / round / to_float, and the math kernel
+# sqrt / abs / exp / ln / pow. Values are emitted as scaled integers via print_int, the
+# established float-output path. Compiles+runs on the seed AND (self-hosted) on lumenc.lm,
+# bit-identically - the FPUSH literal bits are part of the census comparison.
+# Expected stdout: "15000\n2500\n60000\n6000\n104506\n3989\n-15000\n-3\n1\n7\n2\n2\n12247\n15000\n44817\n4055\n22500\n".
+fn scale4(x: Float) -> Int {
+  return round(x * 10000.0)
+}
+
+fn mix_right(a: Float) -> Float {
+  return a + 1
+}
+
+fn mix_left(a: Float) -> Float {
+  return 3 * a
+}
+
+fn cmp_code(a: Float, b: Float) -> Int {
+  if a == b { return 1 }
+  if a != b {
+    if a < b {
+      if a <= b { return 2 }
+    }
+    if a > b {
+      if a >= b { return 3 }
+    }
+  }
+  return 0
+}
+
+fn inv_sqrt_2pi_kilo() -> Int {
+  let k: Float = 0.3989422804014327
+  return round(k * 10000.0)
+}
+
+fn main(c: Console) -> Unit {
+  let x: Float = 1.5
+  c.print_int(scale4(x))                    # 15000
+  c.print_int(scale4(1.0 / 4.0))            # 2500
+  c.print_int(scale4(x * 4.0))              # 60000
+  c.print_int(scale4(x - 0.9))              # 6000
+  c.print_int(round(10.450576 * 10000.0))   # 104506
+  c.print_int(inv_sqrt_2pi_kilo())          # 3989
+  c.print_int(scale4(-x))                   # -15000
+  c.print_int(0 - 3)                        # -3
+  c.print_int(to_int(1.7))                  # 1
+  c.print_int(to_int(mix_right(5.5) + 0.8)) # to_int(7.3) = 7
+  c.print_int(round(1.7))                   # 2
+  c.print_int(to_int(mix_left(0.75)))       # to_int(2.25) = 2
+  c.print_int(scale4(sqrt(1.5)))            # 12247
+  c.print_int(scale4(abs(0.0 - 1.5)))       # 15000
+  c.print_int(scale4(exp(1.5)))             # 44817
+  c.print_int(scale4(ln(1.5)))              # 4055
+  c.print_int(scale4(pow(1.5, 2.0)))        # 22500
+  var code = 0
+  code = cmp_code(1.5, 1.5)
+  if code == 1 {
+    if cmp_code(1.0, 2.0) == 2 {
+      if cmp_code(2.0, 1.0) == 3 {
+        return ()
+      }
+    }
+  }
+  c.print_int(code)
+}

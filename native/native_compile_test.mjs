@@ -38,15 +38,29 @@ const CORPUS = [
   '../mu/examples/bitwise.lm',
   '../mu/examples/safe_div.lm',
   '../mu/examples/propagate.lm',
+  '../mu/examples/bools.lm',
+  '../mu/examples/floats.lm',
+  '../examples/analytics/click_events.lm',
+  '../examples/black_scholes.lm',
+  '../examples/finance/black_scholes.lm',
+  '../examples/finance/implied_vol.lm',
 ];
 const OUT_OF_SCOPE_LOGGED = ['native/test_load32.lm'];
-// Trap-hardening probe: a program the native lumenc binary still cannot lex/parse at all
-// (Float syntax - literals, `Float` type annotations, arithmetic coercion - has no code path
-// anywhere in lumenc.lm, unlike the sum-type gap safe_div/propagate used to expose). Verified
-// empirically (see the report accompanying this commit) that it still drives the native
-// binary's unhandled-syntax path into a wild memory access, so it exercises the same
-// preamble trap the old KNOWN_UNSUPPORTED pair exercised before lumenc.lm learned sum types.
-const TRAP_PROBE = ['../examples/black_scholes.lm'];
+// Trap-hardening probe: black_scholes.lm graduated INTO the corpus when lumenc.lm learned the
+// Float front-end (the same trajectory safe_div/propagate took when it learned sum types), so
+// the probe is now a STRUCTURALLY invalid input that no language growth can ever legalize: a
+// source larger than the compiler's 50,000-byte SRC window (compiler_core.mjs SRC_CAPACITY).
+// The overrun drives a wild memory access, which the hardened preamble must convert to the
+// controlled exit 70 + "lumen: memory trap" + empty stdout. If a future change turns this
+// into a clean diagnostic instead, this check fails loudly and the fixture gets rethought
+// deliberately - it must never silently degrade to a no-op.
+function oversizedSource() {
+  const filler = 'fn f0() -> Int { return 1 }\n';
+  let big = '';
+  while (big.length < 60000) big += filler;
+  return big + 'fn main(c: Console) -> Unit { c.print_int(1) return () }\n';
+}
+const TRAP_PROBE = [{ name: 'oversized-source-60KB', src: oversizedSource() }];
 
 function readSrc(rel) {
   return fs.readFileSync(path.join(__dirname, rel), 'utf8');
@@ -178,9 +192,7 @@ async function main() {
   // ---------------------------------------------------------------------------------------
   console.log('\n== trap hardening: wild memory access converts to a controlled exit, not a raw crash ==');
   let trapFail = 0;
-  for (const rel of TRAP_PROBE) {
-    const src = readSrc(rel);
-    const name = path.basename(rel);
+  for (const { name, src } of TRAP_PROBE) {
     let status = null, stderrText = '', stdoutLen = 0, threw = null;
     try {
       const out = execFileSync(bin, { input: Buffer.from(src, 'utf8'), maxBuffer: 64 * 1024 * 1024 });

@@ -15,6 +15,11 @@ fn HEAP() -> Int { return 300000 }
 fn VARIANTS() -> Int { return 270000 }
 fn VARIANT_OK_LIT() -> Int { return 271000 }
 fn VARIANT_ERR_LIT() -> Int { return 271010 }
+# static-type side tables (4 bytes per entry, parallel to PARAMS/LOCALS/SYMBOLS): 0 = Int/Text/
+# other, 1 = Float - the only distinction the IR's TYPEMAP (op 57) and coercion rules need.
+fn PTYPES() -> Int { return 272000 }
+fn LTYPES() -> Int { return 273000 }
+fn RETTYPES() -> Int { return 274000 }
 
 # Globals mapped to memory [0..1024)
 fn get_emit() -> Int { return load32(0) }
@@ -55,6 +60,16 @@ fn set_discard_slot(v: Int) -> Unit { store32(44, v) }
 
 fn get_nvariant() -> Int { return load32(56) }
 fn set_nvariant(v: Int) -> Unit { store32(56, v) }
+
+# static type of the most recently compiled expression (0 = Int/Text/other, 1 = Float)
+fn get_etype() -> Int { return load32(60) }
+fn set_etype(v: Int) -> Unit { store32(60, v) }
+
+# result registers of float_bits(): the two i32 words of a parsed float literal's f64 bits
+fn get_flo() -> Int { return load32(64) }
+fn set_flo(v: Int) -> Unit { store32(64, v) }
+fn get_fhi() -> Int { return load32(68) }
+fn set_fhi(v: Int) -> Unit { store32(68, v) }
 
 # ---------- small helpers ----------
 fn b(i: Int) -> Int {
@@ -223,6 +238,90 @@ fn is_str_not(off: Int, len: Int) -> Int {
 fn is_kw_not(i: Int) -> Int {
   if tk(i) != 1 { return 0 }
   return is_str_not(ta(i), tb(i))
+}
+
+fn is_str_float_ty(off: Int, len: Int) -> Int {
+  if len != 5 { return 0 }
+  if load8(off + 0) != 70 { return 0 }
+  if load8(off + 1) != 108 { return 0 }
+  if load8(off + 2) != 111 { return 0 }
+  if load8(off + 3) != 97 { return 0 }
+  if load8(off + 4) != 116 { return 0 }
+  return 1
+}
+
+fn is_str_to_float(off: Int, len: Int) -> Int {
+  if len != 8 { return 0 }
+  if load8(off + 0) != 116 { return 0 }
+  if load8(off + 1) != 111 { return 0 }
+  if load8(off + 2) != 95 { return 0 }
+  if load8(off + 3) != 102 { return 0 }
+  if load8(off + 4) != 108 { return 0 }
+  if load8(off + 5) != 111 { return 0 }
+  if load8(off + 6) != 97 { return 0 }
+  if load8(off + 7) != 116 { return 0 }
+  return 1
+}
+
+fn is_str_to_int(off: Int, len: Int) -> Int {
+  if len != 6 { return 0 }
+  if load8(off + 0) != 116 { return 0 }
+  if load8(off + 1) != 111 { return 0 }
+  if load8(off + 2) != 95 { return 0 }
+  if load8(off + 3) != 105 { return 0 }
+  if load8(off + 4) != 110 { return 0 }
+  if load8(off + 5) != 116 { return 0 }
+  return 1
+}
+
+fn is_str_round(off: Int, len: Int) -> Int {
+  if len != 5 { return 0 }
+  if load8(off + 0) != 114 { return 0 }
+  if load8(off + 1) != 111 { return 0 }
+  if load8(off + 2) != 117 { return 0 }
+  if load8(off + 3) != 110 { return 0 }
+  if load8(off + 4) != 100 { return 0 }
+  return 1
+}
+
+fn is_str_sqrt(off: Int, len: Int) -> Int {
+  if len != 4 { return 0 }
+  if load8(off + 0) != 115 { return 0 }
+  if load8(off + 1) != 113 { return 0 }
+  if load8(off + 2) != 114 { return 0 }
+  if load8(off + 3) != 116 { return 0 }
+  return 1
+}
+
+fn is_str_abs(off: Int, len: Int) -> Int {
+  if len != 3 { return 0 }
+  if load8(off + 0) != 97 { return 0 }
+  if load8(off + 1) != 98 { return 0 }
+  if load8(off + 2) != 115 { return 0 }
+  return 1
+}
+
+fn is_str_exp(off: Int, len: Int) -> Int {
+  if len != 3 { return 0 }
+  if load8(off + 0) != 101 { return 0 }
+  if load8(off + 1) != 120 { return 0 }
+  if load8(off + 2) != 112 { return 0 }
+  return 1
+}
+
+fn is_str_ln(off: Int, len: Int) -> Int {
+  if len != 2 { return 0 }
+  if load8(off + 0) != 108 { return 0 }
+  if load8(off + 1) != 110 { return 0 }
+  return 1
+}
+
+fn is_str_pow(off: Int, len: Int) -> Int {
+  if len != 3 { return 0 }
+  if load8(off + 0) != 112 { return 0 }
+  if load8(off + 1) != 111 { return 0 }
+  if load8(off + 2) != 119 { return 0 }
+  return 1
 }
 
 fn is_str_console_print(off: Int, len: Int) -> Int {
@@ -457,6 +556,34 @@ fn sym_find(off: Int, len: Int) -> Int {
   return 0 - 1
 }
 
+# index of a symbol (for the RETTYPES side table), or -1. Forward references resolve to -1,
+# so a call to a not-yet-defined function types as Int - exactly the seed's behavior.
+fn sym_index(off: Int, len: Int) -> Int {
+  var k = 0
+  let limit = get_nsym()
+  while k < limit {
+    let base = SYMBOLS() + k * 12
+    if eqlit(load32(base), load32(base + 4), off, len) == 1 {
+      return k
+    }
+    k = k + 1
+  }
+  return 0 - 1
+}
+
+fn ptype(k: Int) -> Int { return load32(PTYPES() + k * 4) }
+fn ptype_set(k: Int, t: Int) -> Unit { store32(PTYPES() + k * 4, t) }
+fn ltype(k: Int) -> Int { return load32(LTYPES() + k * 4) }
+fn ltype_set(k: Int, t: Int) -> Unit { store32(LTYPES() + k * 4, t) }
+fn rettype(k: Int) -> Int { return load32(RETTYPES() + k * 4) }
+fn rettype_set(k: Int, t: Int) -> Unit { store32(RETTYPES() + k * 4, t) }
+
+# static type of a variable slot (params first, then locals - the GETARG slot order)
+fn slot_type(slot: Int) -> Int {
+  if slot < get_nparam() { return ptype(slot) }
+  return ltype(slot - get_nparam())
+}
+
 fn variant_add(off: Int, len: Int, tag: Int) -> Unit {
   let base = VARIANTS() + get_nvariant() * 12
   store32(base, off)
@@ -499,6 +626,7 @@ fn param_add(off: Int, len: Int) -> Unit {
   let base = PARAMS() + get_nparam() * 8
   store32(base, off)
   store32(base + 4, len)
+  ptype_set(get_nparam(), 0)
   set_nparam(get_nparam() + 1)
 }
 
@@ -519,6 +647,7 @@ fn local_add(off: Int, len: Int) -> Unit {
   let base = LOCALS() + get_nlocal() * 8
   store32(base, off)
   store32(base + 4, len)
+  ltype_set(get_nlocal(), 0)
   set_nlocal(get_nlocal() + 1)
 }
 
@@ -654,7 +783,7 @@ fn concat(pa: Int, pb: Int) -> Int {
   let lb = load32(pb)
   let ptr = halloc(4 + la + lb)
   store32(ptr, la + lb)
-  
+
   var i = 0
   while i < la {
     store8(ptr + 4 + i, load8(pa + 4 + i))
@@ -666,6 +795,78 @@ fn concat(pa: Int, pb: Int) -> Int {
     i = i + 1
   }
   return ptr
+}
+
+# Parse a decimal float literal (bytes at absolute src addr `off`, length `len`) and leave the
+# two i32 words of its f64 bits in flo/fhi. The VALUE is built exactly as the seed builds it -
+# integer part + fractional part / 10^k, evaluated in this compiler's own Float arithmetic, so
+# it is bit-identical to the seed's parse by construction (both run the same IEEE-754 ops).
+# The BIT EXTRACTION below uses only exact operations (multiply by 0.5/2.0 is pure exponent
+# arithmetic; m - 1.0 for m in [1,2) is exact by Sterbenz; doubling a <53-bit fraction and
+# subtracting 1.0 is exact), so no rounding can diverge. Decimal literals cannot produce
+# negatives (unary minus is an operator), NaN, infinity, or subnormals, so only zero and
+# normal values need encoding.
+fn float_bits(off: Int, len: Int) -> Unit {
+  var i = 0
+  var ip = 0
+  var fp = 0
+  var div = 1.0
+  var dot = 0
+  while i < len {
+    let ch = load8(off + i)
+    if ch == 46 {
+      dot = 1
+    } else {
+      if dot == 1 {
+        fp = fp * 10 + (ch - 48)
+        div = div * 10.0
+      } else {
+        ip = ip * 10 + (ch - 48)
+      }
+    }
+    i = i + 1
+  }
+  let v = to_float(ip) + to_float(fp) / div
+  if v == 0.0 {
+    set_flo(0)
+    set_fhi(0)
+    return ()
+  }
+  var e = 0
+  var m = v
+  while m >= 2.0 {
+    m = m * 0.5
+    e = e + 1
+  }
+  while m < 1.0 {
+    m = m * 2.0
+    e = e - 1
+  }
+  var frac = m - 1.0
+  var hi20 = 0
+  var k = 0
+  while k < 20 {
+    frac = frac * 2.0
+    hi20 = hi20 * 2
+    if frac >= 1.0 {
+      hi20 = hi20 + 1
+      frac = frac - 1.0
+    }
+    k = k + 1
+  }
+  var lo32 = 0
+  k = 0
+  while k < 32 {
+    frac = frac * 2.0
+    lo32 = lo32 * 2
+    if frac >= 1.0 {
+      lo32 = lo32 + 1
+      frac = frac - 1.0
+    }
+    k = k + 1
+  }
+  set_flo(lo32)
+  set_fhi((e + 1023) * 1048576 + hi20)
 }
 
 # ==========================================
@@ -696,6 +897,7 @@ fn lex(srclen: Int) -> Unit {
         }
       } else {
         if is_digit(c) == 1 {
+          let dstart = i
           var val = 0
           var loop_dig = 1
           while loop_dig == 1 {
@@ -707,7 +909,24 @@ fn lex(srclen: Int) -> Unit {
               }
             }
           }
-          tokset(n, 2, val, 0)
+          var isfloat = 0
+          if i + 1 < srclen and b(i) == 46 and is_digit(b(i + 1)) == 1 {
+            isfloat = 1
+            i = i + 1
+            var loop_frac = 1
+            while loop_frac == 1 {
+              if i >= srclen { loop_frac = 0 } else {
+                if is_digit(b(i)) == 0 { loop_frac = 0 } else {
+                  i = i + 1
+                }
+              }
+            }
+          }
+          if isfloat == 1 {
+            tokset(n, 30, SRC() + dstart, i - dstart)
+          } else {
+            tokset(n, 2, val, 0)
+          }
           n = n + 1
         } else {
           if is_alpha(c) == 1 {
@@ -857,6 +1076,7 @@ fn skip_type() -> Unit {
 fn c_primary() -> Unit {
   if is_kw_match(get_tp()) == 1 {
     c_match()
+    set_etype(0)
     return ()
   }
   let k = tk(get_tp())
@@ -864,12 +1084,23 @@ fn c_primary() -> Unit {
     emitw(1)
     emitw(ta(get_tp()))
     adv()
+    set_etype(0)
+    return ()
+  }
+  if k == 30 {
+    float_bits(ta(get_tp()), tb(get_tp()))
+    emitw(29)
+    emitw(get_flo())
+    emitw(get_fhi())
+    adv()
+    set_etype(1)
     return ()
   }
   if k == 20 {
     emitw(15)
     emitw(mktext_lit(ta(get_tp()), tb(get_tp())))
     adv()
+    set_etype(0)
     return ()
   }
   if tk(get_tp()) == 3 {
@@ -878,6 +1109,7 @@ fn c_primary() -> Unit {
       emitw(0)
       adv()
       adv()
+      set_etype(0)
       return ()
     }
   }
@@ -909,6 +1141,7 @@ fn c_primary() -> Unit {
         emitw(10)
         set_expr_pushes(0)
       }
+      set_etype(0)
       return ()
     }
     
@@ -934,8 +1167,10 @@ fn c_primary() -> Unit {
       if ctag >= 0 {
         emitw(25)
         emitw(ctag)
+        set_etype(0)
         return ()
       }
+      set_etype(0)
       if is_str_int_to_text(off, length) == 1 { emitw(18)  return () }
       if is_str_text_concat(off, length) == 1 { emitw(17)  return () }
       if is_str_text_eq(off, length) == 1 { emitw(28)  return () }
@@ -949,20 +1184,35 @@ fn c_primary() -> Unit {
       if is_str_shl(off, length) == 1 { emitw(61)  return () }
       if is_str_shr(off, length) == 1 { emitw(62)  return () }
       if is_str_bnot(off, length) == 1 { emitw(63)  return () }
+      if is_str_to_int(off, length) == 1 { emitw(42)  return () }
+      if is_str_round(off, length) == 1 { emitw(43)  return () }
+      if is_str_to_float(off, length) == 1 { emitw(30)  set_etype(1)  return () }
+      if is_str_sqrt(off, length) == 1 { emitw(44)  set_etype(1)  return () }
+      if is_str_abs(off, length) == 1 { emitw(45)  set_etype(1)  return () }
+      if is_str_exp(off, length) == 1 { emitw(46)  set_etype(1)  return () }
+      if is_str_ln(off, length) == 1 { emitw(47)  set_etype(1)  return () }
+      if is_str_pow(off, length) == 1 { emitw(48)  set_etype(1)  return () }
 
+      let sidx = sym_index(off, length)
       emitw(8)
       fixup_add(get_emit(), off, length)
       emitw(0)
       emitw(argc)
+      if sidx >= 0 {
+        set_etype(rettype(sidx))
+      } else {
+        set_etype(0)
+      }
       return ()
     }
-    
+
     let ntag = variant_find(off, length)
     if ntag >= 0 {
       emitw(1)
       emitw(0)
       emitw(25)
       emitw(ntag)
+      set_etype(0)
       return ()
     }
     var slot = var_find(off, length)
@@ -972,6 +1222,7 @@ fn c_primary() -> Unit {
     }
     emitw(2)
     emitw(slot)
+    set_etype(slot_type(slot))
     return ()
   }
 }
@@ -996,6 +1247,7 @@ fn c_apply_try() -> Unit {
   emitw(2)
   emitw(s)
   emitw(27)
+  set_etype(0)
 }
 
 fn c_postfix() -> Unit {
@@ -1011,14 +1263,64 @@ fn c_postfix() -> Unit {
   }
 }
 
-fn c_mul() -> Unit {
+# Unary minus compiles as 0 - x (the seed's shape): PUSH 0 first, then the operand, then
+# SUB - with the pushed Int 0 coerced via op 31 when the operand is Float. Binds tighter
+# than * (so -a * b is (0-a) * b), looser than postfix.
+fn c_unary() -> Unit {
+  if tk(get_tp()) == 11 {
+    adv()
+    emitw(1)
+    emitw(0)
+    c_unary()
+    if get_etype() == 1 {
+      emitw(31)
+      emitw(33)
+    } else {
+      emitw(4)
+    }
+    return ()
+  }
   c_postfix()
+}
+
+# Binary arithmetic with the seed's mixed-type rule: both Int -> the Int opcode; otherwise
+# coerce the Int side (op 30 converts the top of stack, op 31 the slot under it) and use the
+# Float opcode. lt is the left operand's type, saved before the right operand compiled.
+fn emit_arith(lt: Int, intop: Int, fop: Int) -> Unit {
+  let rt = get_etype()
+  if lt == 0 and rt == 0 {
+    emitw(intop)
+    set_etype(0)
+    return ()
+  }
+  if rt == 0 { emitw(30) }
+  if lt == 0 { emitw(31) }
+  emitw(fop)
+  set_etype(1)
+}
+
+# Comparisons: same coercion rule, but the result is always Int (0/1).
+fn emit_cmp(lt: Int, intop: Int, fop: Int) -> Unit {
+  let rt = get_etype()
+  if lt == 0 and rt == 0 {
+    emitw(intop)
+    set_etype(0)
+    return ()
+  }
+  if rt == 0 { emitw(30) }
+  if lt == 0 { emitw(31) }
+  emitw(fop)
+  set_etype(0)
+}
+
+fn c_mul() -> Unit {
+  c_unary()
   var loop = 1
   while loop == 1 {
     let k = tk(get_tp())
-    if k == 17 { adv()  c_postfix()  emitw(11) } else {
-    if k == 18 { adv()  c_postfix()  emitw(12) } else {
-    if k == 26 { adv()  c_postfix()  emitw(24) } else {
+    if k == 17 { adv()  let lt = get_etype()  c_unary()  emit_arith(lt, 11, 34) } else {
+    if k == 18 { adv()  let lt2 = get_etype()  c_unary()  emit_arith(lt2, 12, 35) } else {
+    if k == 26 { adv()  c_unary()  emitw(24)  set_etype(0) } else {
       loop = 0
     }}}
   }
@@ -1029,8 +1331,8 @@ fn c_add() -> Unit {
   var loop = 1
   while loop == 1 {
     let k = tk(get_tp())
-    if k == 10 { adv()  c_mul()  emitw(3) } else {
-    if k == 11 { adv()  c_mul()  emitw(4) } else {
+    if k == 10 { adv()  let lt = get_etype()  c_mul()  emit_arith(lt, 3, 32) } else {
+    if k == 11 { adv()  let lt2 = get_etype()  c_mul()  emit_arith(lt2, 4, 33) } else {
       loop = 0
     }}
   }
@@ -1039,12 +1341,12 @@ fn c_add() -> Unit {
 fn c_cmp() -> Unit {
   c_add()
   let k = tk(get_tp())
-  if k == 12 { adv()  c_add()  emitw(5)  return () }
-  if k == 21 { adv()  c_add()  emitw(19)  return () }
-  if k == 22 { adv()  c_add()  emitw(20)  return () }
-  if k == 23 { adv()  c_add()  emitw(21)  return () }
-  if k == 24 { adv()  c_add()  emitw(22)  return () }
-  if k == 25 { adv()  c_add()  emitw(23) }
+  if k == 12 { adv()  let lt = get_etype()  c_add()  emit_cmp(lt, 5, 36)  return () }
+  if k == 21 { adv()  let lt = get_etype()  c_add()  emit_cmp(lt, 19, 40)  return () }
+  if k == 22 { adv()  let lt = get_etype()  c_add()  emit_cmp(lt, 20, 41)  return () }
+  if k == 23 { adv()  let lt = get_etype()  c_add()  emit_cmp(lt, 21, 37)  return () }
+  if k == 24 { adv()  let lt = get_etype()  c_add()  emit_cmp(lt, 22, 39)  return () }
+  if k == 25 { adv()  let lt = get_etype()  c_add()  emit_cmp(lt, 23, 38) }
 }
 
 # Boolean operators, seed-identical shapes (loosest to tightest: or < and < not < cmp).
@@ -1058,6 +1360,7 @@ fn c_not() -> Unit {
     emitw(1)
     emitw(0)
     emitw(19)
+    set_etype(0)
     return ()
   }
   c_cmp()
@@ -1080,6 +1383,7 @@ fn c_and() -> Unit {
       emitw(1)
       emitw(0)
       patch(jb, get_emit())
+      set_etype(0)
     } else {
       loop = 0
     }
@@ -1103,6 +1407,7 @@ fn c_or() -> Unit {
       patch(ja, get_emit())
       c_and()
       patch(jb, get_emit())
+      set_etype(0)
     } else {
       loop = 0
     }
@@ -1282,6 +1587,7 @@ fn c_let() -> Unit {
   c_expr()
   let idx = get_nlocal()
   local_add(off, len)
+  ltype_set(idx, get_etype())
   emitw(14)
   emitw(get_nparam() + idx)
 }
@@ -1343,7 +1649,9 @@ fn c_fn() -> Unit {
   let foff = ta(get_tp())
   let flen = tb(get_tp())
   adv()
+  let symidx = get_nsym()
   sym_add(foff, flen, get_emit())
+  rettype_set(symidx, 0)
   let ismain = is_str_main(foff, flen)
   if ismain == 1 {
     set_main_entry(get_emit())
@@ -1351,7 +1659,7 @@ fn c_fn() -> Unit {
   adv()
   set_nparam(0)
   set_nlocal(0)
-  
+
   var loop = 1
   while loop == 1 {
     if tk(get_tp()) == 4 {
@@ -1360,6 +1668,11 @@ fn c_fn() -> Unit {
       param_add(ta(get_tp()), tb(get_tp()))
       adv()
       adv()
+      if is_str_float_ty(ta(get_tp()), tb(get_tp())) == 1 {
+        if tk(get_tp()) == 1 {
+          ptype_set(get_nparam() - 1, 1)
+        }
+      }
       skip_type()
       if tk(get_tp()) == 7 {
         adv()
@@ -1369,6 +1682,11 @@ fn c_fn() -> Unit {
   adv()
   if tk(get_tp()) == 9 {
     adv()
+    if is_str_float_ty(ta(get_tp()), tb(get_tp())) == 1 {
+      if tk(get_tp()) == 1 {
+        rettype_set(symidx, 1)
+      }
+    }
     skip_type()
   }
   set_discard_slot(get_nparam() + get_nlocal())
@@ -1381,10 +1699,10 @@ fn c_fn() -> Unit {
   patch(reservefix, ntot)
   emitw(57)
   emitw(ntot)
-  emitw(0)
+  emitw(rettype(symidx))
   var i = 0
   while i < ntot {
-    emitw(0)
+    emitw(slot_type(i))
     i = i + 1
   }
   if ismain == 1 {

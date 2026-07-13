@@ -24,8 +24,11 @@ const cases = [
   ['../mu/examples/safe_div.lm', 'ok 4\ndiv by zero\n'],
   ['../mu/examples/propagate.lm', '9\n'],
   ['../mu/examples/bools.lm', '1\n0\n1\n0\n1\n1\n1\n1\n42\n3\n'],
+  ['../mu/examples/floats.lm', '15000\n2500\n60000\n6000\n104506\n3989\n-15000\n-3\n1\n7\n2\n2\n12247\n15000\n44817\n4055\n22500\n'],
   ['native/test_load32.lm', '7\n65\n'],   // raw-memory keystone: store32/load32 + store8/load8 round-trip
-  ['../examples/black_scholes.lm', 'bs_call=10.450576\n'],   // quant oracle: reproduces the canonical Black-Scholes call (10.450584) to 8e-6; also exercises userland float_to_text
+  ['../examples/black_scholes.lm', 'bs_call=10.450576\n'],
+  ['../examples/finance/black_scholes.lm', '104506\n\n60401\n\n154860\n\n79020\n\n'],   // the certified pricing table, scaled x10000
+  ['../examples/finance/implied_vol.lm', '2000\n\n2000\n\n'],   // recovers sigma=20.00% (x100 scale) from both market prices   // quant oracle: reproduces the canonical Black-Scholes call (10.450584) to 8e-6; also exercises userland float_to_text
 ];
 
 const wabt = await wabtInit();

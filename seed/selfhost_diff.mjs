@@ -31,6 +31,7 @@ const CONFORMANCE_LIST = [
   '../examples/black_scholes.lm',
   '../examples/finance/black_scholes.lm',
   '../examples/finance/implied_vol.lm',
+  '../mu/examples/arrays.lm',
 ];
 
 // expected match floor: every program here must stay bit-identical or the harness exits 1.
@@ -65,6 +66,7 @@ const EXPECTED_MATCH = [
   '../examples/black_scholes.lm',
   '../examples/finance/black_scholes.lm',
   '../examples/finance/implied_vol.lm',
+  '../mu/examples/arrays.lm',
 ];
 
 async function main() {

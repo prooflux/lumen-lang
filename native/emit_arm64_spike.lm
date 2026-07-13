@@ -1,0 +1,347 @@
+# emit_arm64_spike.lm - SPIKE ONLY (Arc 1, 90-day item 4, lane l3-arm64).
+#
+# IR -> AArch64 assembly text (.s) for macOS arm64, no C and no clang anywhere in the
+# translation itself. This is a spike scoped to the opcodes mu/examples/add.lm needs:
+# RESERVE(13), PUSH(1), GETARG/GETLOCAL(2), ADD(3), CALL(8), RET(9), SETLOCAL(14),
+# PRINTINT(10), HALT(0), TYPEMAP(57, skipped like emit.lm does). It is a direct sibling
+# of emit.lm: same IR-walk structure (resolve_pc/oplen/emit_body), same memory-injection
+# contract (hdr()=524288, matching pipeline.mjs's emitWith default base/ceil), different
+# target language. See docs/spikes/ARM64_SPIKE_FINDINGS.md for the mapping table, the
+# Mach-O/linking facts, and what breaks past this opcode set.
+#
+# The virtual machine emitted here mirrors emit.lm's C model exactly (S[] value stack,
+# RA[]/AB[] manual call-frame arrays, sp/ab/csp cursors) but keeps sp/ab/csp and the
+# stack arrays in .bss memory rather than hardware registers: this is the "Hybrid Frame
+# Model" the R3B memo recommends for v1, adapted to a stack machine instead of AAPCS64
+# register-argument passing (this spike's calls are Lumen-internal, not the C ABI).
+# Register x28 is reserved purely as the scratch "address of a bss variable" register
+# inside the load_*/store_* helpers below; it never carries a live value across two
+# opcodes. All other scratch registers (x9-x17) are opcode-local.
+
+fn hdr() -> Int { return 524288 }
+fn ir_len() -> Int { return load32(hdr()) }
+fn ir_main() -> Int { return load32(hdr() + 4) }
+fn ir_word(i: Int) -> Int { return load32(hdr() + 8 + i * 4) }
+
+fn resolve_pc(target: Int) -> Int {
+  var p = target
+  while p < ir_len() {
+    if ir_word(p) == 57 {
+      p = p + 3 + ir_word(p + 1)
+    } else {
+      return p
+    }
+  }
+  return p
+}
+
+fn oplen(op: Int) -> Int {
+  if op == 1 { return 1 }
+  if op == 2 { return 1 }
+  if op == 8 { return 2 }
+  if op == 13 { return 1 }
+  if op == 14 { return 1 }
+  return 0
+}
+
+fn num(c: Console, n: Int) -> Unit { c.print(int_to_text(n)) }
+fn lbl(c: Console, pc: Int) -> Unit { c.print("L") num(c, pc) }
+fn regname(c: Console, r: Int) -> Unit { c.print("x") num(c, r) }
+
+# --- bss-variable load/store helpers (x28 = private address scratch) ---
+
+fn load_sp(c: Console, reg: Int) -> Unit {
+  c.print("    adrp x28, _spvar@PAGE\n")
+  c.print("    add x28, x28, _spvar@PAGEOFF\n")
+  c.print("    ldr ")
+  regname(c, reg)
+  c.print(", [x28]\n")
+}
+
+fn store_sp(c: Console, reg: Int) -> Unit {
+  c.print("    adrp x28, _spvar@PAGE\n")
+  c.print("    add x28, x28, _spvar@PAGEOFF\n")
+  c.print("    str ")
+  regname(c, reg)
+  c.print(", [x28]\n")
+}
+
+fn load_ab(c: Console, reg: Int) -> Unit {
+  c.print("    adrp x28, _abvar@PAGE\n")
+  c.print("    add x28, x28, _abvar@PAGEOFF\n")
+  c.print("    ldr ")
+  regname(c, reg)
+  c.print(", [x28]\n")
+}
+
+fn store_ab(c: Console, reg: Int) -> Unit {
+  c.print("    adrp x28, _abvar@PAGE\n")
+  c.print("    add x28, x28, _abvar@PAGEOFF\n")
+  c.print("    str ")
+  regname(c, reg)
+  c.print(", [x28]\n")
+}
+
+fn load_csp(c: Console, reg: Int) -> Unit {
+  c.print("    adrp x28, _cspvar@PAGE\n")
+  c.print("    add x28, x28, _cspvar@PAGEOFF\n")
+  c.print("    ldr ")
+  regname(c, reg)
+  c.print(", [x28]\n")
+}
+
+fn store_csp(c: Console, reg: Int) -> Unit {
+  c.print("    adrp x28, _cspvar@PAGE\n")
+  c.print("    add x28, x28, _cspvar@PAGEOFF\n")
+  c.print("    str ")
+  regname(c, reg)
+  c.print(", [x28]\n")
+}
+
+fn addrS(c: Console, reg: Int) -> Unit {
+  c.print("    adrp ")
+  regname(c, reg)
+  c.print(", _S@PAGE\n")
+  c.print("    add ")
+  regname(c, reg)
+  c.print(", ")
+  regname(c, reg)
+  c.print(", _S@PAGEOFF\n")
+}
+
+fn addrRA(c: Console, reg: Int) -> Unit {
+  c.print("    adrp ")
+  regname(c, reg)
+  c.print(", _RA@PAGE\n")
+  c.print("    add ")
+  regname(c, reg)
+  c.print(", ")
+  regname(c, reg)
+  c.print(", _RA@PAGEOFF\n")
+}
+
+fn addrAB(c: Console, reg: Int) -> Unit {
+  c.print("    adrp ")
+  regname(c, reg)
+  c.print(", _AB@PAGE\n")
+  c.print("    add ")
+  regname(c, reg)
+  c.print(", ")
+  regname(c, reg)
+  c.print(", _AB@PAGEOFF\n")
+}
+
+# --- prologue: asm header, _pic (int-to-decimal print via write(2)), VM init ---
+
+fn emit_prologue(c: Console) -> Unit {
+  c.print(".global _main\n")
+  c.print(".align 4\n")
+  c.print("\n")
+  c.print("_pic:\n")
+  c.print("    stp x29, x30, [sp, #-32]!\n")
+  c.print("    mov x29, sp\n")
+  c.print("    mov x7, #0\n")
+  c.print("    cmp x0, #0\n")
+  c.print("    b.ge Lpic_nonneg\n")
+  c.print("    mov x7, #1\n")
+  c.print("    neg x0, x0\n")
+  c.print("Lpic_nonneg:\n")
+  c.print("    mov x1, #24\n")
+  c.print("    sub x1, x1, #1\n")
+  c.print("    mov x3, #10\n")
+  c.print("    strb w3, [sp, x1]\n")
+  c.print("    cbnz x0, Lpic_loop\n")
+  c.print("    sub x1, x1, #1\n")
+  c.print("    mov x3, #48\n")
+  c.print("    strb w3, [sp, x1]\n")
+  c.print("    b Lpic_sign\n")
+  c.print("Lpic_loop:\n")
+  c.print("    cbz x0, Lpic_sign\n")
+  c.print("    mov x4, #10\n")
+  c.print("    udiv x5, x0, x4\n")
+  c.print("    msub x6, x5, x4, x0\n")
+  c.print("    add x6, x6, #48\n")
+  c.print("    sub x1, x1, #1\n")
+  c.print("    strb w6, [sp, x1]\n")
+  c.print("    mov x0, x5\n")
+  c.print("    b Lpic_loop\n")
+  c.print("Lpic_sign:\n")
+  c.print("    cbz x7, Lpic_write\n")
+  c.print("    sub x1, x1, #1\n")
+  c.print("    mov x3, #45\n")
+  c.print("    strb w3, [sp, x1]\n")
+  c.print("Lpic_write:\n")
+  c.print("    mov x2, #24\n")
+  c.print("    sub x2, x2, x1\n")
+  c.print("    add x1, sp, x1\n")
+  c.print("    mov x0, #1\n")
+  c.print("    bl _write\n")
+  c.print("    ldp x29, x30, [sp], #32\n")
+  c.print("    ret\n")
+  c.print("\n")
+  c.print("_main:\n")
+  c.print("    mov x9, #0\n")
+  store_sp(c, 9)
+  store_ab(c, 9)
+  store_csp(c, 9)
+  c.print("    b ")
+  lbl(c, resolve_pc(ir_main()))
+  c.print("\n")
+}
+
+fn emit_op(c: Console, pc: Int) -> Unit {
+  let op = ir_word(pc)
+  lbl(c, pc)
+  c.print(":\n")
+  if op == 0 {
+    c.print("    mov x0, #0\n")
+    c.print("    bl _exit\n")
+  } else if op == 1 {
+    let n = ir_word(pc + 1)
+    load_sp(c, 9)
+    addrS(c, 11)
+    c.print("    mov x10, #")
+    num(c, n)
+    c.print("\n")
+    c.print("    str x10, [x11, x9, lsl #3]\n")
+    c.print("    add x9, x9, #1\n")
+    store_sp(c, 9)
+  } else if op == 2 {
+    let n = ir_word(pc + 1)
+    load_ab(c, 9)
+    c.print("    add x9, x9, #")
+    num(c, n)
+    c.print("\n")
+    addrS(c, 11)
+    c.print("    ldr x10, [x11, x9, lsl #3]\n")
+    load_sp(c, 12)
+    c.print("    str x10, [x11, x12, lsl #3]\n")
+    c.print("    add x12, x12, #1\n")
+    store_sp(c, 12)
+  } else if op == 3 {
+    load_sp(c, 9)
+    c.print("    sub x10, x9, #2\n")
+    c.print("    sub x9, x9, #1\n")
+    addrS(c, 11)
+    c.print("    ldr x12, [x11, x10, lsl #3]\n")
+    c.print("    ldr x13, [x11, x9, lsl #3]\n")
+    c.print("    add x12, x12, x13\n")
+    c.print("    str x12, [x11, x10, lsl #3]\n")
+    store_sp(c, 9)
+  } else if op == 8 {
+    let target = ir_word(pc + 1)
+    let argc = ir_word(pc + 2)
+    load_csp(c, 9)
+    addrRA(c, 11)
+    c.print("    adr x10, ")
+    lbl(c, pc + 3)
+    c.print("\n")
+    c.print("    str x10, [x11, x9, lsl #3]\n")
+    load_ab(c, 12)
+    addrAB(c, 13)
+    c.print("    str w12, [x13, x9, lsl #2]\n")
+    c.print("    add x9, x9, #1\n")
+    store_csp(c, 9)
+    load_sp(c, 14)
+    c.print("    sub x14, x14, #")
+    num(c, argc)
+    c.print("\n")
+    store_ab(c, 14)
+    c.print("    b ")
+    lbl(c, resolve_pc(target))
+    c.print("\n")
+  } else if op == 9 {
+    load_sp(c, 9)
+    c.print("    sub x9, x9, #1\n")
+    addrS(c, 11)
+    c.print("    ldr x12, [x11, x9, lsl #3]\n")
+    load_ab(c, 13)
+    c.print("    str x12, [x11, x13, lsl #3]\n")
+    c.print("    add x13, x13, #1\n")
+    store_sp(c, 13)
+    load_csp(c, 9)
+    c.print("    sub x9, x9, #1\n")
+    store_csp(c, 9)
+    addrAB(c, 14)
+    c.print("    ldr w15, [x14, x9, lsl #2]\n")
+    store_ab(c, 15)
+    addrRA(c, 16)
+    c.print("    ldr x17, [x16, x9, lsl #3]\n")
+    c.print("    br x17\n")
+  } else if op == 10 {
+    load_sp(c, 9)
+    c.print("    sub x9, x9, #1\n")
+    store_sp(c, 9)
+    addrS(c, 11)
+    c.print("    ldr x0, [x11, x9, lsl #3]\n")
+    c.print("    bl _pic\n")
+  } else if op == 13 {
+    let n = ir_word(pc + 1)
+    load_ab(c, 9)
+    c.print("    add x9, x9, #")
+    num(c, n)
+    c.print("\n")
+    c.print("LR")
+    num(c, pc)
+    c.print("_loop:\n")
+    load_sp(c, 10)
+    c.print("    cmp x10, x9\n")
+    c.print("    b.ge LR")
+    num(c, pc)
+    c.print("_end\n")
+    addrS(c, 11)
+    c.print("    mov x12, #0\n")
+    c.print("    str x12, [x11, x10, lsl #3]\n")
+    c.print("    add x10, x10, #1\n")
+    store_sp(c, 10)
+    c.print("    b LR")
+    num(c, pc)
+    c.print("_loop\n")
+    c.print("LR")
+    num(c, pc)
+    c.print("_end:\n")
+  } else if op == 14 {
+    let n = ir_word(pc + 1)
+    load_sp(c, 9)
+    c.print("    sub x9, x9, #1\n")
+    store_sp(c, 9)
+    addrS(c, 11)
+    c.print("    ldr x10, [x11, x9, lsl #3]\n")
+    load_ab(c, 12)
+    c.print("    add x12, x12, #")
+    num(c, n)
+    c.print("\n")
+    c.print("    str x10, [x11, x12, lsl #3]\n")
+  } else {
+    c.print("    ; UNSUPPORTED OPCODE ")
+    num(c, op)
+    c.print("\n")
+    c.print("    brk #1\n")
+  }
+}
+
+fn emit_footer(c: Console) -> Unit {
+  c.print("\n.bss\n")
+  c.print(".align 3\n")
+  c.print("_spvar: .space 8\n")
+  c.print("_abvar: .space 8\n")
+  c.print("_cspvar: .space 8\n")
+  c.print("_S: .space 8388608\n")
+  c.print("_RA: .space 1600000\n")
+  c.print("_AB: .space 800000\n")
+}
+
+fn main(c: Console) -> Unit {
+  emit_prologue(c)
+  var pc = 0
+  while pc < ir_len() {
+    let op = ir_word(pc)
+    if op == 57 {
+      pc = pc + 3 + ir_word(pc + 1)
+    } else {
+      emit_op(c, pc)
+      pc = pc + 1 + oplen(op)
+    }
+  }
+  emit_footer(c)
+}

@@ -288,7 +288,7 @@ fn oplen_d_change(op: Int, pc: Int, d: Int) -> Int {
   if op == 46 { return d }
   if op == 47 { return d }
   if op == 48 { return d - 1 }
-  if op == 49 { return d + 1 }
+  if op == 49 { return d }
   if op == 50 { return d - 1 }
   if op == 51 { return d - 3 }
   if op == 52 { return d }

@@ -1,5 +1,5 @@
 {
-  "generated_from": "6943e43f2a2933a814153b27529e6518611ceca7",
+  "generated_from": "f836a555d922c4ab6280c88f2c1bd784826c0924",
   "external_binaries": [
     "/usr/bin/true",
     "clang",
@@ -15,11 +15,14 @@
     "<unresolved subprocess/exec target in native/tenant_routing_test.mjs>",
     "<unresolved subprocess/exec target in seed/loop_test.mjs>",
     "<unresolved subprocess/exec target in seed/lumen.mjs>",
+    "as",
     "clang",
     "git rev-parse HEAD",
+    "ld",
     "node",
     "otool",
-    "python3"
+    "python3",
+    "xcrun"
   ],
   "files": [
     {
@@ -29,6 +32,10 @@
     {
       "path": "native/analytics_events_test.mjs",
       "bytes": 18549
+    },
+    {
+      "path": "native/arm64_spike_check.mjs",
+      "bytes": 2358
     },
     {
       "path": "native/build.mjs",
@@ -128,7 +135,7 @@
     },
     {
       "path": "native/lumen_serve_native.mjs",
-      "bytes": 32471
+      "bytes": 33943
     },
     {
       "path": "native/lumenc_native.mjs",
@@ -192,7 +199,7 @@
     },
     {
       "path": "native/native_socket_test.mjs",
-      "bytes": 9331
+      "bytes": 13403
     },
     {
       "path": "native/optimize_diff.mjs",
@@ -364,12 +371,12 @@
     }
   ],
   "totals": {
-    "count": 85,
-    "bytes": 533273,
+    "count": 86,
+    "bytes": 541175,
     "by_category": {
       ".mjs": {
-        "count": 74,
-        "bytes": 485148
+        "count": 75,
+        "bytes": 493050
       },
       ".py": {
         "count": 3,

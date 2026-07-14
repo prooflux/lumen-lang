@@ -1,5 +1,5 @@
 {
-  "generated_from": "36bd9735dc40af226bfe476306ba8173cdb3a607",
+  "generated_from": "e23abc6ba4bd71ddee5646c2357feb7344d63e2f",
   "external_binaries": [
     "/usr/bin/true",
     "clang",
@@ -371,16 +371,16 @@
     },
     {
       "path": "tools/purity_gate.mjs",
-      "bytes": 10072
+      "bytes": 10176
     }
   ],
   "totals": {
     "count": 87,
-    "bytes": 543721,
+    "bytes": 543825,
     "by_category": {
       ".mjs": {
         "count": 76,
-        "bytes": 495596
+        "bytes": 495700
       },
       ".py": {
         "count": 3,

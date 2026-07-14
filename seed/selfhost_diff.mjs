@@ -32,6 +32,7 @@ const CONFORMANCE_LIST = [
   '../examples/finance/black_scholes.lm',
   '../examples/finance/implied_vol.lm',
   '../examples/finance/bond_price.lm',
+  '../examples/finance/bump_greeks.lm',
   '../mu/examples/arrays.lm',
   '../mu/examples/records.lm',
 ];
@@ -47,6 +48,7 @@ const CONFORMANCE_LIST = [
 // front-end: 24/24. arrays joined with ops 49-52 dispatch: 25/25. records joined with the
 // global-field-model record support: 26/26 - full seed-language parity for the self-hosted
 // compiler; every seed front-end feature now compiles bit-identically under lumenc.lm.
+// bump_greeks (finite-difference Greeks kernel) joined: 28/28.
 const EXPECTED_MATCH = [
   '../mu/examples/fib_print.lm',
   '../mu/examples/add.lm',
@@ -73,6 +75,7 @@ const EXPECTED_MATCH = [
   '../examples/finance/black_scholes.lm',
   '../examples/finance/implied_vol.lm',
   '../examples/finance/bond_price.lm',
+  '../examples/finance/bump_greeks.lm',
   '../mu/examples/arrays.lm',
   '../mu/examples/records.lm',
 ];

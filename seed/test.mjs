@@ -32,6 +32,7 @@ const cases = [
   ['../examples/finance/black_scholes.lm', '104506\n\n60401\n\n154860\n\n79020\n\n'],   // the certified pricing table, scaled x10000
   ['../examples/finance/implied_vol.lm', '2000\n\n2000\n\n'],   // recovers sigma=20.00% (x100 scale) from both market prices   // quant oracle: reproduces the canonical Black-Scholes call (10.450584) to 8e-6; also exercises userland float_to_text
   ['../examples/finance/bond_price.lm', '1027751\n\n1043295\n\n10194156\n\n822702\n\n'],   // fixed-rate bond pricer: discounts cashflows with repeated-multiply, scaled x10000
+  ['../examples/finance/bump_greeks.lm', '104506\n\n6368\n\n18763\n\n375239\n\n'],   // bump-Greeks finite-difference kernel: delta/gamma/vega via central diff on BS pricer, scaled by 10000/1000000/10000
 ];
 
 const wabt = await wabtInit();

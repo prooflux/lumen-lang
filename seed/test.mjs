@@ -34,6 +34,7 @@ const cases = [
   ['../examples/finance/bond_price.lm', '1027751\n\n1043295\n\n10194156\n\n822702\n\n'],   // fixed-rate bond pricer: discounts cashflows with repeated-multiply, scaled x10000
   ['../examples/finance/bump_greeks.lm', '104506\n\n6368\n\n18763\n\n375239\n\n'],   // bump-Greeks finite-difference kernel: delta/gamma/vega via central diff on BS pricer, scaled by 10000/1000000/10000
   ['../examples/finance/swap_rate.lm', '839457\n\n45647\n\n30249\n\n35171\n\n'],   // par interest-rate swap kernel: discount factors and annuity, scaled x1000000/10000/1000000
+  ['../examples/finance/vol_surface_heston.lm', 'K70_T025=216972279389\nK100_T10=210276489335\nK130_T20=207265613578\nK85_T05=214200288766\n'],   // Heston IV surface (Lewis/Gatheral approx): 4 canonical grid points, IV scaled x1e12, matches the shipped beta-app volatility_surface.js oracle to 12 sig digits
 ];
 
 const wabt = await wabtInit();

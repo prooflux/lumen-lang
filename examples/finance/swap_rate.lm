@@ -1,0 +1,75 @@
+# Par interest-rate swap kernel - discount factors and annuity pricing.
+#
+# Computes continuously-compounded discount factors from zero rates: DF(t) = exp(-z_t * t).
+# Then calculates par swap rate: S_n = (1 - DF(n)) / sum_{i=1..n} DF(i)
+# where the denominator is the annuity.
+#
+# Zero rates: z = [0.020, 0.025, 0.030, 0.032, 0.035] for t=1..5
+# Prints FOUR scaled integers:
+#   1. round(DF(5) * 1000000)         - the 5y discount factor
+#   2. round(annuity(1..5) * 10000)   - sum of DF(1..5)
+#   3. round(par_swap_rate(1..3) * 1000000)  - 3y par swap rate
+#   4. round(par_swap_rate(1..5) * 1000000)  - 5y par swap rate
+#
+# Run: node ../../seed/lumen.mjs run swap_rate.lm
+
+fn show(console: Console, p: Int) -> Unit {
+  console.print_int(p)
+  console.print("\n")
+  return ()
+}
+
+fn main(console: Console) -> Unit {
+  # Initialize zero rates array: z = [0.020, 0.025, 0.030, 0.032, 0.035]
+  let z = array(5)
+  aset(z, 0, 0.020)
+  aset(z, 1, 0.025)
+  aset(z, 2, 0.030)
+  aset(z, 3, 0.032)
+  aset(z, 4, 0.035)
+
+  # Compute discount factors: DF(t) = exp(-z_t * t)
+  let df = array(5)
+  var t = 0
+  while t < 5 {
+    let z_t = aget(z, t)
+    let time_t = to_float(t + 1)
+    let df_t = exp(0.0 - z_t * time_t)
+    aset(df, t, df_t)
+    t = t + 1
+  }
+
+  # Output 1: DF(5) scaled by 1000000
+  let df5 = aget(df, 4)
+  show(console, round(df5 * 1000000.0))
+
+  # Compute annuity: sum of DF(1..5)
+  var annuity = 0.0
+  var i = 0
+  while i < 5 {
+    annuity = annuity + aget(df, i)
+    i = i + 1
+  }
+
+  # Output 2: annuity scaled by 10000
+  show(console, round(annuity * 10000.0))
+
+  # Output 3: 3y par swap rate scaled by 1000000
+  # S_3 = (1 - DF(3)) / sum(DF(1..3))
+  var annuity_3y = 0.0
+  var j = 0
+  while j < 3 {
+    annuity_3y = annuity_3y + aget(df, j)
+    j = j + 1
+  }
+  let df3 = aget(df, 2)
+  let par_rate_3y = (1.0 - df3) / annuity_3y
+  show(console, round(par_rate_3y * 1000000.0))
+
+  # Output 4: 5y par swap rate scaled by 1000000
+  # S_5 = (1 - DF(5)) / sum(DF(1..5))
+  let par_rate_5y = (1.0 - df5) / annuity
+  show(console, round(par_rate_5y * 1000000.0))
+
+  return ()
+}

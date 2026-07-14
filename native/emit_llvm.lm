@@ -22,6 +22,7 @@ fn oplen(op: Int) -> Int {
   if op == 14 { return 1 }
   if op == 15 { return 1 }
   if op == 25 { return 1 }
+  if op == 29 { return 2 }
   return 0
 }
 
@@ -127,6 +128,121 @@ fn reset_reg() -> Unit {
   store32(589820, 1)
 }
 
+# ---- static per-slot type metadata (function headers carry a type-tagged op57 record right
+# after each op13: [57, ntot, ret_t, type0..type(ntot-1)], ret_t/typeN: 0=Int, 1=Float). These
+# three scans are exact ports of emit_fn.lm's own rettype_of/type_of_slot/max_field - the field
+# type table is a compile-time fact about the IR, independent of which backend reads it.
+fn rettype_of(func_pc: Int) -> Int {
+  var pc = func_pc + 2
+  while pc < ir_len() {
+    let op = ir_word(pc)
+    if op == 13 { return 0 }
+    if op == 57 { return ir_word(pc + 2) }
+    pc = pc + 1 + oplen(op)
+  }
+  return 0
+}
+
+fn type_of_slot(func_pc: Int, slot: Int) -> Int {
+  var pc = func_pc + 2
+  while pc < ir_len() {
+    let op = ir_word(pc)
+    if op == 13 { return 0 }
+    if op == 57 {
+      let ntot = ir_word(pc + 1)
+      if slot < ntot { return ir_word(pc + 3 + slot) }
+      return 0
+    }
+    pc = pc + 1 + oplen(op)
+  }
+  return 0
+}
+
+fn max_field(func_pc: Int) -> Int {
+  var pc = func_pc + 2
+  var max_f = 0 - 1
+  while pc < ir_len() {
+    let op = ir_word(pc)
+    if op == 13 { return max_f }
+    if op == 57 { pc = pc + 3 + ir_word(pc + 1) } else {
+      if op == 2 {
+        let k = ir_word(pc + 1)
+        if k > max_f { max_f = k }
+      }
+      if op == 14 {
+        let k = ir_word(pc + 1)
+        if k > max_f { max_f = k }
+      }
+      pc = pc + 1 + oplen(op)
+    }
+  }
+  return max_f
+}
+
+# ---- dynamic per-stack-slot type shadow (mirrors emit_fn.lm's get_sty/set_sty). Operand-stack
+# slot N gets TWO allocas in the emitted function (%sN i64, %sdN double); this table is a
+# COMPILE-TIME simulation (part of this emitter's own bookkeeping, not the output program) of
+# which alloca currently holds the live value for slot N, tracked linearly as emission walks the
+# IR in program order - the same technique emit_fn.lm already relies on for its C output.
+fn sty_base() -> Int { return 586000 }
+fn get_sty(k: Int) -> Int { return load8(sty_base() + k) }
+fn set_sty(k: Int, t: Int) -> Unit { store8(sty_base() + k, t) }
+
+# Read stack slot k as an i64, materializing a bitcast if the slot's live shadow is currently the
+# double alloca (mirrors emit_fn.lm's sl_int's d2l fallback). k<0 is the defensive "no value"
+# case (mirrors slot 0 / literal-0 fallback in emit_fn.lm; never hit by well-typed programs).
+fn ld_as_int(c: Console, k: Int) -> Int {
+  if k < 0 {
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = add i64 0, 0\n")
+    return r
+  }
+  let t = get_sty(k)
+  let r0 = get_reg()
+  if t == 1 {
+    c.print("  %r") num(c, r0) c.print(" = load double, ptr %sd") num(c, k) c.print(", align 8\n")
+    let r1 = get_reg()
+    c.print("  %r") num(c, r1) c.print(" = bitcast double %r") num(c, r0) c.print(" to i64\n")
+    return r1
+  }
+  c.print("  %r") num(c, r0) c.print(" = load i64, ptr %s") num(c, k) c.print(", align 8\n")
+  return r0
+}
+
+# Read stack slot k as a double, materializing a bitcast if the slot's live shadow is currently
+# the int alloca (mirrors emit_fn.lm's sl_double's l2d fallback).
+fn ld_as_double(c: Console, k: Int) -> Int {
+  if k < 0 {
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = fadd double 0.000000e+00, 0.000000e+00\n")
+    return r
+  }
+  let t = get_sty(k)
+  let r0 = get_reg()
+  if t == 0 {
+    c.print("  %r") num(c, r0) c.print(" = load i64, ptr %s") num(c, k) c.print(", align 8\n")
+    let r1 = get_reg()
+    c.print("  %r") num(c, r1) c.print(" = bitcast i64 %r") num(c, r0) c.print(" to double\n")
+    return r1
+  }
+  c.print("  %r") num(c, r0) c.print(" = load double, ptr %sd") num(c, k) c.print(", align 8\n")
+  return r0
+}
+
+fn st_int(c: Console, k: Int, reg: Int) -> Unit {
+  var kk = k
+  if kk < 0 { kk = 0 }
+  c.print("  store i64 %r") num(c, reg) c.print(", ptr %s") num(c, kk) c.print(", align 8\n")
+  set_sty(kk, 0)
+}
+
+fn st_double(c: Console, k: Int, reg: Int) -> Unit {
+  var kk = k
+  if kk < 0 { kk = 0 }
+  c.print("  store double %r") num(c, reg) c.print(", ptr %sd") num(c, kk) c.print(", align 8\n")
+  set_sty(kk, 1)
+}
+
 fn oplen_d_change(op: Int, pc: Int, d: Int) -> Int {
   if op == 1 { return d + 1 }
   if op == 2 { return d + 1 }
@@ -152,6 +268,30 @@ fn oplen_d_change(op: Int, pc: Int, d: Int) -> Int {
   if op == 23 { return d - 1 }
   if op == 24 { return d - 1 }
   if op == 28 { return d - 1 }
+  if op == 29 { return d + 1 }
+  if op == 30 { return d }
+  if op == 31 { return d }
+  if op == 32 { return d - 1 }
+  if op == 33 { return d - 1 }
+  if op == 34 { return d - 1 }
+  if op == 35 { return d - 1 }
+  if op == 36 { return d - 1 }
+  if op == 37 { return d - 1 }
+  if op == 38 { return d - 1 }
+  if op == 39 { return d - 1 }
+  if op == 40 { return d - 1 }
+  if op == 41 { return d - 1 }
+  if op == 42 { return d }
+  if op == 43 { return d }
+  if op == 44 { return d }
+  if op == 45 { return d }
+  if op == 46 { return d }
+  if op == 47 { return d }
+  if op == 48 { return d - 1 }
+  if op == 49 { return d + 1 }
+  if op == 50 { return d - 1 }
+  if op == 51 { return d - 3 }
+  if op == 52 { return d }
   if op == 58 { return d - 1 }
   if op == 59 { return d - 1 }
   if op == 60 { return d - 1 }
@@ -185,16 +325,136 @@ fn max_depth(func_pc: Int) -> Int {
 }
 
 fn emit_cmp(c: Console, d: Int, cond: Text, resolved_next_pc: Int) -> Unit {
-  let reg1 = get_reg()
-  let reg2 = get_reg()
+  let reg1 = ld_as_int(c, d - 2)
+  let reg2 = ld_as_int(c, d - 1)
   let reg3 = get_reg()
   let reg4 = get_reg()
-  c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-  c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
   c.print("  %r") num(c, reg3) c.print(" = icmp ") c.print(cond) c.print(" i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
   c.print("  %r") num(c, reg4) c.print(" = zext i1 %r") num(c, reg3) c.print(" to i64\n")
   c.print("  store i64 %r") num(c, reg4) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+  set_sty(d - 2, 0)
   c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+}
+
+fn emit_farith(c: Console, d: Int, instr: Text) -> Unit {
+  let a = ld_as_double(c, d - 2)
+  let b = ld_as_double(c, d - 1)
+  let r = get_reg()
+  c.print("  %r") num(c, r) c.print(" = ") c.print(instr) c.print(" double %r") num(c, a) c.print(", %r") num(c, b) c.print("\n")
+  st_double(c, d - 2, r)
+}
+
+fn emit_fcmp(c: Console, d: Int, cond: Text) -> Unit {
+  let a = ld_as_double(c, d - 2)
+  let b = ld_as_double(c, d - 1)
+  let r1 = get_reg()
+  let r2 = get_reg()
+  c.print("  %r") num(c, r1) c.print(" = fcmp ") c.print(cond) c.print(" double %r") num(c, a) c.print(", %r") num(c, b) c.print("\n")
+  c.print("  %r") num(c, r2) c.print(" = zext i1 %r") num(c, r1) c.print(" to i64\n")
+  st_int(c, d - 2, r2)
+}
+
+# ---- transcendental preambles: emit_fn.lm's SPEC for exp/ln/pow is its OWN interpreter's
+# WAT ($f_exp/$f_ln/$f_pow in seed/lumenc.wat): a Taylor series for exp (range-reduced by ln2,
+# 16 terms) and an atanh-series for ln (range-reduced to m in [sqrt(0.5),sqrt2), 15 terms),
+# pow(x,y) = exp(y*ln(x)). NOT libm, NOT llvm.exp/llvm.log/llvm.pow: those are approximations
+# that do not reproduce the interpreter's bits (verified empirically against the WAT source;
+# emit_fn.lm's own C preamble currently calls libm exp/log/pow directly, which is a DIFFERENT,
+# already-present divergence in that file that this round does not touch or rely on). Both
+# loops here have a fixed, IR-independent trip count, so they are unrolled straight-line rather
+# than emitted as an LLVM loop with phi nodes - same instruction order as the WAT, every fadd/
+# fmul/fdiv in the same left-to-right operand order as the source, so no reassociation risk even
+# under -O3 (verified: clang given raw .ll input does not form fma from separate fmul+fadd
+# without an explicit "contract" fast-math flag on the instructions, regardless of -ffp-contract).
+fn emit_f_exp(c: Console) -> Unit {
+  c.print("define double @lm_f_exp(double %x) {\n")
+  c.print("entry:\n")
+  c.print("  %d0 = fdiv double %x, 0.6931471805599453\n")
+  c.print("  %kf = call double @llvm.roundeven.f64(double %d0)\n")
+  c.print("  %k = call i64 @llvm.fptosi.sat.i64.f64(double %kf)\n")
+  c.print("  %kc = sitofp i64 %k to double\n")
+  c.print("  %kln2 = fmul double %kc, 0.6931471805599453\n")
+  c.print("  %r = fsub double %x, %kln2\n")
+  var i = 1
+  while i <= 16 {
+    if i == 1 {
+      c.print("  %tm1 = fmul double 1.000000e+00, %r\n")
+      c.print("  %term1 = fdiv double %tm1, 1.000000e+00\n")
+      c.print("  %sum1 = fadd double 1.000000e+00, %term1\n")
+    } else {
+      c.print("  %tm") num(c, i) c.print(" = fmul double %term") num(c, i - 1) c.print(", %r\n")
+      c.print("  %term") num(c, i) c.print(" = fdiv double %tm") num(c, i) c.print(", ") num(c, i) c.print(".000000e+00\n")
+      c.print("  %sum") num(c, i) c.print(" = fadd double %sum") num(c, i - 1) c.print(", %term") num(c, i) c.print("\n")
+    }
+    i = i + 1
+  }
+  c.print("  %kadj = add i64 %k, 1023\n")
+  c.print("  %kshift = shl i64 %kadj, 52\n")
+  c.print("  %scale = bitcast i64 %kshift to double\n")
+  c.print("  %res = fmul double %sum16, %scale\n")
+  c.print("  ret double %res\n")
+  c.print("}\n")
+}
+
+fn emit_f_ln(c: Console) -> Unit {
+  c.print("define double @lm_f_ln(double %x) {\n")
+  c.print("entry:\n")
+  c.print("  %isnonpos = fcmp ole double %x, 0.000000e+00\n")
+  c.print("  br i1 %isnonpos, label %retzero, label %body\n")
+  c.print("retzero:\n")
+  c.print("  ret double 0.000000e+00\n")
+  c.print("body:\n")
+  c.print("  %bits = bitcast double %x to i64\n")
+  c.print("  %shr = lshr i64 %bits, 52\n")
+  c.print("  %biased = and i64 %shr, 2047\n")
+  c.print("  %e0 = sub i64 %biased, 1023\n")
+  c.print("  %mant = and i64 %bits, 4503599627370495\n")
+  c.print("  %mbits0 = or i64 %mant, 4607182418800017408\n")
+  c.print("  %m0 = bitcast i64 %mbits0 to double\n")
+  c.print("  %needhalve = fcmp ogt double %m0, 1.4142135623730951\n")
+  c.print("  br i1 %needhalve, label %halve, label %noshalve\n")
+  c.print("halve:\n")
+  c.print("  %m1 = fmul double %m0, 5.000000e-01\n")
+  c.print("  %e1 = add i64 %e0, 1\n")
+  c.print("  br label %merge\n")
+  c.print("noshalve:\n")
+  c.print("  br label %merge\n")
+  c.print("merge:\n")
+  c.print("  %m = phi double [ %m1, %halve ], [ %m0, %noshalve ]\n")
+  c.print("  %e = phi i64 [ %e1, %halve ], [ %e0, %noshalve ]\n")
+  c.print("  %mm1 = fsub double %m, 1.000000e+00\n")
+  c.print("  %mp1 = fadd double %m, 1.000000e+00\n")
+  c.print("  %s = fdiv double %mm1, %mp1\n")
+  c.print("  %s2 = fmul double %s, %s\n")
+  var i = 3
+  while i <= 31 {
+    if i == 3 {
+      c.print("  %term3 = fmul double %s, %s2\n")
+      c.print("  %td3 = fdiv double %term3, 3.000000e+00\n")
+      c.print("  %sum3 = fadd double %s, %td3\n")
+    } else {
+      c.print("  %term") num(c, i) c.print(" = fmul double %term") num(c, i - 2) c.print(", %s2\n")
+      c.print("  %td") num(c, i) c.print(" = fdiv double %term") num(c, i) c.print(", ") num(c, i) c.print(".000000e+00\n")
+      c.print("  %sum") num(c, i) c.print(" = fadd double %sum") num(c, i - 2) c.print(", %td") num(c, i) c.print("\n")
+    }
+    i = i + 2
+  }
+  c.print("  %ec = sitofp i64 %e to double\n")
+  c.print("  %eln2 = fmul double %ec, 0.6931471805599453\n")
+  c.print("  %sum2x = fmul double %sum31, 2.000000e+00\n")
+  c.print("  %res = fadd double %eln2, %sum2x\n")
+  c.print("  ret double %res\n")
+  c.print("}\n")
+}
+
+fn emit_f_pow(c: Console) -> Unit {
+  c.print("define double @lm_f_pow(double %x, double %y) {\n")
+  c.print("entry:\n")
+  c.print("  %lx = call double @lm_f_ln(double %x)\n")
+  c.print("  %ylx = fmul double %y, %lx\n")
+  c.print("  %res = call double @lm_f_exp(double %ylx)\n")
+  c.print("  ret double %res\n")
+  c.print("}\n")
 }
 
 fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
@@ -211,36 +471,43 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
   if op == 1 {
     let val = ir_word(pc + 1)
     c.print("  store i64 ") num(c, val) c.print(", ptr %s") num(c, d) c.print(", align 8\n")
+    set_sty(d, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d + 1
   }
   if op == 2 {
     let k = ir_word(pc + 1)
+    let t = type_of_slot(func_pc, k)
     let reg = get_reg()
-    c.print("  %r") num(c, reg) c.print(" = load i64, ptr %F") num(c, k) c.print(", align 8\n")
-    c.print("  store i64 %r") num(c, reg) c.print(", ptr %s") num(c, d) c.print(", align 8\n")
+    if t == 1 {
+      c.print("  %r") num(c, reg) c.print(" = load double, ptr %F") num(c, k) c.print(", align 8\n")
+      c.print("  store double %r") num(c, reg) c.print(", ptr %sd") num(c, d) c.print(", align 8\n")
+      set_sty(d, 1)
+    } else {
+      c.print("  %r") num(c, reg) c.print(" = load i64, ptr %F") num(c, k) c.print(", align 8\n")
+      c.print("  store i64 %r") num(c, reg) c.print(", ptr %s") num(c, d) c.print(", align 8\n")
+      set_sty(d, 0)
+    }
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d + 1
   }
   if op == 3 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = add i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 4 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = sub i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
@@ -249,27 +516,24 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
     return d - 1
   }
   if op == 11 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = mul i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 12 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
     let reg4 = get_reg()
     let reg5 = get_reg()
     let reg6 = get_reg()
     let reg7 = get_reg()
     let reg8 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = icmp eq i64 %r") num(c, reg2) c.print(", 0\n")
     c.print("  %r") num(c, reg4) c.print(" = icmp eq i64 %r") num(c, reg2) c.print(", -1\n")
     c.print("  %r") num(c, reg5) c.print(" = icmp eq i64 %r") num(c, reg1) c.print(", -9223372036854775808\n")
@@ -283,6 +547,7 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
     c.print("L") num(c, pc) c.print("_safe:\n")
     c.print("  %r") num(c, reg8) c.print(" = sdiv i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg8) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
@@ -307,16 +572,14 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
     return d - 1
   }
   if op == 24 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
     let reg4 = get_reg()
     let reg5 = get_reg()
     let reg6 = get_reg()
     let reg7 = get_reg()
     let reg8 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = icmp eq i64 %r") num(c, reg2) c.print(", 0\n")
     c.print("  %r") num(c, reg4) c.print(" = icmp eq i64 %r") num(c, reg2) c.print(", -1\n")
     c.print("  %r") num(c, reg5) c.print(" = icmp eq i64 %r") num(c, reg1) c.print(", -9223372036854775808\n")
@@ -330,14 +593,14 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
     c.print("L") num(c, pc) c.print("_safe:\n")
     c.print("  %r") num(c, reg8) c.print(" = srem i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg8) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 6 {
     let target = resolve_pc(ir_word(pc + 1))
-    let reg1 = get_reg()
+    let reg1 = ld_as_int(c, d - 1)
     let reg2 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg2) c.print(" = icmp eq i64 %r") num(c, reg1) c.print(", 0\n")
     c.print("  br i1 %r") num(c, reg2) c.print(", label %L") num(c, target) c.print(", label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
@@ -350,48 +613,60 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
   if op == 8 {
     let entry = ir_word(pc + 1)
     let argc = ir_word(pc + 2)
-    
+
     var regs = 585000
     var j = 0
     while j < argc {
-      let reg = get_reg()
+      var reg = 0
+      if type_of_slot(entry, j) == 1 { reg = ld_as_double(c, d - argc + j) } else { reg = ld_as_int(c, d - argc + j) }
       store32(regs + j * 4, reg)
-      c.print("  %r") num(c, reg) c.print(" = load i64, ptr %s") num(c, d - argc + j) c.print(", align 8\n")
       j = j + 1
     }
-    
+
+    let ret_t = rettype_of(entry)
     let ret_reg = get_reg()
-    c.print("  %r") num(c, ret_reg) c.print(" = call i64 @f") num(c, entry) c.print("(")
+    if ret_t == 1 { c.print("  %r") num(c, ret_reg) c.print(" = call double @f") num(c, entry) c.print("(") }
+    else { c.print("  %r") num(c, ret_reg) c.print(" = call i64 @f") num(c, entry) c.print("(") }
     j = 0
     while j < argc {
       if j > 0 { c.print(", ") }
-      c.print("i64 %r") num(c, load32(regs + j * 4))
+      if type_of_slot(entry, j) == 1 { c.print("double %r") num(c, load32(regs + j * 4)) }
+      else { c.print("i64 %r") num(c, load32(regs + j * 4)) }
       j = j + 1
     }
     c.print(")\n")
-    c.print("  store i64 %r") num(c, ret_reg) c.print(", ptr %s") num(c, d - argc) c.print(", align 8\n")
+    if ret_t == 1 { st_double(c, d - argc, ret_reg) } else { st_int(c, d - argc, ret_reg) }
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - argc + 1
   }
   if op == 9 {
-    let reg = get_reg()
-    c.print("  %r") num(c, reg) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
-    c.print("  ret i64 %r") num(c, reg) c.print("\n")
+    let ret_t = rettype_of(func_pc)
+    if ret_t == 1 {
+      let reg = ld_as_double(c, d - 1)
+      c.print("  ret double %r") num(c, reg) c.print("\n")
+    } else {
+      let reg = ld_as_int(c, d - 1)
+      c.print("  ret i64 %r") num(c, reg) c.print("\n")
+    }
     return d
   }
   if op == 10 {
-    let reg = get_reg()
+    let reg = ld_as_int(c, d - 1)
     let ignored = get_reg()
-    c.print("  %r") num(c, reg) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, ignored) c.print(" = call i32 (ptr, ...) @printf(ptr @fmt_int, i64 %r") num(c, reg) c.print(")\n")
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 14 {
     let k = ir_word(pc + 1)
-    let reg = get_reg()
-    c.print("  %r") num(c, reg) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
-    c.print("  store i64 %r") num(c, reg) c.print(", ptr %F") num(c, k) c.print(", align 8\n")
+    let t = type_of_slot(func_pc, k)
+    if t == 1 {
+      let reg = ld_as_double(c, d - 1)
+      c.print("  store double %r") num(c, reg) c.print(", ptr %F") num(c, k) c.print(", align 8\n")
+    } else {
+      let reg = ld_as_int(c, d - 1)
+      c.print("  store i64 %r") num(c, reg) c.print(", ptr %F") num(c, k) c.print(", align 8\n")
+    }
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
@@ -400,146 +675,323 @@ fn emit_op(c: Console, pc: Int, d: Int, func_pc: Int) -> Int {
     let reg = get_reg()
     c.print("  %r") num(c, reg) c.print(" = ptrtoint ptr @str_") num(c, orig_ptr) c.print(" to i64\n")
     c.print("  store i64 %r") num(c, reg) c.print(", ptr %s") num(c, d) c.print(", align 8\n")
+    set_sty(d, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d + 1
   }
   if op == 16 {
-    let reg = get_reg()
-    c.print("  %r") num(c, reg) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
+    let reg = ld_as_int(c, d - 1)
     c.print("  call void @lm_printtext(i64 %r") num(c, reg) c.print(")\n")
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 17 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = call i64 @lm_concat(i64 %r") num(c, reg1) c.print(", i64 %r") num(c, reg2) c.print(")\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 18 {
-    let reg1 = get_reg()
+    let reg1 = ld_as_int(c, d - 1)
     let reg2 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg2) c.print(" = call i64 @lm_int2text(i64 %r") num(c, reg1) c.print(")\n")
     c.print("  store i64 %r") num(c, reg2) c.print(", ptr %s") num(c, d - 1) c.print(", align 8\n")
+    set_sty(d - 1, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d
   }
   if op == 25 {
     let tag = ir_word(pc + 1)
-    let reg1 = get_reg()
+    let reg1 = ld_as_int(c, d - 1)
     let reg2 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg2) c.print(" = call i64 @lm_alloc_sum(i64 ") num(c, tag) c.print(", i64 %r") num(c, reg1) c.print(")\n")
     c.print("  store i64 %r") num(c, reg2) c.print(", ptr %s") num(c, d - 1) c.print(", align 8\n")
+    set_sty(d - 1, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d
   }
   if op == 26 {
-    let reg1 = get_reg()
+    let reg1 = ld_as_int(c, d - 1)
     let reg2 = get_reg()
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg2) c.print(" = inttoptr i64 %r") num(c, reg1) c.print(" to ptr\n")
     c.print("  %r") num(c, reg3) c.print(" = load i64, ptr %r") num(c, reg2) c.print(", align 8\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 1) c.print(", align 8\n")
+    set_sty(d - 1, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d
   }
   if op == 27 {
-    let reg1 = get_reg()
+    let reg1 = ld_as_int(c, d - 1)
     let reg2 = get_reg()
     let reg3 = get_reg()
     let reg4 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg2) c.print(" = add i64 %r") num(c, reg1) c.print(", 8\n")
     c.print("  %r") num(c, reg3) c.print(" = inttoptr i64 %r") num(c, reg2) c.print(" to ptr\n")
     c.print("  %r") num(c, reg4) c.print(" = load i64, ptr %r") num(c, reg3) c.print(", align 8\n")
     c.print("  store i64 %r") num(c, reg4) c.print(", ptr %s") num(c, d - 1) c.print(", align 8\n")
+    set_sty(d - 1, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d
   }
   if op == 28 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = call i64 @lm_texteq(i64 %r") num(c, reg1) c.print(", i64 %r") num(c, reg2) c.print(")\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
-  if op == 58 {
-    let reg1 = get_reg()
+  if op == 29 {
+    let lo = ir_word(pc + 1)
+    let hi = ir_word(pc + 2)
+    let rlo = get_reg()
+    let rhi = get_reg()
+    let rshift = get_reg()
+    let ror = get_reg()
+    let rf = get_reg()
+    c.print("  %r") num(c, rlo) c.print(" = zext i32 ") num(c, lo) c.print(" to i64\n")
+    c.print("  %r") num(c, rhi) c.print(" = zext i32 ") num(c, hi) c.print(" to i64\n")
+    c.print("  %r") num(c, rshift) c.print(" = shl i64 %r") num(c, rhi) c.print(", 32\n")
+    c.print("  %r") num(c, ror) c.print(" = or i64 %r") num(c, rlo) c.print(", %r") num(c, rshift) c.print("\n")
+    c.print("  %r") num(c, rf) c.print(" = bitcast i64 %r") num(c, ror) c.print(" to double\n")
+    st_double(c, d, rf)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d + 1
+  }
+  if op == 30 {
+    let a = ld_as_int(c, d - 1)
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = sitofp i64 %r") num(c, a) c.print(" to double\n")
+    st_double(c, d - 1, r)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 31 {
+    let a = ld_as_int(c, d - 2)
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = sitofp i64 %r") num(c, a) c.print(" to double\n")
+    st_double(c, d - 2, r)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 32 {
+    emit_farith(c, d, "fadd")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 33 {
+    emit_farith(c, d, "fsub")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 34 {
+    emit_farith(c, d, "fmul")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 35 {
+    emit_farith(c, d, "fdiv")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 36 {
+    emit_fcmp(c, d, "olt")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 37 {
+    emit_fcmp(c, d, "ole")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 38 {
+    emit_fcmp(c, d, "ogt")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 39 {
+    emit_fcmp(c, d, "oge")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 40 {
+    emit_fcmp(c, d, "oeq")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 41 {
+    # FNE: negation of FEQ, matching both WASM's f64.ne (defined as NOT f64.eq) and C's `!=` on
+    # doubles - TRUE whenever either operand is NaN, so "une" (unordered-or-not-equal), NOT "one".
+    emit_fcmp(c, d, "une")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 42 {
+    let a = ld_as_double(c, d - 1)
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = call i64 @llvm.fptosi.sat.i64.f64(double %r") num(c, a) c.print(")\n")
+    st_int(c, d - 1, r)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 43 {
+    let a = ld_as_double(c, d - 1)
+    let r1 = get_reg()
+    let r2 = get_reg()
+    let r3 = get_reg()
+    c.print("  %r") num(c, r1) c.print(" = fadd double %r") num(c, a) c.print(", 5.000000e-01\n")
+    c.print("  %r") num(c, r2) c.print(" = call double @llvm.floor.f64(double %r") num(c, r1) c.print(")\n")
+    c.print("  %r") num(c, r3) c.print(" = call i64 @llvm.fptosi.sat.i64.f64(double %r") num(c, r2) c.print(")\n")
+    st_int(c, d - 1, r3)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 44 {
+    let a = ld_as_double(c, d - 1)
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = call double @llvm.sqrt.f64(double %r") num(c, a) c.print(")\n")
+    st_double(c, d - 1, r)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 45 {
+    let a = ld_as_double(c, d - 1)
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = call double @llvm.fabs.f64(double %r") num(c, a) c.print(")\n")
+    st_double(c, d - 1, r)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 46 {
+    let a = ld_as_double(c, d - 1)
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = call double @lm_f_exp(double %r") num(c, a) c.print(")\n")
+    st_double(c, d - 1, r)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 47 {
+    let a = ld_as_double(c, d - 1)
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = call double @lm_f_ln(double %r") num(c, a) c.print(")\n")
+    st_double(c, d - 1, r)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 48 {
+    let a = ld_as_double(c, d - 2)
+    let b = ld_as_double(c, d - 1)
+    let r = get_reg()
+    c.print("  %r") num(c, r) c.print(" = call double @lm_f_pow(double %r") num(c, a) c.print(", double %r") num(c, b) c.print(")\n")
+    st_double(c, d - 2, r)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 49 {
+    # ANEW: records lower to arrays (a record's fields are AGET/ASET on a heap array handle),
+    # so this must exist for record_struct_pv/black_scholes_call_record to work at all - not
+    # only for the explicit array() builtin. Arrays are raw i64 slots (float fields carry their
+    # bit pattern through untouched); ld_as_int's bitcast fallback is what makes an AGET'd float
+    # field read correctly later, exactly as it does for a Float local reused across types.
+    let reg1 = ld_as_int(c, d - 1)
     let reg2 = get_reg()
+    c.print("  %r") num(c, reg2) c.print(" = call i64 @lm_anew(i64 %r") num(c, reg1) c.print(")\n")
+    st_int(c, d - 1, reg2)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 50 {
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
+    c.print("  %r") num(c, reg3) c.print(" = call i64 @lm_aget(i64 %r") num(c, reg1) c.print(", i64 %r") num(c, reg2) c.print(")\n")
+    st_int(c, d - 2, reg3)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 1
+  }
+  if op == 51 {
+    let reg1 = ld_as_int(c, d - 3)
+    let reg2 = ld_as_int(c, d - 2)
+    let reg3 = ld_as_int(c, d - 1)
+    c.print("  call void @lm_aset(i64 %r") num(c, reg1) c.print(", i64 %r") num(c, reg2) c.print(", i64 %r") num(c, reg3) c.print(")\n")
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d - 3
+  }
+  if op == 52 {
+    let reg1 = ld_as_int(c, d - 1)
+    let reg2 = get_reg()
+    c.print("  %r") num(c, reg2) c.print(" = call i64 @lm_alen(i64 %r") num(c, reg1) c.print(")\n")
+    st_int(c, d - 1, reg2)
+    c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
+    return d
+  }
+  if op == 58 {
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
+    let reg3 = get_reg()
     c.print("  %r") num(c, reg3) c.print(" = and i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 59 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = or i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 60 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = xor i64 %r") num(c, reg1) c.print(", %r") num(c, reg2) c.print("\n")
     c.print("  store i64 %r") num(c, reg3) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 61 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
     let reg4 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = and i64 %r") num(c, reg2) c.print(", 63\n")
     c.print("  %r") num(c, reg4) c.print(" = shl i64 %r") num(c, reg1) c.print(", %r") num(c, reg3) c.print("\n")
     c.print("  store i64 %r") num(c, reg4) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 62 {
-    let reg1 = get_reg()
-    let reg2 = get_reg()
+    let reg1 = ld_as_int(c, d - 2)
+    let reg2 = ld_as_int(c, d - 1)
     let reg3 = get_reg()
     let reg4 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 2) c.print(", align 8\n")
-    c.print("  %r") num(c, reg2) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg3) c.print(" = and i64 %r") num(c, reg2) c.print(", 63\n")
     c.print("  %r") num(c, reg4) c.print(" = lshr i64 %r") num(c, reg1) c.print(", %r") num(c, reg3) c.print("\n")
     c.print("  store i64 %r") num(c, reg4) c.print(", ptr %s") num(c, d - 2) c.print(", align 8\n")
+    set_sty(d - 2, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d - 1
   }
   if op == 63 {
-    let reg1 = get_reg()
+    let reg1 = ld_as_int(c, d - 1)
     let reg2 = get_reg()
-    c.print("  %r") num(c, reg1) c.print(" = load i64, ptr %s") num(c, d - 1) c.print(", align 8\n")
     c.print("  %r") num(c, reg2) c.print(" = xor i64 %r") num(c, reg1) c.print(", -1\n")
     c.print("  store i64 %r") num(c, reg2) c.print(", ptr %s") num(c, d - 1) c.print(", align 8\n")
+    set_sty(d - 1, 0)
     c.print("  br label %L") num(c, resolved_next_pc) c.print("\n")
     return d
   }
@@ -562,54 +1014,63 @@ fn emit_bodies(c: Console) -> Unit {
       }
       first = 0
       func_pc = pc
-      
+
       let fs = ir_word(pc + 1)
       let arity = arity_of(pc)
       let md = max_depth(pc)
-      
-      c.print("define i64 @f") num(c, pc) c.print("(")
+      let ret_t = rettype_of(pc)
+      let mf = max_field(pc)
+      var fs_val = fs
+      if fs_val < 1 { fs_val = 1 }
+      if mf + 1 > fs_val { fs_val = mf + 1 }
+
+      if ret_t == 1 { c.print("define double @f") num(c, pc) c.print("(") }
+      else { c.print("define i64 @f") num(c, pc) c.print("(") }
       var j = 0
       while j < arity {
         if j > 0 { c.print(", ") }
-        c.print("i64 %p") num(c, j)
+        if type_of_slot(pc, j) == 1 { c.print("double %p") num(c, j) }
+        else { c.print("i64 %p") num(c, j) }
         j = j + 1
       }
       c.print(") {\n")
       c.print("entry:\n")
-      
+
       var md_val = md
       if md_val < 1 { md_val = 1 }
       j = 0
       while j < md_val {
         c.print("  %s") num(c, j) c.print(" = alloca i64, align 8\n")
+        c.print("  %sd") num(c, j) c.print(" = alloca double, align 8\n")
         j = j + 1
       }
-      
-      var fs_val = fs
-      if fs_val < 1 { fs_val = 1 }
+
       j = 0
       while j < fs_val {
-        c.print("  %F") num(c, j) c.print(" = alloca i64, align 8\n")
+        if type_of_slot(pc, j) == 1 { c.print("  %F") num(c, j) c.print(" = alloca double, align 8\n") }
+        else { c.print("  %F") num(c, j) c.print(" = alloca i64, align 8\n") }
         j = j + 1
       }
-      
+
       j = 0
       while j < fs_val {
-        c.print("  store i64 0, ptr %F") num(c, j) c.print(", align 8\n")
+        if type_of_slot(pc, j) == 1 { c.print("  store double 0.000000e+00, ptr %F") num(c, j) c.print(", align 8\n") }
+        else { c.print("  store i64 0, ptr %F") num(c, j) c.print(", align 8\n") }
         j = j + 1
       }
-      
+
       j = 0
       while j < arity {
-        c.print("  store i64 %p") num(c, j) c.print(", ptr %F") num(c, j) c.print(", align 8\n")
+        if type_of_slot(pc, j) == 1 { c.print("  store double %p") num(c, j) c.print(", ptr %F") num(c, j) c.print(", align 8\n") }
+        else { c.print("  store i64 %p") num(c, j) c.print(", ptr %F") num(c, j) c.print(", align 8\n") }
         j = j + 1
       }
-      
+
       reset_reg()
-      
+
       let resolved_start = resolve_pc(pc + 2)
       c.print("  br label %L") num(c, resolved_start) c.print("\n")
-      
+
       d = 0
       resetnext = 0
       pc = pc + 2
@@ -633,36 +1094,49 @@ fn emit_bodies(c: Console) -> Unit {
 
 fn main(c: Console) -> Unit {
   scan_arity()
-  
+
   c.print("target triple = ")
   print_quote(c)
   c.print("arm64-apple-macosx")
   print_quote(c)
   c.print("\n")
-  
+
   c.print("@fmt_int = private unnamed_addr constant [6 x i8] c")
   print_quote(c)
   c.print("%lld\0A\00")
   print_quote(c)
   c.print(", align 1\n")
-  
+
   c.print("declare i32 @printf(ptr, ...)\n")
   c.print("declare void @exit(i32)\n")
   c.print("declare i32 @fflush(ptr)\n")
   c.print("declare void @abort()\n")
-  
+
   c.print("declare void @lm_printtext(i64)\n")
   c.print("declare i64 @lm_concat(i64, i64)\n")
   c.print("declare i64 @lm_int2text(i64)\n")
   c.print("declare i64 @lm_alloc_sum(i64, i64)\n")
   c.print("declare i64 @lm_texteq(i64, i64)\n")
-  
+  c.print("declare i64 @lm_anew(i64)\n")
+  c.print("declare i64 @lm_aget(i64, i64)\n")
+  c.print("declare void @lm_aset(i64, i64, i64)\n")
+  c.print("declare i64 @lm_alen(i64)\n")
+
+  c.print("declare i64 @llvm.fptosi.sat.i64.f64(double)\n")
+  c.print("declare double @llvm.roundeven.f64(double)\n")
+  c.print("declare double @llvm.floor.f64(double)\n")
+  c.print("declare double @llvm.sqrt.f64(double)\n")
+  c.print("declare double @llvm.fabs.f64(double)\n")
+  emit_f_exp(c)
+  emit_f_ln(c)
+  emit_f_pow(c)
+
   emit_static_strings(c)
-  
+
   c.print("define i32 @main() {\n")
   c.print("  %ignored = call i64 @f") num(c, ir_main()) c.print("()\n")
   c.print("  ret i32 0\n")
   c.print("}\n")
-  
+
   emit_bodies(c)
 }

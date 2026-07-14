@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "start": "node run.mjs",
-    "test": "node basics.mjs && node test.mjs && node safety.mjs && node loop_test.mjs && node cache_test.mjs && node profile_report_test.mjs && node selfhost_diff.mjs && node selfhost_float_fuzz.mjs",
+    "test": "node basics.mjs && node test.mjs && node safety.mjs && node loop_test.mjs && node cache_test.mjs && node profile_report_test.mjs && node selfhost_diff.mjs && node selfhost_float_fuzz.mjs && node ../tools/purity_gate.mjs",
     "basics": "node basics.mjs",
     "conformance": "node test.mjs",
     "safety": "node safety.mjs",

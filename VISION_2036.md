@@ -12,6 +12,8 @@ Status: strategic document, not a spec. This is the competitive companion to `VI
 
 A win claimed without its metric is downgraded to aspiration in plain words. Triumphalism a referee can break makes the language weaker, not stronger. This file is built to survive the referee, exactly like the one it accompanies. Where 2035 asks "is Lumen useful," this file asks the sharper question: on each axis, is Lumen better than the thing the world already uses, and can that be measured.
 
+The living, machine-readable form of this scorecard is `bench/scoreboard.json` (rendered into `bench/DASHBOARD.md`), which carries both this file's `python_verdict` and `LANGUAGE_COMPARISON.md`'s wider-field verdict per dimension, flipped only in the PR that lands the cited gate.
+
 ## The scorecard
 
 | # | Dimension | Python today | Lumen 2036 target | Gating metric | Verdict |

@@ -22,10 +22,14 @@
 // last_flip semantics (documented here since JSON has no comment syntax): null means the
 // dimension has not flipped since this scoreboard was introduced - its initial snapshot. When a
 // verdict later flips, the PR that lands the flip sets that dimension's last_flip to
-// {"date": "YYYY-MM-DD", "evidence": "<the primary gate file that landed>"}. The flip-coupling
-// check above already forces that same evidence file into the diff alongside the verdict change,
-// which is what keeps the hand-written date honest: it cannot be backdated to a commit that did
-// not actually land the cited evidence, because that commit would have failed --check.
+// {"date": "YYYY-MM-DD", "evidence": "<the primary gate file that landed>"}. checkDimensionFields
+// validates that shape (date format, evidence non-empty and present in the dimension's own
+// evidence array); the flip-coupling check above additionally forces that same evidence file to
+// have actually changed in the diff against origin/main, which is what keeps the hand-written
+// date honest: it cannot be backdated to a commit that did not actually land the cited evidence,
+// because that commit would have failed --check. Every scoreboard row shipped with last_flip:
+// null at introduction; dimension 2 (numeric-exactness-decimal) is the first to populate one,
+// landed by D5's native/decimal_oracle_test.mjs (see docs/VELOCITY_LEDGER.md entry #1).
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
@@ -100,7 +104,26 @@ export function checkDimensionFields(dim) {
     failures.push(`${tag}: field_verdict "${dim.field_verdict}" is stronger than aspiration/lost and requires at least one evidence path`);
   }
   if (dim.last_flip !== null) {
-    failures.push(`${tag}: last_flip must be null (not yet tracked as of this scoreboard's introduction)`);
+    // A dimension's first flip (this scoreboard's introduction shipped with every last_flip
+    // null; D5/native/decimal_oracle_test.mjs is the first to populate one - see
+    // docs/VELOCITY_LEDGER.md entry #1). From here on last_flip must be a well-formed
+    // {date, evidence} record: date is YYYY-MM-DD, evidence is a non-empty string that is
+    // ALSO listed in this dimension's own evidence array (the flip-coupling check below then
+    // additionally requires that path to have changed in the same diff - this check only
+    // validates shape, not diff membership).
+    if (typeof dim.last_flip !== 'object' || dim.last_flip === null || Array.isArray(dim.last_flip)) {
+      failures.push(`${tag}: last_flip must be null or an object`);
+    } else {
+      const { date, evidence } = dim.last_flip;
+      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        failures.push(`${tag}: last_flip.date missing or not YYYY-MM-DD`);
+      }
+      if (typeof evidence !== 'string' || !evidence) {
+        failures.push(`${tag}: last_flip.evidence missing or not a string`);
+      } else if (Array.isArray(dim.evidence) && !dim.evidence.includes(evidence)) {
+        failures.push(`${tag}: last_flip.evidence "${evidence}" is not present in this dimension's own evidence array`);
+      }
+    }
   }
   return failures;
 }

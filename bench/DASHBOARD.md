@@ -53,7 +53,7 @@ Rendered from `bench/scoreboard.json` by `tools/scoreboard_gate.mjs --render`. D
 | ID | Dimension | vs Python | vs Field | Wave | Arc | Note |
 |----|-----------|-----------|----------|------|-----|------|
 | 1 | provable-correctness | won-by-design | lost-must-earn | W7 | 2 | Lumen's correctness story is scoped contracts plus capability-effects, and both are design-stage today (neither landed). Wave W7 (build-order item 4) covers ... |
-| 2 | numeric-exactness-decimal | winnable-gated-open | structural-opening | W1 | 1 | Cleanest opening on the board per the doc; not landed yet. The live task tracker shows D1-D5 decimal work in progress under wave W1, ahead of either doc's ow... |
+| 2 | numeric-exactness-decimal | won-by-design | won-across-field | W1 | 1 | Landed (D1-D5): Dec (1.50d, i64 scale 1e-6) is bit-identical across the interpreter, emit_fn.lm, emit_llvm.lm, and the self-hosted lumenc.lm, plus an indepen... |
 | 3 | determinism-and-replay | won-by-design | won-across-field | - | 2 | Determinism half is real and CI-gated today. Replay half (lumen run --record, deterministic tape) is Arc 2 work; ROADMAP_2036.md's gap register: 'none is imp... |
 | 4 | effect-safety-and-capability-sandboxing | won-by-design | aspiration-contested | - | 2 | Design-only today: only the Console capability exists (docs/rfcs/0001-capabilities-v1.md, status draft, PR #52). Koka still leads on effect-system expressive... |
 | 5 | toolchain-trust-self-hosting-fidelity | won-by-design | won-across-field | - | - | Self-hosting is table stakes across the field; Lumen's differentiator is the bit-identity fixpoint gate itself, already CI-gated every commit, not a future m... |

@@ -79,7 +79,19 @@ checkNonEmpty(
 );
 checkNonEmpty(
   checkDimensionFields(dim({ last_flip: { sha: 'abc123' } })),
-  'a non-null last_flip is caught (not yet tracked as of this introduction)',
+  'a malformed last_flip (wrong shape: no date/evidence keys) is caught',
+);
+checkNonEmpty(
+  checkDimensionFields(dim({ last_flip: { date: 'not-a-date', evidence: 'bench/DASHBOARD.md' } })),
+  'a last_flip with a non-YYYY-MM-DD date is caught',
+);
+checkNonEmpty(
+  checkDimensionFields(dim({ last_flip: { date: '2026-07-15', evidence: 'some/other/path.mjs' } })),
+  "a last_flip.evidence not present in the dimension's own evidence array is caught",
+);
+checkEmpty(
+  checkDimensionFields(dim({ last_flip: { date: '2026-07-15', evidence: 'bench/DASHBOARD.md' } })),
+  'a well-formed last_flip (date + evidence present in the evidence array) is valid - this is the first real flip (D5, dimension 2)',
 );
 checkEmpty(
   checkDimensionFields(dim({ field_verdict: 'lost-must-earn', evidence: [] })),

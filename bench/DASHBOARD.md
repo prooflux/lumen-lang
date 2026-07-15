@@ -44,3 +44,26 @@
 
 ---
 *Last Updated: 2026-06-30*
+
+## The 13-dimension field scorecard (auto-rendered)
+
+Rendered from `bench/scoreboard.json` by `tools/scoreboard_gate.mjs --render`. Do not hand-edit the block between the markers below; edit `bench/scoreboard.json` and re-render instead.
+
+<!-- AUTO:scoreboard -->
+| ID | Dimension | vs Python | vs Field | Wave | Arc | Note |
+|----|-----------|-----------|----------|------|-----|------|
+| 1 | provable-correctness | won-by-design | lost-must-earn | W7 | 2 | Lumen's correctness story is scoped contracts plus capability-effects, and both are design-stage today (neither landed). Wave W7 (build-order item 4) covers ... |
+| 2 | numeric-exactness-decimal | winnable-gated-open | structural-opening | W1 | 1 | Cleanest opening on the board per the doc; not landed yet. The live task tracker shows D1-D5 decimal work in progress under wave W1, ahead of either doc's ow... |
+| 3 | determinism-and-replay | won-by-design | won-across-field | - | 2 | Determinism half is real and CI-gated today. Replay half (lumen run --record, deterministic tape) is Arc 2 work; ROADMAP_2036.md's gap register: 'none is imp... |
+| 4 | effect-safety-and-capability-sandboxing | won-by-design | aspiration-contested | - | 2 | Design-only today: only the Console capability exists (docs/rfcs/0001-capabilities-v1.md, status draft, PR #52). Koka still leads on effect-system expressive... |
+| 5 | toolchain-trust-self-hosting-fidelity | won-by-design | won-across-field | - | - | Self-hosting is table stakes across the field; Lumen's differentiator is the bit-identity fixpoint gate itself, already CI-gated every commit, not a future m... |
+| 6 | compiler-as-a-reward-environment | won-by-design | won-across-field | - | 3 | Won on today's grounded ingredients (deterministic runs, stable diagnostic codes, sub-millisecond warm compile, the hermetic promptgreen rig v0). The RL-lift... |
+| 7a | generated-code-speed-runtime | won-by-design | lost-must-earn | W6 | - | Lumen loses to the whole LLVM family and the JVM on real workloads today. Full Float coverage on the LLVM path is gated bit-identical (native/llvm_float_test... |
+| 7b | compile-latency-sub-axis | - | structural-opening | W6 | - | Lumen-only numbers today; no cross-language comparison has been designed or run in this tree. VISION_2036.md does not separately score compile latency agains... |
+| 8 | build-determinism-and-supply-chain | won-by-design | won-across-field | - | 1 | Tied with Go and Zig, not sole champion, until the air-gap test (Arc 1 exit gate) is green. The purity gate (tools/purity_gate.mjs) is an advisory reporter, ... |
+| 9 | ai-authorability-intent-to-green | winnable-gated-open | lost-must-earn | W5 | 3 | Arc 3's kill criterion applies here: if reinforcement against the compiler shows no measurable authorship gain by end-2029, the plan pivots to the verified-i... |
+| 10 | governance-and-evolution-velocity | won-by-design | won-across-field | - | - | Caveat: incumbents carry vast installed bases and their caution is a feature; Lumen is young and small, so speed is cheap today. The durable edge is the mech... |
+| 11 | debuggability | won-by-design | split | - | 2 | Kept as one entry rather than split into 11a/11b: the doc gives this row a single verdict word ('Split') rather than two separately-graded sub-verdicts the w... |
+| 12 | ecosystem-breadth-and-hiring | subsumed | lost-must-earn | W7 | 4 | Subsumption strategy, not a race to win the axis directly: lower verified cores to a host (C, LLVM, WASM, Python, Rust) so incumbent ecosystems become Lumen'... |
+| 13 | human-familiarity-today | subsumed | lost-must-earn | W5 | 3 | Tied to the same corpus-and-reinforcement loop as dimension 9 (the doc says so directly). Tiny today; grown only by the corpus. |
+<!-- /AUTO:scoreboard -->

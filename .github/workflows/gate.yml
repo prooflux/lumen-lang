@@ -32,6 +32,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: scoreboard gate (bench/scoreboard.json schema, evidence, flip-coupling)
+        working-directory: .
+        run: |
+          # Zero npm dependencies, so this runs first for fast feedback before the expensive
+          # seed/native installs below. actions/checkout@v4 is shallow by default; the script's
+          # own `git fetch origin main --depth=1` (tolerated if it fails) is what makes
+          # flip-coupling work despite that, per tools/scoreboard_gate.mjs's own comments.
+          node tools/scoreboard_gate.mjs --check
       - name: seed gates (conformance + safety + loop + cache)
         working-directory: seed
         run: |

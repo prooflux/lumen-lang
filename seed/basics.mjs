@@ -19,6 +19,15 @@ function eq(name, actual, expected) {
   else console.log(`FAIL  ${name}\n        expected ${JSON.stringify(expected)}\n        got      ${JSON.stringify(actual)}`);
 }
 function deepEq(name, actual, expected) { eq(name, JSON.stringify(actual), JSON.stringify(expected)); }
+// no prior test file needed to assert "this program traps at runtime" (the two "short-circuits
+// past a trapping rhs" tests below prove a trap is NEVER reached, not that one occurs) so Dec's
+// overflow/div-by-zero traps introduce this helper: compile+run and require a runtime crash.
+function traps(name, src) {
+  total++;
+  const r = L.run(src);
+  if (r.crash) { pass++; console.log(`PASS  ${name}`); }
+  else console.log(`FAIL  ${name}\n        expected a runtime trap\n        got      stdout=${JSON.stringify(r.stdout)}`);
+}
 
 // ---- arithmetic ----
 eq('add',            runMain('c.print_int(2 + 3)'), '5\n');
@@ -52,6 +61,79 @@ eq('float compare le',  runMain('c.print_int(3.0 <= 2.5)'), '0\n');
 eq('float param + return', runFull('fn dbl(r: Float) -> Float { return r * 2.0 }\nfn main(c: Console) -> Unit { c.print_int(round(dbl(1.5) * 10.0)) }\n'), '30\n');
 eq('float let', runFull('fn main(c: Console) -> Unit {\n  let x: Float = 1.5\n  c.print_int(to_int(x + x))\n}\n'), '3\n');
 eq('to_float of int', runMain('c.print_int(to_int(to_float(3) / 2.0 * 10.0))'), '15\n');
+
+// ---- Dec: exact decimal (i64, scale 1e-6), the emblem feature (D1) ----
+// the proof: exact decimal arithmetic has no binary-float rounding error
+eq('dec exact 0.1+0.2==0.3',        runMain('c.print_int(0.1d + 0.2d == 0.3d)'), '1\n');
+eq('dec exact sum prints 0.3 exactly', runMain('c.print(dec_to_text(0.1d + 0.2d))'), '0.3');
+
+// literal forms: fractional, whole (no dot), unary-minus, micro-unit floor, zero
+eq('dec literal 1.50d canonical text',   runMain('c.print(dec_to_text(1.50d))'), '1.5');
+eq('dec literal -3d canonical text',     runMain('c.print(dec_to_text(-3d))'), '-3.0');
+eq('dec literal 0.000001d canonical text', runMain('c.print(dec_to_text(0.000001d))'), '0.000001');
+eq('dec literal 3d (no fraction)',       runMain('c.print(dec_to_text(3d))'), '3.0');
+eq('dec literal 0d',                     runMain('c.print(dec_to_text(0d))'), '0.0');
+eq('dec literal max safe whole number',  runMain('c.print(dec_to_text(9223372036854d))'), '9223372036854.0');
+
+// exact add/sub, negative operands, unary minus
+eq('dec add',                     runMain('c.print(dec_to_text(1.25d + 2.50d))'), '3.75');
+eq('dec sub',                     runMain('c.print(dec_to_text(5.00d - 1.25d))'), '3.75');
+eq('dec sub goes negative',       runMain('c.print(dec_to_text(1.25d - 5.00d))'), '-3.75');
+eq('dec unary minus',             runMain('c.print(dec_to_text(-(1.50d)))'), '-1.5');
+eq('dec unary minus of a micro-unit', runMain('c.print(dec_to_text(-(0.000001d)))'), '-0.000001');
+eq('dec double negative add',     runMain('c.print(dec_to_text(-1.50d + -2.50d))'), '-4.0');
+
+// DMUL: exact 128-bit product, round-half-even, both tie directions (Python-oracle-verified)
+eq('dec mul simple',              runMain('c.print(dec_to_text(2.00d * 3.50d))'), '7.0');
+eq('dec mul half-even tie: already even, no change', runMain('c.print(dec_to_text(0.5d * 1.000001d))'), '0.5');
+eq('dec mul half-even tie: odd, rounds up to even',  runMain('c.print(dec_to_text(0.5d * 1.000003d))'), '0.500002');
+eq('dec mul negative * positive', runMain('c.print(dec_to_text(-2.00d * 3.50d))'), '-7.0');
+eq('dec mul negative * negative', runMain('c.print(dec_to_text(-2.00d * -3.50d))'), '7.0');
+
+// dec_div: the only division path for Dec; tie, negative-sign combinations, Int divisor,
+// repeating decimal (rounds at 6dp), zero-divisor trap
+eq('dec_div simple',              runMain('c.print(dec_to_text(dec_div(1.00d, 4)))'), '0.25');
+eq('dec_div negative dividend',   runMain('c.print(dec_to_text(dec_div(-1.00d, 4)))'), '-0.25');
+eq('dec_div negative divisor',    runMain('c.print(dec_to_text(dec_div(1.00d, -4d)))'), '-0.25');
+eq('dec_div both negative',       runMain('c.print(dec_to_text(dec_div(-1.00d, -4d)))'), '0.25');
+eq('dec_div repeating decimal rounds at 6dp', runMain('c.print(dec_to_text(dec_div(10.00d, 3)))'), '3.333333');
+eq('dec_div half-even tie',       runMain('c.print(dec_to_text(dec_div(1d, 0.008192d)))'), '122.070312');
+traps('dec_div by zero traps',    'fn main(c: Console) -> Unit {\n  c.print_int(0)\n  let x = dec_div(1.00d, 0)\n  c.print_int(1)\n}\n');
+
+// Int <-> Dec coercion (automatic; Int auto-promotes wherever Dec is expected)
+eq('dec + int coerces rhs',       runMain('c.print(dec_to_text(19.99d + 3))'), '22.99');
+eq('int + dec coerces lhs',       runMain('c.print(dec_to_text(3 + 19.99d))'), '22.99');
+eq('dec - int coerces rhs',       runMain('c.print(dec_to_text(19.99d - 1))'), '18.99');
+eq('int - dec coerces lhs',       runMain('c.print(dec_to_text(100 - 1.50d))'), '98.5');
+eq('int * dec coerces lhs',       runMain('c.print(dec_to_text(2 * 19.99d))'), '39.98');
+eq('dec * int coerces rhs',       runMain('c.print(dec_to_text(19.99d * 2))'), '39.98');
+eq('dec_to_text of a bare Int coerces', runMain('c.print(dec_to_text(5))'), '5.0');
+
+// comparisons (reuse the existing i64 comparison opcodes: same-scale invariant -> exact)
+eq('dec lt',                      runMain('c.print_int(1.5d < 2.0d)'), '1\n');
+eq('dec eq same value different literal form', runMain('c.print_int(1.5d == 1.500000d)'), '1\n');
+eq('dec int-coerced comparison',  runMain('c.print_int(3 < 3.5d)'), '1\n');
+eq('dec gt false',                runMain('c.print_int(1.5d > 2.0d)'), '0\n');
+
+// dec_to_float: explicit, lossy Dec -> Float (no reverse float_to_dec in this PR)
+eq('dec_to_float roundtrip',      runMain('c.print_int(to_int(dec_to_float(1.50d) * 100.0))'), '150\n');
+
+// Dec as a function parameter and return type
+eq('dec param and return', runFull('fn addFee(x: Dec) -> Dec { return x + 1.50d }\nfn main(c: Console) -> Unit { c.print(dec_to_text(addFee(10.00d))) }\n'), '11.5');
+
+// overflow traps: DADD, DSUB, DMUL, and Int->Dec coercion (DFROMI), all deterministic
+traps('dec add overflow traps',   'fn main(c: Console) -> Unit {\n  let x = 9223372036854d + 1d\n  c.print_int(1)\n}\n');
+traps('dec sub overflow traps (negative side)', 'fn main(c: Console) -> Unit {\n  let x = -9223372036854d - 1d\n  c.print_int(1)\n}\n');
+traps('dec mul overflow traps',   'fn main(c: Console) -> Unit {\n  let x = 9223372036854d * 2d\n  c.print_int(1)\n}\n');
+traps('int coercion to dec overflow traps', 'fn main(c: Console) -> Unit {\n  let big = 9223372036855\n  let x = big + 1.00d\n  c.print_int(1)\n}\n');
+
+// diagnostics: literal limits, Float/Dec never mix, / banned on Dec (use dec_div)
+deepEq('E0005 dec literal too many frac digits', codesOf('fn main(c: Console) -> Unit {\n  c.print(dec_to_text(1.1234567d))\n}\n'), ['E0005:1.1234567']);
+deepEq('E0006 dec literal overflow', codesOf('fn main(c: Console) -> Unit {\n  c.print(dec_to_text(9223372036855d))\n}\n'), ['E0006:9223372036855']);
+deepEq('E0007 float and dec never mix (add)', codesOf('fn main(c: Console) -> Unit {\n  c.print_int(to_int(1.5 + 1.50d))\n}\n'), ['E0007:+']);
+deepEq('E0007 float and dec never mix (compare)', codesOf('fn main(c: Console) -> Unit {\n  c.print_int(1.5 < 1.50d)\n}\n'), ['E0007:<']);
+deepEq('E0008 / banned on Dec, use dec_div', codesOf('fn main(c: Console) -> Unit {\n  c.print_int(to_int(1.50d / 2.00d))\n}\n'), ['E0008:/']);
+deepEq('clean dec program emits no diagnostics', codesOf('fn main(c: Console) -> Unit {\n  c.print(dec_to_text(1.50d))\n}\n'), []);
 
 // ---- math builtins: sqrt, abs, exp, ln, pow ----
 eq('sqrt',        runMain('c.print_int(round(sqrt(2.0) * 1000000.0))'), '1414214\n');

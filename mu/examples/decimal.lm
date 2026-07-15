@@ -1,0 +1,61 @@
+# Dec, exercised end to end: exact literals, the canonical 0.1+0.2==0.3 proof (impossible to
+# land exactly with binary Float), exact add/sub (overflow-checked), mul with half-even
+# rounding in both directions, dec_div (the only way to divide Dec; / is a compile error),
+# automatic Int->Dec coercion in mixed expressions (both operand orders), unary minus, a
+# small two-argument pricing kernel (Dec params/return), dec_to_text, and dec_to_float.
+# Every intermediate result prints via dec_to_text/console.print as the exact human-readable
+# decimal string; no scaled-int workaround the way Float still needs one.
+# Expected stdout (D1 report has the byte-exact transcript).
+fn account_value(principal: Dec, rate: Dec) -> Dec {
+  return principal + dec_div(principal * rate, 100)
+}
+
+fn main(c: Console) -> Unit {
+  # the proof: exact decimal arithmetic carries no binary-float rounding error
+  c.print("0.1d + 0.2d == 0.3d: ")
+  c.print_int(0.1d + 0.2d == 0.3d)
+  c.print("0.1d + 0.2d = ")
+  c.print(dec_to_text(0.1d + 0.2d))
+  c.print("\n")
+
+  # literal forms: fractional, whole (no dot), unary-minus, micro-unit (1e-6, the scale floor)
+  c.print("1.50d = ")
+  c.print(dec_to_text(1.50d))
+  c.print("\n")
+  c.print("-3d = ")
+  c.print(dec_to_text(-3d))
+  c.print("\n")
+  c.print("0.000001d = ")
+  c.print(dec_to_text(0.000001d))
+  c.print("\n")
+
+  # exact add/sub with automatic Int coercion, both operand orders
+  c.print("19.99d + 3 = ")
+  c.print(dec_to_text(19.99d + 3))
+  c.print("\n")
+  c.print("100 - 1.50d = ")
+  c.print(dec_to_text(100 - 1.50d))
+  c.print("\n")
+
+  # mul: exact 128-bit product, round-half-even, both tie directions
+  c.print("0.5d * 1.000001d (ties to even, no change) = ")
+  c.print(dec_to_text(0.5d * 1.000001d))
+  c.print("\n")
+  c.print("0.5d * 1.000003d (ties to even, rounds up) = ")
+  c.print(dec_to_text(0.5d * 1.000003d))
+  c.print("\n")
+
+  # dec_div: the only division path for Dec (a bare / on two Dec operands is a compile error)
+  c.print("dec_div(10.00d, 3) = ")
+  c.print(dec_to_text(dec_div(10.00d, 3)))
+  c.print("\n")
+
+  # a small pricing kernel: Dec params + Dec return, composing +, *, and dec_div
+  c.print("account_value(1000.00d, 5.00d) = ")
+  c.print(dec_to_text(account_value(1000.00d, 5.00d)))
+  c.print("\n")
+
+  # dec_to_float: explicit, lossy Dec -> Float (no implicit path; Float and Dec never mix)
+  c.print("dec_to_float(1.50d) * 2.0 * 100.0 (via to_int) = ")
+  c.print_int(to_int(dec_to_float(1.50d) * 2.0 * 100.0))
+}

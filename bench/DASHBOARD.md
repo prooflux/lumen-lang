@@ -67,3 +67,18 @@ Rendered from `bench/scoreboard.json` by `tools/scoreboard_gate.mjs --render`. D
 | 12 | ecosystem-breadth-and-hiring | subsumed | lost-must-earn | W7 | 4 | Subsumption strategy, not a race to win the axis directly: lower verified cores to a host (C, LLVM, WASM, Python, Rust) so incumbent ecosystems become Lumen'... |
 | 13 | human-familiarity-today | subsumed | lost-must-earn | W5 | 3 | Tied to the same corpus-and-reinforcement loop as dimension 9 (the doc says so directly). Tiny today; grown only by the corpus. |
 <!-- /AUTO:scoreboard -->
+
+## Kernel suite (auto-appended, dated snapshots)
+
+Rendered from `bench/kernel_suite_bench.mjs`. Do not hand-edit the block between the markers below; edit the bench script and re-run instead.
+
+<!-- AUTO:kernel-suite -->
+| Date | Kernel | Lumen-native | Hand-C | Ratio (lumen/C) | clang flags |
+|------|--------|--------------|--------|-----------------|-------------|
+| 2026-07-15 | bs_greeks | 0.175ms | 0.057ms | 3.08x | -O2 -ffp-contract=off -fno-fast-math |
+| 2026-07-15 | vol_surface_heston | 0.000ms | 0.000ms | n/a | -O2 -ffp-contract=off -fno-fast-math |
+| 2026-07-15 | bond_price | 0.000ms | 0.056ms | n/a | -O2 -ffp-contract=off -fno-fast-math |
+| 2026-07-15 | swap_rate | 0.210ms | 0.214ms | 0.98x | -O2 -ffp-contract=off -fno-fast-math |
+| 2026-07-15 | implied_vol | 0.310ms | 0.000ms | n/a | -O2 -ffp-contract=off -fno-fast-math |
+| 2026-07-15 | fib(32) | 7.286ms | 6.579ms | 1.11x | -O2 -ffp-contract=off -fno-fast-math |
+<!-- /AUTO:kernel-suite -->

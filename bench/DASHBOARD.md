@@ -82,3 +82,29 @@ Rendered from `bench/kernel_suite_bench.mjs`. Do not hand-edit the block between
 | 2026-07-15 | implied_vol | 0.310ms | 0.000ms | n/a | -O2 -ffp-contract=off -fno-fast-math |
 | 2026-07-15 | fib(32) | 7.286ms | 6.579ms | 1.11x | -O2 -ffp-contract=off -fno-fast-math |
 <!-- /AUTO:kernel-suite -->
+
+## Compile-latency shootout (auto-appended, dated snapshots)
+
+Rendered from `bench/compile_latency_bench.mjs`. Do not hand-edit the block between the markers below; edit the bench script and re-run instead.
+
+<!-- AUTO:latency-shootout -->
+| Date | Tier | Language/Toolchain | Median (spawn-subtracted) |
+|------|------|--------------------|---------------------------|
+| 2026-07-15 | cold check | lumen (node seed/lumen.mjs check) | 0.53 ms |
+| 2026-07-15 | cold check | go (go vet) | 13.07 ms |
+| 2026-07-15 | cold check | c (clang -fsyntax-only) | 7.40 ms |
+| 2026-07-15 | cold check | java (javac -d tmpdir Kernel.java) | 218.48 ms |
+| 2026-07-15 | cold check | python (python3 -m py_compile) | 0.00 ms |
+| 2026-07-15 | cold check | rust (rustc) | not installed on this machine |
+| 2026-07-15 | cold check | julia | not installed on this machine |
+| 2026-07-15 | full build | lumen (compile+optimize+emit+clang, native pipeline) | 152.35 ms |
+| 2026-07-15 | full build | go (go build) | 127.80 ms |
+| 2026-07-15 | full build | c (clang -O2) | 64.34 ms |
+| 2026-07-15 | full build | java (javac, same as cold-check) | 1373.65 ms |
+| 2026-07-15 | full build | python (interpreted) | n/a (interpreted) |
+| 2026-07-15 | warm | lumen (lumend daemon, warm check round-trip) | 0.33 ms |
+| 2026-07-15 | warm | go | N/A (no supported resident daemon) |
+| 2026-07-15 | warm | c (clang) | N/A (no supported resident daemon) |
+| 2026-07-15 | warm | java (javac) | N/A (no supported resident daemon) |
+| 2026-07-15 | warm | python | N/A (no supported resident daemon) |
+<!-- /AUTO:latency-shootout -->

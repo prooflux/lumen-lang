@@ -110,3 +110,8 @@ jobs:
           # spawn-cost subtraction, table rendering, the AUTO-block splice) are gated here,
           # deterministically, with no timing assertions - never the wall-clock numbers themselves.
           node bench/kernel_suite_selftest.mjs
+          # compile_latency_bench.mjs (S3, dimension 7b) is the same kind of local/nightly
+          # wall-clock harness (compile-latency shootout across lumen/go/clang/javac/python).
+          # Only its PURE functions (G9 stdout comparator, median, spawn-cost clamp, row/table
+          # rendering, the AUTO-block splice) are gated here, deterministically, no timing.
+          node bench/latency_shootout_selftest.mjs

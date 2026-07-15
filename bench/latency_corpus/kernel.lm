@@ -1,0 +1,45 @@
+# kernel.lm - scalar Black-Scholes call-price kernel, fixed inputs, written 5 times (one per
+# toolchain) for bench/compile_latency_bench.mjs (S3, dimension 7b). Every twin below MUST print
+# byte-identical stdout (G9 gate): four lines, each an integer = round(price * 10000), one per
+# fixed case. Ported line-by-line from examples/finance/black_scholes.lm (same formula, same
+# operand order, same Abramowitz-Stegun 7.1.26 CDF poly), just scoped down to ~40 lines and with
+# the four cases fixed here as the single source every twin hand-copies.
+#
+# Cases (S, K, r, T, vol) -> expected round(price*10000):
+#   (100, 100, 0.05, 1.0, 0.20) -> 104506
+#   (100, 110, 0.05, 1.0, 0.20) ->  60401
+#   (100,  90, 0.05, 0.5, 0.30) -> 154860
+#   ( 50,  50, 0.02, 2.0, 0.25) ->  79020
+
+fn norm_cdf(x: Float) -> Float {
+  let ax = abs(x)
+  let t = 1.0 / (1.0 + 0.2316419 * ax)
+  let poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+  let pdf = exp(-(ax * ax) / 2.0) / sqrt(2.0 * 3.14159265358979)
+  let upper = 1.0 - pdf * poly
+  if x < 0.0 {
+    return 1.0 - upper
+  }
+  return upper
+}
+
+fn bs_call(s: Float, k: Float, r: Float, t: Float, vol: Float) -> Float {
+  let sqt = vol * sqrt(t)
+  let d1 = (ln(s / k) + (r + 0.5 * vol * vol) * t) / sqt
+  let d2 = d1 - sqt
+  return s * norm_cdf(d1) - k * exp(-(r * t)) * norm_cdf(d2)
+}
+
+fn show(console: Console, p: Float) -> Unit {
+  console.print_int(round(p * 10000.0))
+  console.print("\n")
+  return ()
+}
+
+fn main(console: Console) -> Unit {
+  show(console, bs_call(100.0, 100.0, 0.05, 1.0, 0.2))
+  show(console, bs_call(100.0, 110.0, 0.05, 1.0, 0.2))
+  show(console, bs_call(100.0, 90.0, 0.05, 0.5, 0.3))
+  show(console, bs_call(50.0, 50.0, 0.02, 2.0, 0.25))
+  return ()
+}

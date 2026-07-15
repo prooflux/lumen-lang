@@ -24,7 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import wabtInit from 'wabt';
-import { createCompiler, SRC_BASE } from './compiler_core.mjs';
+import { createCompiler, SRC_BASE, oplen } from './compiler_core.mjs';
 import { buildDiagnostics, applyFixes, fixableCount, explain } from './diagnostics.mjs';
 import { cacheKey, CACHE_DIR_PATH } from './cache.mjs';
 import { compileToIRAuto, optimizeIR, emitC, emitLlvm, buildAndRunFn } from '../native/pipeline.mjs';
@@ -366,11 +366,9 @@ async function typesFromSource(src) {
       const ntot = words[pc + 1];
       typemaps.push({ rettype: label(words[pc + 2]), slots: Array.from({ length: ntot }, (_, k) => label(words[pc + 3 + k])) });
       pc += 3 + ntot;
-    } else if (op === 1 || op === 2 || op === 6 || op === 7 || op === 13 || op === 14 || op === 15 || op === 25) {
-      pc += 2;
-    } else if (op === 8 || op === 29) {
-      pc += 3;
-    } else { pc += 1; }
+    } else {
+      pc += 1 + oplen(op);   // shared with compiler_core.mjs's ir() - see its own table comment
+    }
   }
   const symsRes = symbolsFromSource(src);
   const names = (symsRes.symbols || []).map((s) => s.name);

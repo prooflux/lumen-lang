@@ -16,3 +16,15 @@
 - Deliberately KEPT in history: the fake self-host commits and the reward-hacked
   benchmark era, with the commits that caught and removed them. The oracle-gated
   process is the product; its failure ledger is evidence, not embarrassment.
+- The WebAssembly bootstrap seed (`seed/lumenc.wat`; `seed/seed.wat` was its pre-rename
+  ancestor, already absent from the tree before R5) was retired as the *live oracle* in the
+  R5 wasm-retirement campaign: a checked-in, reproducible C bootstrap trio
+  (`native/lumenc.bootstrap.c`, `emit_fn.bootstrap.c`, `optimize.bootstrap.c`) plus a pure-JS
+  in-process interpreter (`native/ir_interpreter.mjs`) took over as the from-scratch genesis
+  and correctness-gate reference. Its historical state as the load-bearing oracle is pinned
+  forever at the `wat-genesis` tag. `seed/lumenc.wat` itself is NOT yet removed from the
+  working tree: two narrowly-scoped exceptions (`native/fuel_build.mjs`,
+  `native/pipeline.mjs`'s `emit_llvm.lm` path, both documented in ARCHITECTURE.md) still
+  parse it directly at runtime, and both back currently-required CI gates
+  (`llvm_diff.mjs`, `llvm_float_test.mjs`). It becomes deletable once `emit_llvm.lm` gets its
+  own bootstrap-C translation.

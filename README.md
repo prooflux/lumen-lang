@@ -10,9 +10,10 @@ Lumen) reproduces the reference seed's compilation of its own source bit-for-bit
 native backends (C emitter, LLVM emitter - both written in Lumen) are CI-gated to
 byte-identical output against the reference interpreter on a fixed conformance corpus.
 
-This repository is the project's home: the full toolchain (the WAT reference seed, the
-self-hosting `lumenc.lm`, the C and LLVM native emitters, the IR optimizer, the warm daemon
-and MCP authoring tools) and the conformance corpus live here. Its history is the complete,
+This repository is the project's home: the full toolchain (the bootstrap-C genesis + in-process
+interpreter that replaced the WAT reference seed as the live oracle in R5, the self-hosting
+`lumenc.lm`, the C and LLVM native emitters, the IR optimizer, the warm daemon and MCP authoring
+tools) and the conformance corpus live here. Its history is the complete,
 audited development record extracted from the private development monorepo where the language
 was bootstrapped; see [docs/PROVENANCE.md](docs/PROVENANCE.md) for the extraction and safety
 audit. The methodology paper ("Oracle-Gated Self-Hosting: Building a Programming Language with
@@ -21,7 +22,7 @@ LLM Agent Fleets") is in preparation.
 ## Quick start
 
 ```sh
-cd seed && npm install                 # one-time: the wabt assembler
+cd seed && npm install                 # one-time: host shim deps (no wabt/WebAssembly - retired R5)
 node lumen.mjs run ../mu/examples/fib_print.lm   # prints 55
 npm test                               # conformance + safety + loop + cache gates
 ```

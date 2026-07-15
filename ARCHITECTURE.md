@@ -26,29 +26,59 @@ disposable bootstrap).
                        each a Lumen program compiled by the Lumen toolchain (the fixpoint)
   native backend       Lumen-written emitters (IR -> C / LLVM) + a Lumen optimizer
   self-hosting         lumenc.lm: the compiler written in Lumen, compiles itself
-  the seed             seed/lumenc.wat: pure-WAT bootstrap compiler + interpreter,
-                       kept forever as the reference oracle
+  the seed             retired at the "wat-genesis" tag (R5): the bootstrap-C trio
+                       (native/lumenc.bootstrap.c, emit_fn.bootstrap.c, optimize.bootstrap.c)
+                       is now the from-scratch genesis; the wat lives only in history
   the machine          native machine code (clang assembles the emitted C: the scoped
                        machine-boundary assistant)
 ```
 
-## The seed (`seed/lumenc.wat`)
+## The seed - retired at "wat-genesis" (R5 wasm retirement)
 
-The bootstrap compiler and interpreter, written in pure WebAssembly text, with no dependency on any
-other language. It lexes, parses, type-checks, and lowers **Lumen-mu** (the runnable subset) to a
-compact stack-machine IR, and interprets that IR. Its only host seam is a single `console_print`
-import; everything else is arithmetic over a flat linear memory (128 pages, ~8.4 MB - the same size
-as the native binary's heap, so raw-memory programs run identically in both).
+Through R4 the bootstrap compiler and interpreter were written in pure WebAssembly text
+(`seed/lumenc.wat`), with no dependency on any other language: it lexed, parsed, type-checked, and
+lowered **Lumen-mu** (the runnable subset) to a compact stack-machine IR, and interpreted that IR
+via a WebAssembly host (`WebAssembly.instantiate` + a single `console_print` import).
 
-- **IR / opcode model.** A stack machine: `PUSH`, `GETARG`, arithmetic and comparisons, `JZ`/`JMP`,
-  `CALL`/`RET`, `RESERVE`/`SETLOCAL` (call frames), `PRINTINT`/`PRINTTEXT`, text ops, sum-type ops,
-  floats, heap Float arrays, the raw-memory keystone `load8`/`store8`/`load32`/`store32`, and the
-  bitwise builtins `band`/`bor`/`bxor`/`shl`/`shr`/`bnot` (i64, `shr` logical/unsigned) - the
-  primitives the HTTP, tooling, and future crypto kernels build on.
-- **Execution model.** `$run` sets `pc = main_entry` with an empty operand stack and call stack,
-  then dispatches. Calls push a return frame onto the call stack (base `9216`); frame locals live at
-  base `1024`; the Text heap bump-allocates in `[488000, 524288)`. A guard makes a top-level `RET`
-  (main returning, no caller frame) halt instead of underflowing the call stack.
+R5 retired that wasm host end to end. The invariant it protected - a from-scratch, no-foreign-
+dependency genesis with a live, interpretable oracle - now lives in two pieces instead of one:
+
+- **Genesis**: the bootstrap-C trio (`native/lumenc.bootstrap.c`, `native/emit_fn.bootstrap.c`,
+  `native/optimize.bootstrap.c`), each a hand-verified, checked-in, reproducible C translation of
+  its wasm predecessor. `clang lumenc.bootstrap.c -o lumenc0` (zero wabt, zero WebAssembly) yields
+  the seed compiler; `lumenc0` then rebuilds the whole toolchain from source (R1-R4, see
+  `docs/NATIVE_BACKEND_PLAN.md`).
+- **Live interpreted oracle**: `native/ir_interpreter.mjs`, a pure-JS, in-process, zero-wasm port
+  of the wat's own `$run` function - the fast, synchronous, per-call reference every gate
+  (`seed/test.mjs`, `seed/safety.mjs`, `seed/selfhost_diff.mjs`, `forge/`) now runs the IR through.
+
+The wat source is retired as the *live oracle* (nothing on the correctness-gate hot path reads it
+any more) and its historical state is preserved forever at the `wat-genesis` git tag, marking the
+commit where it was last the load-bearing oracle. It is NOT yet deleted from the working tree,
+though: `seed/lumenc.wat` is still the literal input the two documented wasm exceptions below parse
+at runtime (verified empirically - deleting it breaks `native/llvm_diff.mjs` and
+`native/llvm_float_test.mjs`, both still required gates in `.github/workflows/gate.yml`, with
+`ENOENT`). Physical deletion is a one-line follow-up once `emit_llvm.lm` gets its own bootstrap-C
+translation (see `native/native_compile.mjs`'s header comment on the 46-error parser gap blocking
+that); until then the file stays checked in, read only by the two exceptions. The **IR / opcode
+model** and **execution model** it defined
+(stack machine, `PUSH`/`GETARG`/arithmetic/comparisons, `JZ`/`JMP`, `CALL`/`RET`,
+`RESERVE`/`SETLOCAL` call frames, `PRINTINT`/`PRINTTEXT`, text/sum-type ops, floats, the raw-memory
+keystone `load8`/`store8`/`load32`/`store32`, bitwise `band`/`bor`/`bxor`/`shl`/`shr`/`bnot`) is
+unchanged - `native/ir_interpreter.mjs` and the native binaries all still implement exactly it.
+
+Two deliberate, narrowly-scoped wasm exceptions remain (both isolated to `native/`, both lazy-
+loaded so no other importer pays their cost):
+
+- `native/fuel_build.mjs` - a one-time fuel-instrumented rebuild of the retired wat, kept only as a
+  historical build script.
+- `native/pipeline.mjs`'s `emit_llvm.lm` path - the LLVM emitter has no native C bootstrap yet, so
+  its one remaining caller (`llvm_diff.mjs`, `llvm_float_test.mjs`, `arm64_spike_check.mjs`,
+  `seed/lumen_mcp.mjs`'s `lumen_emit_llvm` tool) still runs it interpreted atop the wat via wabt,
+  loaded lazily and only when an LLVM path is actually invoked.
+
+`wabt` is retained as a devDependency of `native/package.json` ONLY for these two exceptions; no
+other `package.json` in the repo depends on it.
 - **Determinism + safety.** No wall-clock, no randomness; a fuel cap guarantees termination on any
   input, so the compiler and interpreter are a pure, replayable function of their input.
 
@@ -89,8 +119,10 @@ source and the whole corpus. Measured at compiler scale: the native compile stag
 than the interpreted self-hosted compiler (spawn included; ~59x work-only); the emit stage ~3-4x
 (currently bound by unbuffered per-token output, the next speed item). The emitted runtime's heap
 mirrors the interpreter faithfully: one shared cursor, arrays/sums guarded at the interpreter's
-logical bound (halt-parity gated), text free to the physical arena. The seed remains the reference
-oracle forever. See `docs/NATIVE_BACKEND_PLAN.md` for history.
+logical bound (halt-parity gated), text free to the physical arena. The reference oracle is now the
+bootstrap-C trio + `native/ir_interpreter.mjs` (see "The seed" above); the wasm-era seed the
+fixpoint originally gated against is preserved at the `wat-genesis` history tag. See
+`docs/NATIVE_BACKEND_PLAN.md` for history.
 
 ### Lumen-written emitters and passes
 
@@ -112,7 +144,7 @@ response bytes.
 `http_serve.lm` closes the loop into an actual server: given a raw request and a route table (both
 staged in raw memory), it parses the request line, linear-scans the table for a method+path match,
 and frames the exact HTTP/1.1 response bytes. `seed/lumen_serve.mjs` is the socket seam in front of
-it: a thin host shim that owns only the TCP socket (the one thing a wasm program cannot do, the same
+it: a thin host shim that owns only the TCP socket (the one thing the sandboxed kernel cannot do, the same
 class of capability as `console_print`) and, per connection, copies the request into the kernel's
 memory, runs the kernel, and writes the response bytes back. The routing is the kernel's; the socket
 is the machine's. All runtime offsets stay inside the window the interpreter and the native binary

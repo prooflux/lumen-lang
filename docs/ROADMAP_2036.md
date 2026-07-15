@@ -15,7 +15,8 @@ What is real, CI-gated, on main:
 
 - **Self-hosted at full parity.** `lumenc.lm` compiles the seed's entire language surface -
   Int/Text/Float, booleans, arrays, records, sum types, match, `?` - bit-identically to the
-  frozen WAT oracle (census 26/26, `SELF: MATCH`, plus a 3,092-program float fuzz, all in CI).
+  frozen WAT oracle (census 29/29, `SELF: MATCH`, plus a 3,092-program float fuzz, all in CI;
+  verified live via `seed/selfhost_diff.mjs`, up from 26/26 as this section was first written).
 - **The native fixpoint.** Compiler, optimizer, and C emitter are Lumen programs running as
   native binaries built by the language's own toolchain; a generation-2 compiler rebuilds
   byte-identically. Native compile is ~23x the interpreted path (~59x work-only).
@@ -229,30 +230,54 @@ regressions, and they do not relax with scale:
 7. **Corpus instrumentation always on.** No trace is ever lost; the data moat starts at zero
    and only compounds if collection never pauses.
 8. **The purity gate** (from Arc 1 on): nothing non-Lumen enters the shipped path, ever.
+9. **A verdict flip rides the same PR as its gate.** `bench/scoreboard.json`, `docs/VELOCITY_LEDGER.md`
+   where the flip is feature-velocity-tracked, and the row's own prose in whichever of
+   `LANGUAGE_COMPARISON.md`, `VISION_2036.md`, or `VISION_2035.md` carries it move together, in one
+   changeset, never separately. `tools/scoreboard_gate.mjs --check`'s flip-coupling rule enforces
+   this mechanically: a verdict cannot change unless at least one of its cited evidence files
+   changes in the same diff, so a claim can never outrun the artifact that earns it.
 
 ## 5. The next 90 days (the immediate work packages)
 
 In dependency order, each PR-sized or a short campaign:
 
 1. **Purity gate v0** in CI (inventory what is currently non-Lumen in the shipped path; fail
-   on growth; ratchet down). Cheap, and it makes Arc 1 measurable from day one.
+   on growth; ratchet down). Cheap, and it makes Arc 1 measurable from day one. **Landed** (#49),
+   then relaxed to an advisory reporter that inventories and ratchets but never blocks (#56),
+   because Lumen is in active development and additions are expected.
 2. **Language floor, wave 1:** `print_float` + exponent literals (unblocks honest float
    output everywhere), Bool, Int arrays / generic elements. Seed-first, census lockstep.
 3. **Buffered emit output** (the known I/O-bound emit-stage fix; pushes the native pipe
    toward the compile stage's 23-59x).
 4. **arm64 codegen spike** from the R3b notes: one function, IR to machine code to a runnable
-   Mach-O, oracle-gated. The result decides the Arc 1 codegen plan's shape.
+   Mach-O, oracle-gated. The result decides the Arc 1 codegen plan's shape. **Landed** (#48);
+   the codegen plan has since moved further, toward a checked-in C bootstrap of the whole
+   native toolchain rather than continued direct arm64 emission (see the note below).
 5. **Promptgreen rig v0** (`bench/promptgreen/`): 10 frozen tasks, Lumen versus Python, one
    pinned model, full logs. Publish the first honest numbers even if they are unflattering.
+   **Landed** (#50) at the "prove the rig hermetically" stage: 10 frozen tasks and a scripted
+   deterministic author exist; a real model and a Python control arm, and the numbers they
+   would produce, remain open.
 6. **Capabilities v1 RFC**: the primordial set, derived rows, fakes-versus-tainted-reals, and
    the lowering design - written against the mechanization plan so the proof and the
-   implementation land aligned.
+   implementation land aligned. **Landed** (#52) as a design document only, exactly as its own
+   status line says; the implementation is Arc 2 work and has not started.
 7. **Socket keep-alive reconciliation** (the filed serving-stack follow-up) and LLVM floats
    (keeps the second backend honest until the own-codegen decision retires or repurposes it).
+   LLVM floats **landed** (#54, IR ops 29-48, gated bit-identical in CI); the keep-alive
+   reconciliation is not separately confirmed in this pass and stays open.
 8. **The methodology paper** (oracle-gated self-hosting with agent fleets) submitted; it is
    the credibility floor for every later launch artifact.
 9. **DCO + trademark filing + data-rights notice**: the irreversibles, done while they are
-   still cheap.
+   still cheap. DCO and the data-rights notice **landed** (#53: `CONTRIBUTING.md`'s DCO 1.1
+   language, `docs/DATA_RIGHTS.md`); trademark filing is a legal action outside the repo and
+   its status cannot be verified from the tree.
+
+Beyond this original list, the wasm-removal campaign advanced Arc 1's air-gap goal further
+than planned here: the reproducible C bootstrap trio (compiler, #62; emitter and optimizer
+together, #64), the native-only compile-and-run backend with its corpus parity gate (R2, #63),
+and the resident native compiler server (R3, #65) have all landed. The full air-gap test is
+still not green (the purity gate stays advisory, per item 1 above).
 
 ## 6. Economics, staged to the arcs
 

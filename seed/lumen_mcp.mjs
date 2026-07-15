@@ -27,7 +27,8 @@ import wabtInit from 'wabt';
 import { createCompiler, SRC_BASE } from './compiler_core.mjs';
 import { buildDiagnostics, applyFixes, fixableCount, explain } from './diagnostics.mjs';
 import { cacheKey, CACHE_DIR_PATH } from './cache.mjs';
-import { compileToIR, optimizeIR, emitC, emitLlvm, buildAndRunFn } from '../native/pipeline.mjs';
+import { compileToIRAuto, optimizeIR, emitC, emitLlvm, buildAndRunFn } from '../native/pipeline.mjs';
+import { checkAuto } from './native_check.mjs';
 
 const lumen = await createCompiler();
 
@@ -86,7 +87,9 @@ async function checkViaDaemon(src) {
     if (!r || r.error) throw new Error((r && r.error) || 'lumend: no response');
     result = { ok: r.ok, irWords: r.irWords, fixable: r.fixable, diagnostics: r.diagnostics };
   } catch {
-    const c = lumen.compile(src); const d = buildDiagnostics(c.rawDiags, src);
+    // No daemon reachable: fall back to an in-process check, native-first with its own wat
+    // fallback (checkAuto), so behavior is consistent whether or not lumend happens to be up.
+    const c = await checkAuto(lumen, src); const d = buildDiagnostics(c.rawDiags, src);
     result = { ok: d.length === 0, irWords: c.irWords, fixable: fixableCount(d), diagnostics: d };
   }
   cacheWrite('check', src, result);
@@ -152,7 +155,7 @@ async function batchCheck(sources) {
     if (!daemonOk) {
       for (const { idx, src } of pending) {
         if (results[idx]) continue;
-        const c = lumen.compile(src); const d = buildDiagnostics(c.rawDiags, src);
+        const c = await checkAuto(lumen, src); const d = buildDiagnostics(c.rawDiags, src);
         const result = { ok: d.length === 0, irWords: c.irWords, fixable: fixableCount(d), diagnostics: d };
         cacheWrite('check', src, result);
         results[idx] = { ok: result.ok, diagnostics: result.diagnostics };
@@ -351,9 +354,9 @@ function tokensFromSource(src) {
 async function typesFromSource(src) {
   const cached = cacheRead('types', src);
   if (cached) return cached;
-  const c = lumen.compile(src);
+  const c = await checkAuto(lumen, src);
   if (!c.ok) { const r = { ok: false, functions: [], diagnostics: buildDiagnostics(c.rawDiags, src) }; cacheWrite('types', src, r); return r; }
-  const { words } = await compileToIR(src);
+  const { words } = await compileToIRAuto(src);
   const label = (code) => (code === 1 ? 'Float' : 'scalar');
   const typemaps = [];
   let pc = 0;
@@ -379,9 +382,9 @@ async function typesFromSource(src) {
 
 // The Lumen optimizer (optimize.lm) run on the program's IR: pass stats + size delta.
 async function optimizeFromSource(src) {
-  const c = lumen.compile(src);
+  const c = await checkAuto(lumen, src);
   if (!c.ok) return { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
-  const { words, main } = await compileToIR(src);
+  const { words, main } = await compileToIRAuto(src);
   const o = await optimizeIR(words, main);
   return { ok: true, wordsBefore: words.length, wordsAfter: o.words.length,
     wordsRemoved: words.length - o.words.length, threaded: o.threaded || 0, folded: o.folded || 0, changed: o.changed || 0 };
@@ -389,15 +392,15 @@ async function optimizeFromSource(src) {
 
 // The native C the Lumen C-emitter (emit_fn.lm) produces for this program.
 async function emitCFromSource(src) {
-  const c = lumen.compile(src);
+  const c = await checkAuto(lumen, src);
   if (!c.ok) return { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
-  const { words, main } = await compileToIR(src);
+  const { words, main } = await compileToIRAuto(src);
   return { ok: true, c: await emitC(words, main) };
 }
 
 // The LLVM IR the Lumen LLVM-emitter (emit_llvm.lm) produces for this program.
 async function emitLlvmFromSource(src) {
-  const c = lumen.compile(src);
+  const c = await checkAuto(lumen, src);
   if (!c.ok) return { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
   return { ok: true, llvm: await emitLlvm(src) };
 }
@@ -406,7 +409,7 @@ async function emitLlvmFromSource(src) {
 // clang -O2 -> execute. The compiler, optimizer, and emitter are all Lumen programs; the same
 // toolchain rebuilds itself bit-identically (native/native_fixpoint_test.mjs gates it in CI).
 async function runNativeFromSource(src) {
-  const c = lumen.compile(src);
+  const c = await checkAuto(lumen, src);
   if (!c.ok) return { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
   const t0 = performance.now();
   const r = await buildAndRunFn(src, '-O2');

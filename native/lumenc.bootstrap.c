@@ -311,8 +311,77 @@ __attribute__((always_inline)) static int64_t f14332(void);
 __attribute__((always_inline)) static int64_t f14395(int64_t p0);
 __attribute__((always_inline)) static int64_t f14416(int64_t p0);
 __attribute__((always_inline)) static int64_t f14501(void);
-int main(void){
+static uint32_t lm_compile_rd4(void){
+  unsigned char h[4];
+  if(fread(h,1,4,stdin)!=4)return 0xffffffffu;
+  return (uint32_t)h[0]|((uint32_t)h[1]<<8)|((uint32_t)h[2]<<16)|((uint32_t)h[3]<<24);
+}
+static void lm_compile_wr4(uint32_t v){
+  unsigned char h[4]={(unsigned char)v,(unsigned char)(v>>8),(unsigned char)(v>>16),(unsigned char)(v>>24)};
+  fwrite(h,1,4,stdout);
+}
+static void lm_compile_reset(void){
+  memset(LMEM,0,sizeof(LMEM));
+  memset(AHEAP,0,sizeof(AHEAP));
+  AHP=0;
+  LM_HP=0;
+}
+static void lm_resident_loop(void){
+  for(;;){
+    uint32_t n=lm_compile_rd4();
+    if(n==0xffffffffu)break;
+    uint32_t want=n;
+    if(want>50000u)want=50000u;
+    size_t got=want?fread(LMEM+100000,1,want,stdin):0;
+    if(want && got!=want)break;
+    if(n>want){
+      uint32_t remaining=n-want;
+      unsigned char discard[4096];
+      while(remaining>0){
+        uint32_t chunk=remaining<(uint32_t)sizeof(discard)?remaining:(uint32_t)sizeof(discard);
+        if(fread(discard,1,chunk,stdin)!=chunk)break;
+        remaining-=chunk;
+      }
+    }
+    f14416((int64_t)got);
+    int32_t nerr=*(int32_t*)(LMEM+28);
+    int32_t emitc=*(int32_t*)(LMEM+0);
+    int32_t mainentry=0;
+    for(int32_t addr=150000;addr<157000;addr+=12){
+      int32_t name_off=*(int32_t*)(LMEM+addr);
+      int32_t name_len=*(int32_t*)(LMEM+addr+4);
+      int32_t entry=*(int32_t*)(LMEM+addr+8);
+      if(name_len==4 && name_off>=100000 && name_off<150000
+         && LMEM[name_off]=='m' && LMEM[name_off+1]=='a' && LMEM[name_off+2]=='i' && LMEM[name_off+3]=='n'){
+        mainentry=entry;
+      }
+    }
+    int32_t ndiag=nerr;
+    if(ndiag<0)ndiag=0;
+    if(ndiag>500)ndiag=500;
+    uint32_t payload_len=(uint32_t)(4+4+(emitc>0?(uint32_t)emitc*4u:0u)+4+36288u+4+(uint32_t)ndiag*12u);
+    lm_compile_wr4(payload_len);
+    unsigned char h1[4]={(unsigned char)nerr,(unsigned char)(nerr>>8),(unsigned char)(nerr>>16),(unsigned char)(nerr>>24)};
+    unsigned char h2[4]={(unsigned char)emitc,(unsigned char)(emitc>>8),(unsigned char)(emitc>>16),(unsigned char)(emitc>>24)};
+    unsigned char h3[4]={(unsigned char)mainentry,(unsigned char)(mainentry>>8),(unsigned char)(mainentry>>16),(unsigned char)(mainentry>>24)};
+    unsigned char h4[4]={(unsigned char)ndiag,(unsigned char)(ndiag>>8),(unsigned char)(ndiag>>16),(unsigned char)(ndiag>>24)};
+    fwrite(h1,1,4,stdout);
+    fwrite(h2,1,4,stdout);
+    if(emitc>0)fwrite(LMEM+211328,1,(size_t)emitc*4,stdout);
+    fwrite(h3,1,4,stdout);
+    fwrite(LMEM+488000,1,36288,stdout);
+    fwrite(h4,1,4,stdout);
+    if(ndiag>0)fwrite(LMEM+290000,1,(size_t)ndiag*12,stdout);
+    fflush(stdout);
+    lm_compile_reset();
+  }
+}
+int main(int argc,char**argv){
   setvbuf(stdout,0,_IONBF,0);
+  if(argc>1 && strcmp(argv[1],"--resident")==0){
+    lm_resident_loop();
+    return 0;
+  }
   size_t srclen=fread(LMEM+100000,1,50000,stdin);
   f14416((int64_t)srclen);
   int32_t nerr=*(int32_t*)(LMEM+28);

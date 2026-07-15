@@ -22,6 +22,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createCompiler } from './compiler_core.mjs';
 import { buildDiagnostics, applyFixes, fixableCount } from './diagnostics.mjs';
+import { checkAuto } from './native_check.mjs';
 
 const SOCK = process.argv[2] || path.join(os.tmpdir(), 'lumen.sock');
 
@@ -31,18 +32,26 @@ function ms(start) { return Number(process.hrtime.bigint() - start) / 1e6; }
 const lumen = await createCompiler();
 const sessions = new Map();   // session id -> source string
 
-function checkResult(src) {
+// R3: check is the daemon's hot loop (see the file header - "the point is the inference-time
+// loop"), so it is the op re-pointed at the native resident compiler (checkAuto: native-first,
+// automatic wat fallback, LUMEN_COMPILE=wat to force the old path). `run` stays on the wasm
+// interpreter (native "running" means a fresh clang build per request, not a compile - out of
+// scope, see seed/native_check.mjs's header). `fix`'s internal iterate-to-convergence loop and
+// `ir`'s disassembly (which reads the compiled program straight out of the wasm instance's own
+// memory - see compiler_core.mjs's ir()) are left on the wasm path for this round; nothing about
+// their behavior changed.
+async function checkResult(src) {
   const t = process.hrtime.bigint();
-  const c = lumen.compile(src);
+  const c = await checkAuto(lumen, src);
   const diagnostics = buildDiagnostics(c.rawDiags, src);
   return { ok: diagnostics.length === 0, irWords: c.irWords, fixable: fixableCount(diagnostics), diagnostics, ms: ms(t) };
 }
 
-function handle(req) {
+async function handle(req) {
   const id = req.id;
   switch (req.op) {
     case 'ping': return { id, pong: true, warmMs: lumen.assembleMs };
-    case 'check': return { id, ...checkResult(req.src || '') };
+    case 'check': return { id, ...(await checkResult(req.src || '')) };
     case 'fix': {
       const t = process.hrtime.bigint();
       let cur = req.src || '', applied = 0, rounds = 0;
@@ -69,7 +78,7 @@ function handle(req) {
     case 'open': {
       const src = req.src || '';
       sessions.set(req.session, src);
-      return { id, ok: true, hash: fnv1a(src), len: src.length, ...checkResult(src) };
+      return { id, ok: true, hash: fnv1a(src), len: src.length, ...(await checkResult(src)) };
     }
     case 'edit': {
       const cur = sessions.get(req.session);
@@ -79,7 +88,7 @@ function handle(req) {
       if (a < 0 || b > cur.length || a > b) return { id, error: 'bad span', hash: fnv1a(cur) };
       const next = cur.slice(0, a) + (req.text || '') + cur.slice(b);
       sessions.set(req.session, next);
-      return { id, ok: true, hash: fnv1a(next), ...checkResult(next) };
+      return { id, ok: true, hash: fnv1a(next), ...(await checkResult(next)) };
     }
     case 'close': { sessions.delete(req.session); return { id, ok: true }; }
     default: return { id, error: `unknown op ${req.op}` };
@@ -89,18 +98,31 @@ function handle(req) {
 try { fs.unlinkSync(SOCK); } catch {}
 const server = net.createServer(sock => {
   let buf = '';
-  sock.on('data', chunk => {
-    buf += chunk.toString('utf8');
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-      if (!line.trim()) continue;
-      let resp;
-      try { resp = handle(JSON.parse(line)); }
-      catch (e) { resp = { error: String(e.message || e) }; }
-      sock.write(JSON.stringify(resp) + '\n');
-    }
-  });
+  // handle() is now async (checkAuto awaits the resident compiler over its own pipe), so a
+  // plain `sock.on('data', async chunk => ...)` would be re-entrant: a second 'data' event can
+  // fire (and start mutating `buf`) before the first event's in-flight `await handle(...)` call
+  // returns. Serialize with the same pump/busy pattern native/lumen_serve_native.mjs's socket
+  // server already uses - drain every complete line currently in `buf` before yielding, and let
+  // a `pending` flag re-trigger the drain if more data arrived while a request was in flight.
+  let busy = false, pending = false;
+  const drain = async () => {
+    if (busy) { pending = true; return; }
+    busy = true;
+    do {
+      pending = false;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        let resp;
+        try { resp = await handle(JSON.parse(line)); }
+        catch (e) { resp = { error: String(e.message || e) }; }
+        sock.write(JSON.stringify(resp) + '\n');
+      }
+    } while (pending);
+    busy = false;
+  };
+  sock.on('data', chunk => { buf += chunk.toString('utf8'); drain(); });
   sock.on('error', () => {});
 });
 server.listen(SOCK, () => { process.stderr.write(`lumend: warm in ${lumen.assembleMs.toFixed(1)}ms, listening on ${SOCK}\n`); });

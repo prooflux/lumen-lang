@@ -64,4 +64,34 @@ export function withCache(kind, source, computeFn) {
   return result;
 }
 
+// withCacheAsync(kind, source, computeFn): the same contract as withCache above, for a
+// computeFn that returns a Promise (R3: checkAuto/compileToIRAuto are async - they may await a
+// resident-server round-trip). withCache() itself stays synchronous and unchanged for its
+// existing callers (cache_test.mjs); this is purely additive, sharing the same key/read/write
+// logic so the two never drift.
+export async function withCacheAsync(kind, source, computeFn) {
+  if (noCache()) return computeFn();
+
+  const key = cacheKey(source, kind);
+  const file = entryPath(key);
+
+  try {
+    const cached = fs.readFileSync(file, 'utf8');
+    return JSON.parse(cached);
+  } catch {
+    // miss (missing file, unreadable, or corrupt JSON) -- fall through to compute
+  }
+
+  const result = await computeFn();
+
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(result));
+  } catch {
+    // best-effort: a write failure (e.g. read-only fs) must not break compilation
+  }
+
+  return result;
+}
+
 export const CACHE_DIR_PATH = CACHE_DIR;

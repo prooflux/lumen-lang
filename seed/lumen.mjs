@@ -13,7 +13,8 @@
 // Requires wabt (a dev-only WAT assembler):  npm install   (once, in this directory)
 import fs from 'node:fs';
 import { explain, SCHEMA_VERSION } from './diagnostics.mjs';
-import { withCache } from './cache.mjs';
+import { withCache, withCacheAsync } from './cache.mjs';
+import { checkAuto } from './native_check.mjs';
 
 function usage() {
   console.error('usage: lumen <run|check|fix|ir|explain|serve|mcp> [file.lm|CODE|socket] [--json] [--write]');
@@ -53,7 +54,11 @@ if (cmd === 'serve' || cmd === 'mcp') {
   const lumen = await createCompiler();
 
   if (cmd === 'check') {
-    const c = withCache('check', source, () => lumen.compile(source));
+    // R3: check is native-first with an automatic wat fallback (checkAuto), same as
+    // seed/lumend.mjs/seed/lumen_mcp.mjs. fix/ir/run stay on the wasm path below (ir's
+    // disassembly reads the compiled program straight out of the wasm instance's own memory;
+    // run needs the interpreter; fix iterates several wasm compiles per call already).
+    const c = await withCacheAsync('check', source, () => checkAuto(lumen, source));
     const diags = buildDiagnostics(c.rawDiags, source);
     if (flags.has('--json')) {
       process.stdout.write(JSON.stringify({ schema: SCHEMA_VERSION, ok: diags.length === 0, irWords: c.irWords, fixable: fixableCount(diags), diagnostics: diags }) + '\n');

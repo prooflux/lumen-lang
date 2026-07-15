@@ -24,7 +24,7 @@ import { freshInstance, writeSrc, emitWith, EMIT_FN_BASE, EMIT_FN_CEIL } from '.
 
 const CODE_BASE = 11328;      // emitted IR words (matches seed/compiler_core.mjs CODE_BASE)
 const SRC_BASE = 100000;      // SRC() in the seed's memory map
-const SRC_CAP = 50000;        // SRC region is [100000,150000); matches compiler_core SRC_CAPACITY
+export const SRC_CAP = 50000; // SRC region is [100000,150000); matches compiler_core SRC_CAPACITY
 const SYMTAB_BASE = 150000;
 const SYMTAB_CEIL = 157000;   // same scan window selfhost_diff.mjs uses
 const OUT_EMIT_COUNT_ADDR = 0;
@@ -32,7 +32,18 @@ const OUT_NERR_ADDR = 28;
 const OUT_IR_BASE = 211328;
 const LIT_HEAP_BASE = 488000;    // seed/lumenc.wat $hp start; matches compiler_core's Text heap
 const LIT_HEAP_CEIL = 524288;    // page-9 boundary; heap is bump-allocated, never exceeds this
-const LIT_HEAP_BYTES = LIT_HEAP_CEIL - LIT_HEAP_BASE;   // 36288
+export const LIT_HEAP_BYTES = LIT_HEAP_CEIL - LIT_HEAP_BASE;   // 36288
+// NOT 286000 (that is seed/compiler_core.mjs's DIAG_BASE, the WAT-NATIVE bootstrap compiler's
+// OWN internal diagnostic-record address for compiling arbitrary source directly). This driver
+// runs lumenc.lm SELF-HOSTED - a separate Lumen program interpreted/compiled atop that wat VM,
+// with its own memory layout. lumenc.lm's own err_add (seed/lumenc.lm:780-786) writes records
+// at 290000 + nerr*12, matching its header comment ("the DIAG_BASE-style error records at
+// 290000", seed/lumenc.lm:14); the ceiling is TOKENS() = 296000 (seed/lumenc.lm:6), the next
+// region lumenc.lm's own memory map documents. Verified empirically against
+// seed/compiler_core.mjs's readRawDiags() output for the same source (native/native_resident_test.mjs).
+const DIAG_BASE = 290000;
+const DIAG_CEIL = 296000;
+const DIAG_RECORD_CAP = Math.floor((DIAG_CEIL - DIAG_BASE) / 12);   // 500 (code,name_off,name_len) triples
 
 const EMIT_FN_SRC = fs.readFileSync(new URL('./emit_fn.lm', import.meta.url), 'utf8');
 const LUMENC_SRC = fs.readFileSync(new URL('../seed/lumenc.lm', import.meta.url), 'utf8');
@@ -100,11 +111,118 @@ async function compileLumencRaw() {
 // is found by a logic-free scan of the symbol table (12-byte records name_off/name_len/entry in
 // [150000,157000), names in [100000,150000)) for the 4-byte name "main", the same region/stride
 // selfhost_diff.mjs and compileLumencRaw already scan for lex_compile.
+//
+// R3 addition: the binary also accepts one CLI flag, `--resident`, which switches `main` to a
+// long-lived request loop instead of the one-shot behavior above. With no argv (the case every
+// existing caller uses - runNativeCompiler, native_compile_test.mjs, bootstrap_test.mjs, the
+// parity gates), the driver's behavior and byte-for-byte output are UNCHANGED: the original
+// one-shot body below is reproduced verbatim inside main's default branch, not just
+// behaviorally reimplemented, so every gate that depends on that exact format keeps working
+// unmodified. `--resident` is additive.
+//
+// Resident wire protocol (both directions length-framed, 4-byte little-endian byte count then
+// payload - the same convention native/lumen_serve_native.mjs already uses for its serve loop):
+//   request:  [reqlen:u32][source bytes, reqlen of them]
+//   response: [payloadlen:u32][nerr:i32][count:i32][words:count*i32][main_entry:i32]
+//             [literal_heap:LIT_HEAP_BYTES bytes][ndiag:i32][diag: ndiag*3*i32 (code,name_off,name_len)]
+// The response payload's first part (nerr..literal_heap) is byte-for-byte the one-shot format
+// above; a reader that already understands that format only needs to additionally consume the
+// outer 4-byte length and the trailing diagnostic-record block. Diagnostic records come from
+// lumenc.lm's OWN err_add region (DIAG_BASE=290000, see the constant's comment above - NOT
+// compiler_core.mjs's 286000, a different program's internal address), 12 bytes/record,
+// code/name_off/name_len, the same field order seed/compiler_core.mjs's readRawDiags() exposes,
+// so a client can reconstruct the same {code, byteOff, byteLen, name} shape the wasm daemon
+// already returns - name text itself is NOT resent (name_off - SRC_BASE is a byte offset into
+// the request source the client already has, exactly how readRawDiags() resolves it from the
+// SAME buffer it wrote SRC into).
+//
+// State reset: between requests, main resets the compiler's ENTIRE mutable state (LMEM, AHEAP,
+// AHP, LM_HP - by inspection, the complete set of file-scope mutable statics in this translation
+// unit; every other top-level `static` here is a function or a const table) to the same
+// all-zero values a freshly-started process starts with. This is a full-process-equivalent
+// reset by construction (not a partial/optimized one), so it does not rely on lex_compile
+// happening to zero its own bookkeeping - it doesn't need to. native/native_resident_test.mjs
+// proves the result: compiling the corpus twice through one resident process reproduces both a
+// fresh one-shot process's output and the wasm seed's output, byte-for-byte, for every program.
+//
+// A source longer than the SRC_CAP-byte SRC window is capped to SRC_CAP bytes for compilation
+// (matching the one-shot path's fread cap) and any remaining declared bytes are drained (read
+// and discarded) so a request that describes more bytes than the window holds cannot desync the
+// next request's length header on the same pipe.
 export function patchMainToCompileDriver(csrc, lexCompileEntry) {
   const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);f\d+\(\);return 0;\}/);
   if (!m) throw new Error('could not find the emitted main entry to patch');
-  const driver = `int main(void){
+  const driver = `static uint32_t lm_compile_rd4(void){
+  unsigned char h[4];
+  if(fread(h,1,4,stdin)!=4)return 0xffffffffu;
+  return (uint32_t)h[0]|((uint32_t)h[1]<<8)|((uint32_t)h[2]<<16)|((uint32_t)h[3]<<24);
+}
+static void lm_compile_wr4(uint32_t v){
+  unsigned char h[4]={(unsigned char)v,(unsigned char)(v>>8),(unsigned char)(v>>16),(unsigned char)(v>>24)};
+  fwrite(h,1,4,stdout);
+}
+static void lm_compile_reset(void){
+  memset(LMEM,0,sizeof(LMEM));
+  memset(AHEAP,0,sizeof(AHEAP));
+  AHP=0;
+  LM_HP=0;
+}
+static void lm_resident_loop(void){
+  for(;;){
+    uint32_t n=lm_compile_rd4();
+    if(n==0xffffffffu)break;
+    uint32_t want=n;
+    if(want>${SRC_CAP}u)want=${SRC_CAP}u;
+    size_t got=want?fread(LMEM+${SRC_BASE},1,want,stdin):0;
+    if(want && got!=want)break;
+    if(n>want){
+      uint32_t remaining=n-want;
+      unsigned char discard[4096];
+      while(remaining>0){
+        uint32_t chunk=remaining<(uint32_t)sizeof(discard)?remaining:(uint32_t)sizeof(discard);
+        if(fread(discard,1,chunk,stdin)!=chunk)break;
+        remaining-=chunk;
+      }
+    }
+    f${lexCompileEntry}((int64_t)got);
+    int32_t nerr=*(int32_t*)(LMEM+${OUT_NERR_ADDR});
+    int32_t emitc=*(int32_t*)(LMEM+${OUT_EMIT_COUNT_ADDR});
+    int32_t mainentry=0;
+    for(int32_t addr=150000;addr<157000;addr+=12){
+      int32_t name_off=*(int32_t*)(LMEM+addr);
+      int32_t name_len=*(int32_t*)(LMEM+addr+4);
+      int32_t entry=*(int32_t*)(LMEM+addr+8);
+      if(name_len==4 && name_off>=100000 && name_off<150000
+         && LMEM[name_off]=='m' && LMEM[name_off+1]=='a' && LMEM[name_off+2]=='i' && LMEM[name_off+3]=='n'){
+        mainentry=entry;
+      }
+    }
+    int32_t ndiag=nerr;
+    if(ndiag<0)ndiag=0;
+    if(ndiag>${DIAG_RECORD_CAP})ndiag=${DIAG_RECORD_CAP};
+    uint32_t payload_len=(uint32_t)(4+4+(emitc>0?(uint32_t)emitc*4u:0u)+4+${LIT_HEAP_BYTES}u+4+(uint32_t)ndiag*12u);
+    lm_compile_wr4(payload_len);
+    unsigned char h1[4]={(unsigned char)nerr,(unsigned char)(nerr>>8),(unsigned char)(nerr>>16),(unsigned char)(nerr>>24)};
+    unsigned char h2[4]={(unsigned char)emitc,(unsigned char)(emitc>>8),(unsigned char)(emitc>>16),(unsigned char)(emitc>>24)};
+    unsigned char h3[4]={(unsigned char)mainentry,(unsigned char)(mainentry>>8),(unsigned char)(mainentry>>16),(unsigned char)(mainentry>>24)};
+    unsigned char h4[4]={(unsigned char)ndiag,(unsigned char)(ndiag>>8),(unsigned char)(ndiag>>16),(unsigned char)(ndiag>>24)};
+    fwrite(h1,1,4,stdout);
+    fwrite(h2,1,4,stdout);
+    if(emitc>0)fwrite(LMEM+${OUT_IR_BASE},1,(size_t)emitc*4,stdout);
+    fwrite(h3,1,4,stdout);
+    fwrite(LMEM+${LIT_HEAP_BASE},1,${LIT_HEAP_BYTES},stdout);
+    fwrite(h4,1,4,stdout);
+    if(ndiag>0)fwrite(LMEM+${DIAG_BASE},1,(size_t)ndiag*12,stdout);
+    fflush(stdout);
+    lm_compile_reset();
+  }
+}
+int main(int argc,char**argv){
   setvbuf(stdout,0,_IONBF,0);
+  if(argc>1 && strcmp(argv[1],"--resident")==0){
+    lm_resident_loop();
+    return 0;
+  }
   size_t srclen=fread(LMEM+${SRC_BASE},1,${SRC_CAP},stdin);
   f${lexCompileEntry}((int64_t)srclen);
   int32_t nerr=*(int32_t*)(LMEM+${OUT_NERR_ADDR});

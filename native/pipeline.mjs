@@ -89,6 +89,74 @@ export async function compileToIR(src) {
   return { words, main, irWords, strings };
 }
 
+// Structural self-check on a native-resident compile result before it is trusted in place of
+// the wat oracle: the same opcode walk compileToIR/stringsFromLiteralHeap already use must
+// consume EXACTLY words.length words (no overrun/underrun - a strong signal the IR is
+// well-formed), and `main` must be a valid in-bounds entry (or the documented 0 default).
+// MKTEXT (op 15) pointer validity is already enforced for free: stringsFromLiteralHeap in
+// native_compile.mjs throws on an out-of-range pointer, and compileToIRAuto below only reaches
+// this check after that call has already succeeded.
+export function validateNativeIR(words, main) {
+  let pc = 0;
+  while (pc < words.length) {
+    const op = words[pc];
+    if (op === 57) { pc = pc + 3 + words[pc + 1]; continue; }
+    let oplen = 0;
+    if (op === 1 || op === 2 || op === 6 || op === 7 || op === 13 || op === 14 || op === 15 || op === 25) oplen = 1;
+    else if (op === 8 || op === 29) oplen = 2;
+    pc = pc + 1 + oplen;
+  }
+  if (pc !== words.length) return `opcode walk ended at pc=${pc}, expected ${words.length}`;
+  if (main < 0 || main > words.length) return `main=${main} out of bounds for ${words.length} words`;
+  return null;
+}
+
+// Native-first, wat-fallback compile path (R3). Same return shape as compileToIR ({ words,
+// main, irWords, strings }), so every existing caller of compileToIR is unaffected by this
+// function's existence - compileToIR itself is deliberately left untouched (see below) and
+// this is a NEW function alongside it, not a replacement.
+//
+// Why compileToIR itself is not simply repointed at native: it is used throughout this repo's
+// gates (native_diff.mjs, native/native_fixpoint_test.mjs, native/native_compile_test.mjs) as
+// the INDEPENDENT wasm oracle that native output is checked against. If compileToIR silently
+// became native-backed, those gates would start comparing native output against itself in
+// places that are supposed to prove native against an independently-derived reference - a
+// correctness-adjacent regression in what those gates actually demonstrate, even though the
+// numbers would still match today (native and wasm are already proven byte-identical by
+// native/parity_corpus_test.mjs and native/native_resident_test.mjs). compileToIRAuto is the
+// function live hosts (seed/lumend.mjs, seed/lumen_mcp.mjs, seed/lumen.mjs) are re-pointed at
+// instead, keeping compileToIR's role as "the oracle" intact for every gate that depends on it.
+//
+// Env gate: LUMEN_COMPILE=wat forces the old (always-wasm) path, for debugging/comparison.
+// Anything else (including unset) prefers native.
+//
+// Fallback is automatic and never silent: an infrastructure failure (oversized source for the
+// resident window, a dead/crashed resident process, a malformed wire response, or the
+// structural self-check above failing) falls back to compileToIR and prints a warning to
+// stderr. A LEGITIMATE compile error (native reports nerr > 0) is NOT a fallback trigger - wat
+// would report the same error, just at the cost of compiling twice - so it propagates as-is,
+// with the same "user compile: N error(s)" message compileToIR itself throws.
+export async function compileToIRAuto(src) {
+  if (process.env.LUMEN_COMPILE === 'wat') return compileToIR(src);
+  const { compileToIRNativeResidentRaw } = await import('./native_compile.mjs');
+  let r;
+  try {
+    r = await compileToIRNativeResidentRaw(src);
+  } catch (e) {
+    // Infra failure (oversized source, dead/crashed resident process, malformed wire response):
+    // fall back, never silently.
+    process.stderr.write(`lumen: native compile failed (${e.message}), falling back to wat\n`);
+    return compileToIR(src);
+  }
+  if (r.nerr > 0) throw new Error(`user compile: ${r.nerr} error(s)`);   // legitimate error: propagate, wat would agree
+  const problem = validateNativeIR(r.words, r.main);
+  if (problem) {
+    process.stderr.write(`lumen: native compile failed its structural self-check (${problem}), falling back to wat\n`);
+    return compileToIR(src);
+  }
+  return { words: r.words, main: r.main, irWords: r.words.length, strings: r.strings };
+}
+
 // run emit.lm (Lumen) over an injected IR snapshot -> emitted C source text
 export async function emitC(words, main) {
   const I = await freshInstance();

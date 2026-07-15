@@ -58,6 +58,7 @@ jobs:
           node native_compile_test.mjs
           node native_pipeline_test.mjs
           node native_fixpoint_test.mjs
+          node bootstrap_test.mjs
           node arm64_spike_check.mjs
           node state_eventlog_test.mjs
           node analytics_events_test.mjs

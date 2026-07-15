@@ -154,12 +154,22 @@ export function buildNativeBinaryFromC(csrc, { opt = '-O2', tag = 'native', name
 
 // Build the native lumenc binary. Returns { bin, variant, entry }: the binary path, the IR
 // variant it was built from ('raw'), and the lex_compile entry pc used to name the driven fn.
-export async function buildLumencNative(opt = '-O2') {
+// Produce the self-contained C source of the native lumenc compiler (emitted functions +
+// runtime + the stdin-reading compile driver), the exact text buildLumencNative clangs. This
+// is the reproducible-genesis artifact: `clang <this> -o lumenc0` yields the native compiler
+// with zero wasm/wabt/node. Generating it still runs the seed once (compileLumencRaw + emit_fn);
+// it is generated once, checked in as native/lumenc.bootstrap.c, and the bootstrap gate
+// re-emits + diffs it so it cannot rot.
+export async function emitLumencBootstrapC() {
   const { words, main, strings, lexCompileEntry } = await compileLumencRaw();
   const csrc = await emitWith(EMIT_FN_SRC, words, main, strings, EMIT_FN_BASE, EMIT_FN_CEIL);
-  const patched = patchMainToCompileDriver(csrc, lexCompileEntry);
-  const bin = buildNativeBinaryFromC(patched, { opt, tag: 'lumenc-native', name: 'lumenc' });
-  return { bin, variant: 'raw', entry: lexCompileEntry };
+  return { csrc: patchMainToCompileDriver(csrc, lexCompileEntry), entry: lexCompileEntry };
+}
+
+export async function buildLumencNative(opt = '-O2') {
+  const { csrc, entry } = await emitLumencBootstrapC();
+  const bin = buildNativeBinaryFromC(csrc, { opt, tag: 'lumenc-native', name: 'lumenc' });
+  return { bin, variant: 'raw', entry };
 }
 
 // CLI: node lumenc_native.mjs [-o outfile] [--opt -O2|-O3]

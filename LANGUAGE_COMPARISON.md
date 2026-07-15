@@ -15,6 +15,8 @@ Every dimension resolves to one of four verdicts, and never to a boast a referee
 
 A win claimed without its metric is downgraded to aspiration in plain words. The distribution of verdicts is the real answer, and it is defensible precisely because it is not uniform.
 
+This table is a snapshot at commit time, not a live feed: the verdict column reflects `f883796`, the commit this file was truth-passed against. The machine-readable, living state is `bench/scoreboard.json`, rendered into a compact table in `bench/DASHBOARD.md` by `tools/scoreboard_gate.mjs --render`; a verdict flips only in the PR that lands the gate cited as its evidence, never by editing prose or JSON alone.
+
 ## The roster (implementation grounded against the cloned source)
 
 Each entry lists what the compiler or runtime is actually written in (read from each project's public source tree at the time of writing) and the one axis the language is the reference for. This is the honest statement of who the competition is.

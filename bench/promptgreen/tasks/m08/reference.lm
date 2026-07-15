@@ -1,0 +1,22 @@
+type ChannelError = | ChannelClosed
+
+fn attempt_ratio(x: Int, y: Int) -> Result[Int, ChannelError] {
+  if y == 0 {
+    return err(ChannelClosed)
+  }
+  return ok(x / y)
+}
+
+fn display(r: Result[Int, ChannelError], console: Console) -> Unit {
+  match r {
+    ok(v) -> console.print(text_concat(text_concat("value ", int_to_text(v)), "\n"))
+    err(e) -> match e {
+      ChannelClosed -> console.print("channel closed\n")
+    }
+  }
+}
+
+fn main(console: Console) -> Unit {
+  display(attempt_ratio(42, 7), console)
+  display(attempt_ratio(13, 0), console)
+}

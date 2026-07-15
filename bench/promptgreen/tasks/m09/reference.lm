@@ -1,0 +1,7 @@
+fn discounted_payoff(payoff: Float, discount_rate: Float, term: Float) -> Float {
+  return payoff / pow(1.0 + discount_rate, term)
+}
+
+fn main(console: Console) -> Unit {
+  console.print_int(round(discounted_payoff(245.80, 0.08, 3.0) * 100.0))
+}

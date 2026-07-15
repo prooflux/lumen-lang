@@ -1,0 +1,7 @@
+fn notice(item: Text) -> Text {
+  return text_concat(text_concat("shipment ready: ", item), " units\n")
+}
+
+fn main(console: Console) -> Unit {
+  console.print(notice("pallets"))
+}

@@ -257,6 +257,36 @@ run is discarded and repeated under the corrected, re-recorded pin. `docs/ROADMA
 Arc 1 specifies "a pinned open-weight model" without naming one in this tree; the specific
 model is pinned in a follow-up addendum committed before the sealed run, never after.
 
+## Addendum 1 (2026-07-15, committed before any real-model run): the metamorphic shard exists and is sealed
+
+The metamorphic shard this document planned at 0 tasks now exists: `m03` through `m10`, one
+variant per held-out task, authored by a fanned-out factory (one author per two variants, one
+adversarial verifier per variant) applying all four registered transforms: every identifier and
+record field renamed, every constant re-parameterized with expected outputs recomputed from
+scratch, the spec fully paraphrased, and hidden tests regenerated for the new constants. Each
+variant was verified the same way as a base task (compiles and runs green, hidden tests pass on
+the reference and fail on a mutant, spec language-neutral, Python twin matching). `m10` uses the
+raw-memory intrinsics its source `t10` uses; the shipped-surface check was scored against the
+source's own surface. `runner.mjs`'s `t\d+` discovery deliberately does not match the `m`
+prefix, so the shard contributes no observation to any run until the metamorphic-specific run
+this document requires, which must verify the seal below first.
+
+Seal, same recipe as the held-out shard with one disambiguation the v1 text left implicit:
+`relative_path` means the path from the REPOSITORY ROOT (for example
+`bench/promptgreen/tasks/m03/spec.md`); the v1 held-out hash reproduces under exactly this
+convention and was re-verified while computing this one. Over each variant's `spec.md`,
+`reference.lm`, and `hidden_tests.mjs`, entries `relative_path + NUL + file_bytes + NUL`
+concatenated in path-sorted order:
+
+```
+metamorphic_sha256 = c163b6b7f2dbd957c46cff7f9af90a89818a88c0182c5783c87d064ebd4fb0b2
+```
+
+The same tamper-evidence honesty note applies: these files are public from this commit onward;
+the seal proves nothing changed after sealing, not that a model never saw them. Their defense
+against regurgitation is the transforms themselves, which is the entire reason this shard
+exists.
+
 ## Where this sits
 
 `bench/promptgreen/README.md` describes the harness this registration constrains.

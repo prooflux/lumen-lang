@@ -1,0 +1,11 @@
+fn within_bounds(reading: Int, lower: Int, upper: Int) -> Int {
+  if reading >= lower and reading <= upper {
+    return 1
+  }
+  return 0
+}
+
+fn main(console: Console) -> Unit {
+  console.print_int(within_bounds(7, 3, 7))
+  console.print_int(within_bounds(20, 3, 7))
+}

@@ -1,0 +1,8 @@
+fn main(console: Console) -> Unit {
+  store8(600000, 5)
+  store8(600001, 250)
+  store8(600002, 255)
+  store8(600003, 1)
+  let total = load8(600000) + load8(600001) + load8(600002) + load8(600003)
+  console.print_int(total)
+}

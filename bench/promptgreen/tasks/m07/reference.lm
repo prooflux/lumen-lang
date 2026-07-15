@@ -1,0 +1,10 @@
+type Rect = { width: Float, height: Float }
+
+fn area(r: Rect) -> Float {
+  return r.width * r.height
+}
+
+fn main(console: Console) -> Unit {
+  let r = Rect { width: 6.5, height: 7.0 }
+  console.print_int(round(area(r)))
+}

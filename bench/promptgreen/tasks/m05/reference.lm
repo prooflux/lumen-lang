@@ -1,0 +1,7 @@
+fn footprint(width: Float, depth: Float) -> Float {
+  return width * depth
+}
+
+fn main(console: Console) -> Unit {
+  console.print_int(round(footprint(3.25, 6.0) * 100.0))
+}

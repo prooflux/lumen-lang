@@ -10,6 +10,19 @@
 //
 // Does NOT edit pipeline.mjs. Re-implements the same emitWith/clang/run staging locally so the
 // existing fuel-off call path is provably byte-for-byte unaffected.
+//
+// R5: this file is a DELIBERATE, ISOLATED exception to the wasm retirement, matching the same
+// pattern as pipeline.mjs's LLVM backend and native/arm64_spike_check.mjs's custom emitter. The
+// R4 checked-in emitter bootstrap (emit_fn.bootstrap.c)'s stdin/stdout driver protocol has no way
+// to inject the two fuel-flag words before running (native/lumemit_native.mjs's
+// patchMainToEmitDriver only stages the IR+strings payload) - extending that protocol for this
+// one opt-in, not-yet-shipped feature (this file's own header: "SaaS Stone C", an experimental
+// primitive, isolated by design from the main pipeline) was judged lower-priority than the core
+// compile/run/check/fix/diff-gate work R5 actually blocks on. Only this file and
+// native/fuel_test.mjs (its one caller) touch wasm; every other fuel-cap-related test (the
+// interpreter's OWN termination guarantee - see native/ir_interpreter.mjs's fuel_max - and
+// seed/safety.mjs's Group 2) is fully native. Tracked as a follow-up alongside the LLVM native
+// bootstrap in the R5 PR body.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

@@ -7,11 +7,21 @@ deterministic scripted author. It does not yet run a real model, and it does not
 to any other language. Both of those are later work packages (WP-promptgreen), gated on this
 rig existing and passing its own selftest.
 
-One honesty caveat about "green": in the per-attempt JSONL, `green` means the candidate
-compiled with zero diagnostics, not that it solved the task. Whether the hidden tests pass is
-computed by the runner but is not persisted in the log, so an aggregate "solved rate" or
-"green rate" is deliberately NOT claimed here yet; adding it (and logging the hidden-test
-outcome) is the first follow-up when a real author is wired in.
+One honesty note about "green": the per-attempt JSONL logs two distinct fields, and they mean
+different things.
+
+- `green_compile`: the candidate compiled with zero diagnostics. True or false on every round.
+- `green_solved`: the candidate is Solved per `PREREGISTRATION_v1.md`'s Definitions ("Green AND
+  the task's `hidden_tests.mjs` reports `green: true`"). This is only ever true on the round
+  that also has `green_compile: true` (solving implies compiling); every earlier, non-green
+  round is `green_solved: false` by construction. Hidden tests are never run against a
+  non-green candidate, so there is no way for `green_solved` to be true while `green_compile`
+  is false.
+
+**`green_solved` is the headline metric.** A candidate that compiles clean but produces the
+wrong answer is `green_compile: true, green_solved: false`, not solved, and must never be
+reported as a "solved rate." `green_compile` alone answers "does it compile," which is a much
+weaker claim than "does it work."
 
 ## What v0 does
 
@@ -21,7 +31,8 @@ outcome) is the first follow-up when a real author is wired in.
   structured diagnostics (`seed/diagnostics.mjs`) and feeds back ONLY those diagnostics for the
   next round. Never leaks the hidden tests to the author. Caps at 5 rounds. On green, runs the
   task's hidden tests. Logs one JSONL line per attempt: `{task, round, chars_in, chars_out,
-  approx_tokens_in, approx_tokens_out, diag_codes, green}`.
+  approx_tokens_in, approx_tokens_out, diag_codes, green_compile, green_solved}` (see the
+  honesty note above for what each of the two green fields means).
 - `scripted_author.mjs`: a deterministic fake author with a canned attempt sequence per task
   (see `EXPECTED_ROUNDS`). Several tasks deliberately fail once or twice with a known
   diagnostic code before the attempt that goes green, so the diagnostic-feedback loop is

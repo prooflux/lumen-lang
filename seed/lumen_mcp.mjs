@@ -3,7 +3,8 @@
 // Lumen compiler to any MCP-capable model, local or cloud. It embeds compiler_core directly,
 // so the compiler is assembled once and every tool call is a hot, sub-millisecond compile.
 // Zero new dependencies: the MCP framing is hand-rolled (newline-delimited JSON-RPC), keeping
-// the toolchain self-contained on top of the existing `wabt` bootstrap assembler.
+// the toolchain self-contained on top of the native compiler + in-process interpreter (R5;
+// WebAssembly/wabt retired - see native/lumenc.bootstrap.c and native/ir_interpreter.mjs).
 //
 // Tools: lumen_check, lumen_fix, lumen_run, lumen_ir, lumen_explain, lumen_batch, lumen_profile,
 // lumen_symbols, and the full-compiler-access set lumen_tokens, lumen_types, lumen_optimize,
@@ -23,12 +24,13 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import wabtInit from 'wabt';
-import { createCompiler, SRC_BASE, oplen } from './compiler_core.mjs';
+import { createCompiler, oplen } from './compiler_core.mjs';
 import { buildDiagnostics, applyFixes, fixableCount, explain } from './diagnostics.mjs';
 import { cacheKey, CACHE_DIR_PATH } from './cache.mjs';
 import { compileToIRAuto, optimizeIR, emitC, emitLlvm, buildAndRunFn } from '../native/pipeline.mjs';
 import { checkAuto } from './native_check.mjs';
+import { compileToIRNative, compileToIRNativeRaw } from '../native/native_compile.mjs';
+import { createInterpreter } from '../native/ir_interpreter.mjs';
 
 const lumen = await createCompiler();
 
@@ -165,115 +167,91 @@ async function batchCheck(sources) {
   return { results };
 }
 
-// lumen_profile: exact, reproducible cost accounting. Runs on a *fresh* instance (not the
-// shared warm `lumen` compiler, not the daemon) because profiling counters live at fixed
-// memory offsets [600000,700000) inside the instrumented VM and must start zeroed for this
-// call alone -- a shared/warm instance could be mid-flight on another request's memory.
-// Deterministic (same source -> same steps/calls every time), so it is cache-friendly:
-// keyed the same way as check/run/ir, via the same cacheRead/cacheWrite helpers above.
+// lumen_profile: exact, reproducible cost accounting. Runs on a *fresh* interpreter instance
+// (native/ir_interpreter.mjs) because profiling counters must start zeroed for this call alone --
+// a shared/warm instance could be mid-flight on another request's memory. Deterministic (same
+// source -> same steps/calls every time), so it is cache-friendly: keyed the same way as
+// check/run/ir, via the same cacheRead/cacheWrite helpers above.
 // buildReport: runs profile_report.lm (the report engine, written in Lumen itself -- see
-// seed/profile_report.lm) on a brand-new WASM instance, injecting the {calls, name} records
-// per its documented protocol (600000: n, 600004+i*12: [calls,name_ptr,reserved], name blobs
-// in [640000,690000)) and capturing its stdout directly (bypassing compiler_core's run()
-// wrapper, which only exposes stdout for sources it compiles+runs itself in one call -- here
-// we need to inject memory *between* compile and run).
+// seed/profile_report.lm) on a brand-new interpreter instance, injecting the {calls, name}
+// records per its documented protocol (600000: n, 600004+i*12: [calls,name_ptr,reserved], name
+// blobs in [640000,690000)) and capturing its stdout directly (compile and run are separate
+// steps in the native architecture -- see native/native_compile.mjs -- so injecting memory
+// *between* them is direct: write into the interpreter's own buffer before calling run()).
 const PROFILE_REPORT_SRC = fs.readFileSync(new URL('./profile_report.lm', import.meta.url), 'utf8');
-let _wabt;
-async function buildReport(funcs) {
-  _wabt = _wabt || await wabtInit();
-  const wat = fs.readFileSync(new URL('./lumenc.wat', import.meta.url), 'utf8');
-  const binary = _wabt.parseWat('lumenc.wat', wat).toBinary({}).buffer;
-  let out = '';
-  const { instance } = await WebAssembly.instantiate(binary, {
-    lumen: { console_print: (p, l) => { out += Buffer.from(new Uint8Array(instance.exports.mem.buffer, p, l)).toString('utf8'); } },
-  });
-  const ex = instance.exports;
-  const bytes = Buffer.from(PROFILE_REPORT_SRC, 'utf8');
-  new Uint8Array(ex.mem.buffer, SRC_BASE, bytes.length).set(bytes);
-  ex.compile(bytes.length);
-  if (ex.dbg_nerr() > 0) return '';
-  const main = ex.dbg_main();
+function buildReport(funcs) {
+  const { nerr, words, main, strings } = compileToIRNativeRaw(PROFILE_REPORT_SRC);
+  if (nerr > 0) return '';
+  const interp = createInterpreter();
+  interp.writeCode(words);
+  interp.seedStrings(strings);
 
-  const m32 = new Int32Array(ex.mem.buffer);
-  const m8 = new Uint8Array(ex.mem.buffer);
-  const dv = new DataView(ex.mem.buffer);
+  const dv = new DataView(interp.mem);
   const n = Math.min(funcs.length, 5000);   // guard: keeps records well inside [600004, 640000)
-  m32[600000 / 4] = n;
+  dv.setInt32(600000, n, true);
   let nameAddr = 640000;
   for (let i = 0; i < n; i++) {
     const nameBytes = Buffer.from(funcs[i].name, 'utf8');
     const blobLen = 4 + nameBytes.length;
     if (nameAddr + blobLen > 690000) break;   // name-blob region exhausted; stop, report what fits
     dv.setInt32(nameAddr, nameBytes.length, true);
-    m8.set(nameBytes, nameAddr + 4);
+    new Uint8Array(interp.mem).set(nameBytes, nameAddr + 4);
     const rec = 600004 + i * 12;
-    m32[rec / 4] = funcs[i].calls;
-    m32[rec / 4 + 1] = nameAddr;
-    m32[rec / 4 + 2] = 0;
+    dv.setInt32(rec, funcs[i].calls, true);
+    dv.setInt32(rec + 4, nameAddr, true);
+    dv.setInt32(rec + 8, 0, true);
     nameAddr += blobLen;
   }
 
-  out = '';
-  if (ex.set_fuel_max) ex.set_fuel_max(4000000000n);
-  try { ex.run(main); } catch { return out; }
-  return out;
+  interp.set_fuel_max(4000000000n);
+  try { interp.run(main); } catch { return interp.getOut(); }
+  return interp.getOut();
 }
 
 async function profileSource(src, opts = {}) {
   const wantReport = !!opts.report;
   const cached = cacheRead('profile', src);
   if (cached && (!wantReport || cached.report !== undefined)) return cached;
-  const fresh = await createCompiler();
-  const ex = fresh.exports;
-  const c = fresh.compile(src);
-  if (!c.ok) {
-    const result = { ok: false, diagnostics: buildDiagnostics(c.rawDiags, src) };
+  const r = compileToIRNativeRaw(src);
+  if (r.nerr > 0) {
+    const result = { ok: false, diagnostics: buildDiagnostics(r.rawDiags, src) };
     cacheWrite('profile', src, result);
     return result;
   }
-  // symbol table: entries at [170000,177000), 12 bytes each (name_off, name_len, entry).
-  // name_off points into the SRC region [100000,170000) -- see selfhost_diff.mjs.
-  const memB = new DataView(ex.mem.buffer);
-  const u8B = new Uint8Array(ex.mem.buffer);
-  const funcs = [];
-  for (let addr = 170000; addr < 177000; addr += 12) {
-    const name_off = memB.getInt32(addr, true);
-    const name_len = memB.getInt32(addr + 4, true);
-    const entry = memB.getInt32(addr + 8, true);
-    if (name_off >= 100000 && name_off < 170000 && name_len > 0) {
-      const name = Buffer.from(u8B.slice(name_off, name_off + name_len)).toString('utf8');
-      funcs.push({ name, entry });
-    }
-  }
-  if (ex.set_fuel_max) ex.set_fuel_max(4000000000n);
-  ex.set_prof(1);
-  try { ex.run(c.main); }
+  const interp = createInterpreter();
+  interp.writeCode(r.words);
+  interp.seedStrings(r.strings);
+  interp.set_fuel_max(4000000000n);
+  interp.set_prof(1);
+  try { interp.run(r.main); }
   catch (e) {
     const result = { ok: false, diagnostics: [], crash: String(e.message || e) };
     cacheWrite('profile', src, result);
     return result;
   }
-  const totalSteps = ex.get_last_steps();
+  const totalSteps = interp.get_last_steps();
+  // symbols: {name, entry} straight from the native compiler's own symbol-table trailer (R5) --
+  // no separate memory scan needed. A function can have >1 symtab record; count it once.
   const seen = new Set();
   const functions = [];
-  for (const f of funcs) {
-    if (seen.has(f.entry)) continue;   // a function can have >1 symtab record; count it once
+  for (const f of r.symbols) {
+    if (seen.has(f.entry)) continue;
     seen.add(f.entry);
-    functions.push({ name: f.name, entry: f.entry, calls: ex.prof_count(f.entry) });
+    functions.push({ name: f.name, entry: f.entry, calls: interp.prof_count(f.entry) });
   }
   functions.sort((a, b) => b.calls - a.calls);
   const result = { ok: true, totalSteps: totalSteps.toString(), functions };
-  if (wantReport) result.report = await buildReport(functions);
+  if (wantReport) result.report = buildReport(functions);
   cacheWrite('profile', src, result);
   return result;
 }
 
 // lumen_symbols: outline a source's top-level functions for agent navigation (name, entry
-// address, source line, and the declaring line's text). Reuses the same symbol-table layout
-// as selfhost_diff.mjs / profileSource: entries at [170000,177000), 12 bytes each
-// (name_off, name_len, entry), name bytes in the SRC region [100000,170000). `line` is found
-// by locating the first `fn <name>(` occurrence in the source and counting newlines before it
-// (1-indexed); `signature` is that occurrence's full source line text.
+// address, source line, and the declaring line's text). R5: symbols come straight from
+// compileToIRNativeRaw's own symbol-table trailer (native/native_compile.mjs), same as
+// profileSource above - no raw-memory scan needed anymore. `line` is found by locating the
+// first `fn <name>(` occurrence in the source and counting newlines before it (1-indexed);
+// `signature` is that occurrence's full source line text.
 function lineAndSignature(src, name) {
   const marker = `fn ${name}(`;
   const idx = src.indexOf(marker);
@@ -285,31 +263,26 @@ function lineAndSignature(src, name) {
   const line = (before.match(/\n/g) || []).length + 1;
   return { line, signature: src.slice(lineStart, lineEnd) };
 }
+// R5: symbols come straight from compileToIRNativeRaw's own symbol-table trailer (native/
+// native_compile.mjs) - the native compiler's stdout protocol already exposes {name, entry},
+// no separate memory scan needed (there is no shared, externally-pokable compile-time memory
+// to scan anymore - compile and run are fully separate steps in the native architecture).
 function symbolsFromSource(src) {
   const cached = cacheRead('symbols', src);
   if (cached) return cached;
-  const c = lumen.compile(src);
-  if (!c.ok) {
-    const result = { ok: false, symbols: [], diagnostics: buildDiagnostics(c.rawDiags, src) };
+  const r = compileToIRNativeRaw(src);
+  if (r.nerr > 0) {
+    const result = { ok: false, symbols: [], diagnostics: buildDiagnostics(r.rawDiags, src) };
     cacheWrite('symbols', src, result);
     return result;
   }
-  const ex = lumen.exports;
-  const memB = new DataView(ex.mem.buffer);
-  const u8B = new Uint8Array(ex.mem.buffer);
   const seen = new Set();
   const symbols = [];
-  for (let addr = 170000; addr < 177000; addr += 12) {
-    const name_off = memB.getInt32(addr, true);
-    const name_len = memB.getInt32(addr + 4, true);
-    const entry = memB.getInt32(addr + 8, true);
-    if (name_off >= 100000 && name_off < 170000 && name_len > 0) {
-      if (seen.has(entry)) continue;   // a function can have >1 symtab record; list it once
-      seen.add(entry);
-      const name = Buffer.from(u8B.slice(name_off, name_off + name_len)).toString('utf8');
-      const { line, signature } = lineAndSignature(src, name);
-      symbols.push({ name, entry, line, signature });
-    }
+  for (const s of r.symbols) {
+    if (seen.has(s.entry)) continue;   // a function can have >1 symtab record; list it once
+    seen.add(s.entry);
+    const { line, signature } = lineAndSignature(src, s.name);
+    symbols.push({ name: s.name, entry: s.entry, line, signature });
   }
   symbols.sort((a, b) => a.entry - b.entry);
   const result = { ok: true, symbols };
@@ -318,31 +291,18 @@ function symbolsFromSource(src) {
 }
 
 // --- full-compiler-access tools (Tier 1: everything the compiler KNOWS about a program) ---
-// Each returns structured data produced by the Lumen/WAT compiler itself; the host only
-// marshals it to JSON (no compiler logic is reimplemented here). optimize/emit run the Lumen
-// programs optimize.lm / emit_fn.lm / emit_llvm.lm on the seed.
+// Each returns structured data produced by the Lumen compiler itself; the host only marshals it
+// to JSON (no compiler logic is reimplemented here). optimize/emit run the Lumen programs
+// optimize.lm / emit_fn.lm / emit_llvm.lm natively (see native/native_compile.mjs).
 
-// The lexer's token stream, straight from the TOKENS region [296000,...) the compiler filled.
+// The lexer's token stream, straight from compileToIRNativeRaw's own token-stream trailer
+// (native/native_compile.mjs) - same R5 note as symbolsFromSource above.
 function tokensFromSource(src) {
   const cached = cacheRead('tokens', src);
   if (cached) return cached;
-  const c = lumen.compile(src);
-  if (!c.ok) { const r = { ok: false, tokens: [], diagnostics: buildDiagnostics(c.rawDiags, src) }; cacheWrite('tokens', src, r); return r; }
-  const ex = lumen.exports;
-  const memB = new DataView(ex.mem.buffer);
-  const u8B = new Uint8Array(ex.mem.buffer);
-  const n = ex.dbg_ntok ? ex.dbg_ntok() : 0;
-  const tokens = [];
-  for (let i = 0; i < n; i++) {
-    const base = 296000 + i * 12;                 // (kind:i32, a:i32, b:i32), per the seed's tokset
-    const kind = memB.getInt32(base, true);
-    const a = memB.getInt32(base + 4, true);
-    const b = memB.getInt32(base + 8, true);
-    const t = { i, kind, a, b };
-    if (a >= 100000 && a < 170000 && b > 0) t.lexeme = Buffer.from(u8B.slice(a, a + b)).toString('utf8');
-    tokens.push(t);
-  }
-  const result = { ok: true, count: n, tokens };
+  const r = compileToIRNativeRaw(src);
+  if (r.nerr > 0) { const res = { ok: false, tokens: [], diagnostics: buildDiagnostics(r.rawDiags, src) }; cacheWrite('tokens', src, res); return res; }
+  const result = { ok: true, count: r.tokens.length, tokens: r.tokens };
   cacheWrite('tokens', src, result);
   return result;
 }

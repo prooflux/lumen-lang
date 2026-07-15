@@ -6,6 +6,8 @@
 import fs from 'node:fs';
 import { createCompiler } from '../seed/compiler_core.mjs';
 import { compileToIR, optimizeIR, runIR } from './pipeline.mjs';
+import { compileToIRNativeRaw } from './native_compile.mjs';
+import { createInterpreter } from './ir_interpreter.mjs';
 
 const SCALAR = ['fib_print', 'add', 'max', 'fact', 'locals', 'forward', 'mutual', 'compare', 'gcd', 'count', 'sum_loop'];
 const lumen = await createCompiler();
@@ -270,43 +272,36 @@ if (INLINE_ENABLED) {
 // optimize-the-compiler: the hardest real program there is. The optimized lumenc.lm must
 // itself compile a corpus program to IR byte-identical to the seed's output (semantic
 // fidelity proven end-to-end on an 8,700+-word input; enabled by the 24000-word capacity).
+//
+// R5: this used to inject the optimized lumenc.lm IR into a raw wasm instance and craft a
+// driver stub by hand (PUSH srclen; CALL lex_compile; HALT), reading the compiler's own
+// lex_compile entry pc off a wasm-memory SYMTAB scan. Native-backed now: compileToIRNative
+// already returns lumenc.lm's symbol table directly (R5's native-compiler trailer - see
+// native/native_compile.mjs), and native/ir_interpreter.mjs's in-process interpreter executes
+// the SAME hand-crafted driver-stub technique (it needs no "function shape", just valid
+// opcodes - the same reason it also serves native/optimize_diff.mjs's synthetic-IR checks
+// above), so nothing about the technique changed, only what runs it.
 {
-  const wabtInit = (await import('../seed/node_modules/wabt/index.js')).default;
   const lmSrc = fs.readFileSync(new URL('../seed/lumenc.lm', import.meta.url), 'utf8');
-  const { words: lmWords } = await compileToIR(lmSrc);
-  // fresh instance running the OPTIMIZED compiler (selfhost_diff instance-C pattern)
-  const wabt = await wabtInit();
-  const watText = fs.readFileSync(new URL('../seed/lumenc.wat', import.meta.url), 'utf8');
-  const module = await WebAssembly.compile(wabt.parseWat('w', watText).toBinary({}).buffer);
+  const { words: lmWords, symbols } = compileToIRNativeRaw(lmSrc);
   const fibSrc = fs.readFileSync(new URL('../mu/examples/fib_print.lm', import.meta.url), 'utf8');
   const refFib = await compileToIR(fibSrc);
-  // locate lex_compile via the seed symbol table after compiling lumenc.lm on a scratch instance
-  const probe = await createCompiler();
-  probe.compile(lmSrc);
-  const dv = new DataView(probe.exports.mem.buffer); const u8 = new Uint8Array(probe.exports.mem.buffer);
-  let lce = -1;
-  for (let a = 170000; a < 177000; a += 12) {
-    const off = dv.getInt32(a, true), len = dv.getInt32(a + 4, true), e = dv.getInt32(a + 8, true);
-    if (off >= 100000 && off < 170000 && len > 0 &&
-        Buffer.from(u8.slice(off, off + len)).toString() === 'lex_compile') lce = e;
-  }
+  const lexSym = symbols.find((s) => s.name === 'lex_compile');
+  const lce = lexSym ? lexSym.entry : -1;
   // optimize with lex_compile as the entry so its address rides the pc remap (a compacted
   // IR shifts every pc; calling the OLD entry lands mid-function and emits nothing).
   const { words: lmOpt, main: lmOptLce } = await optimizeIR(lmWords, lce);
   const capOk = lmWords.length <= 24000 && lmOpt.length <= lmWords.length;
-  const inst = await WebAssembly.instantiate(module, { lumen: { console_print: () => {} } });
-  const ex = inst.exports;
-  new Int32Array(ex.mem.buffer, 11328, lmOpt.length).set(lmOpt);
+  const interp = createInterpreter();
+  interp.writeCode(lmOpt);
   const sb = Buffer.from(fibSrc, 'utf8');
-  new Uint8Array(ex.mem.buffer, 100000, sb.length).set(sb);
-  new Uint8Array(ex.mem.buffer, 0, 1024).fill(0);
-  const code = new Int32Array(ex.mem.buffer, 11328, lmOpt.length + 10);
+  new Uint8Array(interp.mem).set(sb, 100000);
   const s0 = lmOpt.length;
-  code[s0] = 1; code[s0 + 1] = sb.length; code[s0 + 2] = 8; code[s0 + 3] = lmOptLce; code[s0 + 4] = 1; code[s0 + 5] = 0;
-  ex.set_fuel_max(50000000n);
-  ex.run(s0);
-  const emitN = new DataView(ex.mem.buffer).getInt32(0, true);
-  const got = new Int32Array(ex.mem.buffer, 211328, emitN);
+  interp.writeCode(Int32Array.from([1, sb.length, 8, lmOptLce, 1, 0]), s0);
+  interp.set_fuel_max(50000000n);
+  interp.run(s0);
+  const emitN = new DataView(interp.mem).getInt32(0, true);
+  const got = new Int32Array(interp.mem, 211328, emitN);
   let identical = emitN === refFib.words.length && lce >= 0 && capOk;
   if (identical) for (let i = 0; i < emitN; i++) if (got[i] !== refFib.words[i]) { identical = false; break; }
   console.log(`${identical ? 'PASS' : 'FAIL'}  optimize-the-compiler  lumenc.lm IR ${lmWords.length} -> ${lmOpt.length} words; optimized compiler emits fib_print ${identical ? 'bit-identical' : 'DIVERGENT'}`);

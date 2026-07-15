@@ -3,13 +3,12 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Lumen stage-0 WAT seed: a bytecode interpreter for the Lumen-mu IR. Disposable; discarded at the self-hosting fixpoint.",
+  "description": "Lumen stage-0 host shims: the CLI, daemon, and MCP server over the native compiler + in-process interpreter. WebAssembly retired in R5 - see native/lumenc.bootstrap.c and native/ir_interpreter.mjs.",
   "bin": {
     "lumen-mcp": "./lumen_mcp.mjs"
   },
   "files": [
     "*.mjs",
-    "lumenc.wat",
     "lumenc.lm"
   ],
   "scripts": {
@@ -24,8 +23,5 @@
     "perf": "node perf.mjs",
     "serve": "node lumend.mjs",
     "mcp": "node lumen_mcp.mjs"
-  },
-  "devDependencies": {
-    "wabt": "^1.0.36"
   }
 }

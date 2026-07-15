@@ -7,5 +7,6 @@
     "diff": "node native_diff.mjs",
     "bench": "node native_bench.mjs"
   },
-  "devDependencies": { "wabt": "^1.0.36" }
+  "devDependencies": { "wabt": "^1.0.36" },
+  "_wabtNote": "wabt is retained ONLY for the two documented R5 wasm exceptions that live in this directory: fuel_build.mjs (one-time fuel-instrumented .wat rebuild) and pipeline.mjs's lazy emit_llvm.lm path (no native bootstrap exists for the LLVM emitter yet). No other package.json in the repo needs it; do not add it elsewhere."
 }

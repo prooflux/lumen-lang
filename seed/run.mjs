@@ -1,10 +1,13 @@
-// Lumen stage-0 runner: assemble seed.wat, load a Lumen-mu IR program, execute it.
-// Usage: node run.mjs            (runs fib, asserts output "55\n")
-// The seed is program-agnostic; the program below is fib(10) hand-lowered (see fib.lmir).
-import fs from 'node:fs';
-import wabtInit from 'wabt';
+// Lumen stage-0 runner: load a Lumen-mu IR program, execute it. Usage: node run.mjs
+// (runs fib, asserts output "55\n"). The interpreter is program-agnostic; the program below is
+// fib(10) hand-lowered (see fib.lmir).
+//
+// R5: runs via native/ir_interpreter.mjs (a faithful, zero-wasm port of the retired seed's own
+// $run function) instead of assembling and instantiating seed.wat. This file never compiled
+// anything (it interprets a hardcoded IR array directly), so there is no compiler to swap in -
+// only the interpreter, which is exactly what changed.
+import { createInterpreter, CODE_BASE } from '../native/ir_interpreter.mjs';
 
-const CODE_BASE = 11328;   // must match seed.wat
 const MAIN_ENTRY = 28;     // word index of `main` in the program below
 
 // fib(10) in Lumen-mu IR bytecode (see fib.lmir for the annotated listing).
@@ -14,30 +17,15 @@ const program = [
   1,10, 8,0,1, 10, 0,                             // main: print fib(10); halt
 ];
 
-const wabt = await wabtInit();
-const wat = fs.readFileSync(new URL('./seed.wat', import.meta.url), 'utf8');
-const mod = wabt.parseWat('seed.wat', wat);
-const { buffer } = mod.toBinary({});
-
-let out = '';
-const { instance } = await WebAssembly.instantiate(buffer, {
-  lumen: {
-    // the single Console capability seam; the only nondeterminism boundary
-    console_print: (ptr, len) => {
-      const bytes = new Uint8Array(instance.exports.mem.buffer, ptr, len);
-      out += Buffer.from(bytes).toString('utf8');
-    },
-  },
-});
-
-// host writes the program into code memory, then runs from main
-new Int32Array(instance.exports.mem.buffer, CODE_BASE, program.length).set(program);
-instance.exports.run(MAIN_ENTRY);
+const interp = createInterpreter();
+interp.writeCode(Int32Array.from(program));
+interp.run(MAIN_ENTRY);
+const out = interp.getOut();
 
 process.stdout.write(out);
 const expected = '55\n';
 if (out === expected) {
-  console.error('PASS: fib(10) on the Lumen-mu seed => ' + JSON.stringify(out));
+  console.error('PASS: fib(10) on the Lumen-mu interpreter => ' + JSON.stringify(out));
   process.exit(0);
 } else {
   console.error('FAIL: expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(out));

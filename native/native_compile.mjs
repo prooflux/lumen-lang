@@ -16,15 +16,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
-import { emitWith, EMIT_FN_BASE, EMIT_FN_CEIL } from './pipeline.mjs';
 import { buildNativeBinaryFromC, SRC_CAP } from './lumenc_native.mjs';
-import { buildLumemitNative, runLumemitNative } from './lumemit_native.mjs';
+import { runLumemitNative } from './lumemit_native.mjs';
+import { runLumoptNative } from './lumopt_native.mjs';
 
 export { SRC_CAP };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BOOTSTRAP_C_PATH = path.join(__dirname, 'lumenc.bootstrap.c');
-const EMIT_FN_SRC = fs.readFileSync(path.join(__dirname, 'emit_fn.lm'), 'utf8');
+const EMIT_FN_BOOTSTRAP_C_PATH = path.join(__dirname, 'emit_fn.bootstrap.c');
+const OPTIMIZE_BOOTSTRAP_C_PATH = path.join(__dirname, 'optimize.bootstrap.c');
+// NOTE: there is no lumellvm.bootstrap.c. emit_llvm.lm cannot be pushed through the R1/R4
+// bootstrap pattern yet - the native compiler rejects it (46 false E0002 errors, a genuine
+// call-argument-parsing gap in lumenc.lm's self-hosted parser, not a wiring issue). See
+// pipeline.mjs's header comment on emitLlvm/buildAndRunLlvm for the full explanation; that path
+// remains wasm-backed via seed/lumenc.wat, which R5 therefore retains rather than deletes.
 
 // Matches lumenc_native.mjs's patchMainToCompileDriver output layout exactly.
 export const LIT_HEAP_BASE = 488000;
@@ -57,13 +63,90 @@ export function getNativeCompilerBin() {
   return bin;
 }
 
+// Same reproducible-genesis pattern as getNativeCompilerBin above, but for the R4 emitter and
+// optimizer bootstraps (native/emit_fn.bootstrap.c, native/optimize.bootstrap.c): `clang
+// <bootstrap>.c -o <bin>` is the entire dependency chain, zero wasm. Cached once per process.
+let cachedEmitBin = null;
+export function getNativeEmitterBin() {
+  if (cachedEmitBin && fs.existsSync(cachedEmitBin)) return cachedEmitBin;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumemit0-'));
+  const bin = path.join(dir, 'lumemit0');
+  try {
+    execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, EMIT_FN_BOOTSTRAP_C_PATH],
+      { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (e) {
+    throw new Error(`clang failed building native emitter from emit_fn.bootstrap.c: ${String(e.stderr || e.message).slice(0, 500)}`);
+  }
+  cachedEmitBin = bin;
+  return bin;
+}
+
+let cachedOptBin = null;
+export function getNativeOptimizerBin() {
+  if (cachedOptBin && fs.existsSync(cachedOptBin)) return cachedOptBin;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumopt0-'));
+  const bin = path.join(dir, 'lumopt0');
+  try {
+    execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, OPTIMIZE_BOOTSTRAP_C_PATH],
+      { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (e) {
+    throw new Error(`clang failed building native optimizer from optimize.bootstrap.c: ${String(e.stderr || e.message).slice(0, 500)}`);
+  }
+  cachedOptBin = bin;
+  return bin;
+}
+
+// Parse the [ntok:i32][tokens:ntok*12][nsym:i32][symtab:nsym*12] trailer lumenc_native.mjs's
+// patchMainToCompileDriver appends (R5), starting at byte offset `off` in `buf`. Returns
+// {tokens, symbols, nextOff} - tokens/symbols in the same shape seed/lumen_mcp.mjs's
+// tokensFromSource/symbolsFromSource already expect from a direct wasm-memory read, so those
+// call sites only need a new SOURCE for the data, not a new shape.
+export function parseSymTrailer(buf, off, srcBytes) {
+  const ntok = buf.readInt32LE(off); off += 4;
+  const tokens = [];
+  for (let i = 0; i < ntok; i++) {
+    const kind = buf.readInt32LE(off), a = buf.readInt32LE(off + 4), b = buf.readInt32LE(off + 8);
+    off += 12;
+    const t = { i: tokens.length, kind, a, b };
+    if (a >= SRC_BASE && b > 0 && a - SRC_BASE + b <= srcBytes.length) t.lexeme = srcBytes.subarray(a - SRC_BASE, a - SRC_BASE + b).toString('utf8');
+    tokens.push(t);
+  }
+  const nsym = buf.readInt32LE(off); off += 4;
+  const symbols = [];
+  for (let i = 0; i < nsym; i++) {
+    const name_off = buf.readInt32LE(off), name_len = buf.readInt32LE(off + 4), entry = buf.readInt32LE(off + 8);
+    off += 12;
+    const name = (name_off >= SRC_BASE && name_len > 0 && name_off - SRC_BASE + name_len <= srcBytes.length)
+      ? srcBytes.subarray(name_off - SRC_BASE, name_off - SRC_BASE + name_len).toString('utf8') : '';
+    symbols.push({ name_off, name_len, entry, name });
+  }
+  return { tokens, symbols, nextOff: off };
+}
+
+// Parse the [ndiag:i32][diag:ndiag*3*i32 (code,name_off,name_len)] block both the one-shot and
+// resident drivers emit (R5: the one-shot path used to omit this; see lumenc_native.mjs's
+// header comment on why it now matches the resident loop). Returns raw {code, name_off,
+// name_len} records - rawDiagsFromRecords below turns them into byteOff/name against a
+// specific request's source bytes.
+export function parseDiagRecords(buf, off) {
+  const ndiag = buf.readInt32LE(off); off += 4;
+  const records = [];
+  for (let i = 0; i < ndiag; i++) {
+    records.push({ code: buf.readInt32LE(off), name_off: buf.readInt32LE(off + 4), name_len: buf.readInt32LE(off + 8) });
+    off += 12;
+  }
+  return { records, nextOff: off };
+}
+
 // Run the native compiler binary over a .lm source string and parse its extended stdout
 // (see lumenc_native.mjs's patchMainToCompileDriver comment for the exact byte layout):
 //   [nerr:i32][count:i32][words: count*i32][main_entry:i32][literal_heap: LIT_HEAP_BYTES bytes]
+//   [ndiag:i32][diag:ndiag*12][ntok:i32][tokens:ntok*12][nsym:i32][symtab:nsym*12]  (R5 trailer)
 // Returns the raw pieces; does not throw on nerr > 0 (caller decides), so callers that want the
 // diagnostic count without an exception can use this directly.
 export function runNativeCompiler(bin, src) {
-  const out = execFileSync(bin, { input: Buffer.from(src, 'utf8'), maxBuffer: 64 * 1024 * 1024 });
+  const srcBytes = Buffer.from(src, 'utf8');
+  const out = execFileSync(bin, { input: srcBytes, maxBuffer: 64 * 1024 * 1024 });
   const nerr = out.readInt32LE(0);
   const count = out.readInt32LE(4);
   const words = new Int32Array(count);
@@ -72,11 +155,14 @@ export function runNativeCompiler(bin, src) {
   const main = out.readInt32LE(mainOff);
   const litHeapOff = mainOff + 4;
   const literalHeap = out.subarray(litHeapOff, litHeapOff + LIT_HEAP_BYTES);
-  if (litHeapOff + LIT_HEAP_BYTES !== out.length) {
+  const { records, nextOff: diagEnd } = parseDiagRecords(out, litHeapOff + LIT_HEAP_BYTES);
+  const rawDiags = rawDiagsFromRecords(records, srcBytes);
+  const { tokens, symbols, nextOff } = parseSymTrailer(out, diagEnd, srcBytes);
+  if (nextOff !== out.length) {
     throw new Error(`native compiler stdout has unexpected length: got ${out.length}B, `
-      + `expected ${litHeapOff + LIT_HEAP_BYTES}B (nerr=${nerr}, count=${count})`);
+      + `expected ${nextOff}B (nerr=${nerr}, count=${count})`);
   }
-  return { nerr, words, main, literalHeap };
+  return { nerr, words, main, literalHeap, rawDiags, tokens, symbols };
 }
 
 // Rebuild the strings sidecar from the raw literal-heap blob: walk `words` for MKTEXT (op 15)
@@ -108,83 +194,66 @@ export function stringsFromLiteralHeap(words, blob) {
 }
 
 // Compile a .lm source string to IR using ONLY the native compiler binary - zero WebAssembly
-// anywhere in this call. Mirrors pipeline.mjs's compileToIR return shape ({ words, main,
-// strings }) so the two are drop-in swappable; also returns nerr for callers that want it
-// without a try/catch. Throws on compile errors (nerr > 0), same contract as compileToIR.
-export function compileToIRNative(src) {
+// anywhere in this call. Mirrors pipeline.mjs's (retired) compileToIR return shape ({ words,
+// main, strings }) plus rawDiags (R5: the one-shot driver now carries diagnostics, matching the
+// resident path). Throws on compile errors (nerr > 0); rawDiags is populated on the ERROR path
+// too via compileToIRNativeRaw below for callers that want diagnostics without a try/catch.
+export function compileToIRNativeRaw(src) {
   const bin = getNativeCompilerBin();
-  const { nerr, words, main, literalHeap } = runNativeCompiler(bin, src);
-  if (nerr > 0) throw new Error(`native compile: ${nerr} error(s)`);
+  const { nerr, words, main, literalHeap, rawDiags, tokens, symbols } = runNativeCompiler(bin, src);
   const strings = stringsFromLiteralHeap(words, literalHeap);
-  return { words, main, strings, nerr };
+  return { words, main, strings, nerr, rawDiags, tokens, symbols };
+}
+export function compileToIRNative(src) {
+  const r = compileToIRNativeRaw(src);
+  if (r.nerr > 0) throw new Error(`native compile: ${r.nerr} error(s)`);
+  return { words: r.words, main: r.main, strings: r.strings, nerr: r.nerr };
 }
 
-// Full native-compile -> emit -> native-run pipeline for a .lm source string.
-//
-// COMPILE is native: compileToIRNative above, zero wasm, full stop.
-//
-// EMIT still goes through pipeline.mjs's emitWith, which instantiates the wat seed to run
-// emit_fn.lm interpretively. That is deliberate scope for R2 (compile only) - the emit step is
-// R3's target. Note for R3: a fully-native emit path ALREADY EXISTS and is already gated
-// byte-identical to this exact emitWith call, for the corpus and for lumenc.lm itself
-// (native_pipeline_test.mjs Part B/C, via lumemit_native.mjs's buildLumemitNative/
-// runLumemitNative). Swapping this line for that native path is wiring, not new research: build
-// the emitter binary once (cached like getNativeCompilerBin above) and call runLumemitNative(bin,
-// words, main, strings) in place of the awaited emitWith call below.
-//
-// RUN is native: buildNativeBinaryFromC (clang) + execFileSync, the same as buildAndRunFn.
-export async function runFnNative(src, opt = '-O2') {
-  const { words, main, strings } = compileToIRNative(src);
-  const csrc = await emitWith(EMIT_FN_SRC, words, main, strings, EMIT_FN_BASE, EMIT_FN_CEIL);
-  const bin = buildNativeBinaryFromC(csrc, { opt, tag: 'lumen-run-native', name: 'p' });
+// Optimize already-compiled IR via the R4 checked-in optimizer bootstrap (native/optimize.bootstrap.c,
+// clang-built, zero wasm). Mirrors pipeline.mjs's (retired) optimizeIR return shape exactly:
+// { words, main, changed, folded, threaded }.
+export function optimizeIRNative(words, main) {
+  const bin = getNativeOptimizerBin();
+  return runLumoptNative(bin, words, main);
+}
+
+// Emit C for already-compiled (optionally optimized) IR via the R4 checked-in emitter bootstrap
+// (native/emit_fn.bootstrap.c, clang-built, zero wasm), then build+run it. No compile step here -
+// this is the direct replacement for pipeline.mjs's (retired) runIR/emitC when the caller already
+// has IR in hand (native/optimize_diff.mjs's hand-crafted synthetic arrays, for instance).
+export function runIRNative(words, main, strings = [], opt = '-O2') {
+  const emitBin = getNativeEmitterBin();
+  const csrc = runLumemitNative(emitBin, words, main, strings);
+  const bin = buildNativeBinaryFromC(csrc, { opt, tag: 'lumen-run-ir-native', name: 'p' });
   let stdout = '', exit = 0;
-  try {
-    stdout = execFileSync(bin, { encoding: 'utf8' });
-  } catch (e) {
-    stdout = e.stdout ? e.stdout.toString() : '';
-    exit = typeof e.status === 'number' ? e.status : 1;
-  }
-  return { stdout, exit, csrc, words, main };
+  try { stdout = execFileSync(bin, { encoding: 'utf8' }); }
+  catch (e) { stdout = e.stdout ? e.stdout.toString() : ''; exit = typeof e.status === 'number' ? e.status : 1; }
+  return { stdout, exit, csrc };
 }
 
-// In-process cache for the native lumemit (emit_fn.lm self-compiled) binary used by
-// runFnNativeFull below. Building it still touches the wat seed ONCE per process
-// (buildLumemitNative -> compileToIR(emit_fn.lm) + emitWith, exactly what
-// native_pipeline_test.mjs's Part B/C already do) - there is no checked-in C bootstrap for the
-// emitter yet, only for lumenc (native/lumenc.bootstrap.c, R1). RUNNING the built binary
-// (runLumemitNative) never touches wasm.
-let cachedEmitBin = null;
-async function getNativeEmitterBin() {
-  if (cachedEmitBin && fs.existsSync(cachedEmitBin)) return cachedEmitBin;
-  const { bin } = await buildLumemitNative();
-  cachedEmitBin = bin;
-  return bin;
-}
-
-// Bonus, beyond the R2 brief's literal ask: a compile+emit+run pipeline that is native at EVERY
-// stage, not just compile. The brief for runFnNative above explicitly allows the emit stage to
-// stay on emitWith (wat) and defers a native emit swap to R3 - but a native emit path already
-// exists and is already gated bit-identical to emitWith's output for this repo's corpus and for
-// lumenc.lm itself (native_pipeline_test.mjs Part B/C, via lumemit_native.mjs). Reusing it here
-// costs nothing new to build and gives parity_corpus_test.mjs (R2 Part B) a per-case execution
-// path that is genuinely zero-wasm, not just zero-wasm-at-the-compile-stage: compile is native
-// (compileToIRNative), emit is native (runLumemitNative on the cached emitter binary), run is
-// native (buildNativeBinaryFromC + execFileSync). The ONLY wasm touch anywhere in this function's
-// call graph is the one-time, in-process-cached build of the emitter binary itself
-// (getNativeEmitterBin, first call only) - never per-case.
+// Full native-compile -> native-emit -> native-run pipeline for a .lm source string, WITHOUT the
+// optimizer (raw IR straight to the emitter). Zero wasm at every stage: compile
+// (compileToIRNative), emit (runIRNative on the checked-in emitter bootstrap), run (clang + exec).
+// Used by native/parity_corpus_test.mjs as the "does the raw pipeline still work" proof.
 export async function runFnNativeFull(src, opt = '-O2') {
   const { words, main, strings } = compileToIRNative(src);
-  const emitBin = await getNativeEmitterBin();
-  const csrc = runLumemitNative(emitBin, words, main, strings);
-  const bin = buildNativeBinaryFromC(csrc, { opt, tag: 'lumen-run-native-full', name: 'p' });
-  let stdout = '', exit = 0;
-  try {
-    stdout = execFileSync(bin, { encoding: 'utf8' });
-  } catch (e) {
-    stdout = e.stdout ? e.stdout.toString() : '';
-    exit = typeof e.status === 'number' ? e.status : 1;
-  }
+  const { stdout, exit, csrc } = runIRNative(words, main, strings, opt);
   return { stdout, exit, csrc, words, main };
+}
+
+// Full native-compile -> native-optimize -> native-emit -> native-run pipeline: the WITH-optimizer
+// counterpart to runFnNativeFull above, and the direct zero-wasm replacement for pipeline.mjs's
+// (retired) buildAndRunFn (which optimized via the wasm-interpreted optimize.lm). Used by
+// native/native_diff.mjs, native/rawmem_diff.mjs, native/standalone_diff.mjs as the "cand" side.
+export async function runFnNativeOptimized(src, opt = '-O2') {
+  const { words, main, strings } = compileToIRNative(src);
+  const optResult = optimizeIRNative(words, main);
+  // MKTEXT operands are unaffected by optimization (folding/threading/DCE never rewrites a text
+  // pointer), so the ORIGINAL strings sidecar remains valid against the optimized words - the
+  // same assumption native/optimize_diff.mjs's synth-typemap tests already rely on.
+  const { stdout, exit, csrc } = runIRNative(optResult.words, optResult.main, strings, opt);
+  return { stdout, exit, csrc, words: optResult.words, main: optResult.main };
 }
 
 // --- R3: the resident native compiler server -----------------------------------------------
@@ -291,7 +360,7 @@ export function stopResidentCompiler() {
 // Diagnostic records are returned raw ({code, name_off, name_len}, straight off the wire) -
 // turning name_off into a source-relative byte offset needs the ORIGINAL request source, which
 // this function never sees; see rawDiagsFromRecords below for that step.
-export function parseResidentPayload(payload) {
+export function parseResidentPayload(payload, srcBytes = Buffer.alloc(0)) {
   const nerr = payload.readInt32LE(0);
   const count = payload.readInt32LE(4);
   const words = new Int32Array(count);
@@ -307,11 +376,12 @@ export function parseResidentPayload(payload) {
     const o = ndiagOff + 4 + i * 12;
     records.push({ code: payload.readInt32LE(o), name_off: payload.readInt32LE(o + 4), name_len: payload.readInt32LE(o + 8) });
   }
-  const expectedLen = ndiagOff + 4 + ndiag * 12;
-  if (payload.length !== expectedLen) {
-    throw new Error(`resident response has unexpected length: got ${payload.length}B, expected ${expectedLen}B (nerr=${nerr}, count=${count}, ndiag=${ndiag})`);
+  const trailerOff = ndiagOff + 4 + ndiag * 12;
+  const { tokens, symbols, nextOff } = parseSymTrailer(payload, trailerOff, srcBytes);
+  if (payload.length !== nextOff) {
+    throw new Error(`resident response has unexpected length: got ${payload.length}B, expected ${nextOff}B (nerr=${nerr}, count=${count}, ndiag=${ndiag})`);
   }
-  return { nerr, words, main, literalHeap, records };
+  return { nerr, words, main, literalHeap, records, tokens, symbols };
 }
 
 // Turn raw {code, name_off, name_len} records into seed/compiler_core.mjs's readRawDiags()
@@ -336,13 +406,13 @@ export function rawDiagsFromRecords(records, srcBytes) {
 // as-is (falling back to wat would not change the verdict, only pay for it twice), while an
 // infra failure is exactly what should trigger the wat fallback.
 export async function compileToIRNativeResidentRaw(src) {
-  const srcBytes = Buffer.byteLength(src, 'utf8');
-  if (srcBytes > SRC_CAP) throw new Error(`source ${srcBytes}B exceeds SRC capacity ${SRC_CAP}B`);
+  const srcBuf = Buffer.from(src, 'utf8');
+  if (srcBuf.length > SRC_CAP) throw new Error(`source ${srcBuf.length}B exceeds SRC capacity ${SRC_CAP}B`);
   const server = getResidentCompiler();
   const payload = await server.compile(src);
-  const { nerr, words, main, literalHeap } = parseResidentPayload(payload);
+  const { nerr, words, main, literalHeap, tokens, symbols } = parseResidentPayload(payload, srcBuf);
   const strings = stringsFromLiteralHeap(words, literalHeap);
-  return { words, main, strings, nerr };
+  return { words, main, strings, nerr, tokens, symbols };
 }
 
 // Compile a .lm source string to IR via the resident native server. Same return shape and throw
@@ -351,6 +421,23 @@ export async function compileToIRNativeResident(src) {
   const r = await compileToIRNativeResidentRaw(src);
   if (r.nerr > 0) throw new Error(`native compile: ${r.nerr} error(s)`);
   return r;
+}
+
+// R5 ADDENDUM: the resident-server counterpart to compileToIRNativeRaw above, matching its
+// EXACT return shape ({ words, main, strings, nerr, rawDiags, tokens, symbols }) - unlike
+// compileToIRNativeResidentRaw (above), which drops the diagnostic records entirely (its callers
+// never needed them). This is what native/resident_sync_worker.mjs calls on behalf of
+// seed/compiler_core.mjs's compile(), so that a resident-backed compile() returns literally the
+// same shape a spawn-backed one always has.
+export async function compileToIRNativeResidentFullRaw(src) {
+  const srcBuf = Buffer.from(src, 'utf8');
+  if (srcBuf.length > SRC_CAP) throw new Error(`source ${srcBuf.length}B exceeds SRC capacity ${SRC_CAP}B`);
+  const server = getResidentCompiler();
+  const payload = await server.compile(src);
+  const { nerr, words, main, literalHeap, records, tokens, symbols } = parseResidentPayload(payload, srcBuf);
+  const strings = stringsFromLiteralHeap(words, literalHeap);
+  const rawDiags = rawDiagsFromRecords(records, srcBuf);
+  return { words, main, strings, nerr, rawDiags, tokens, symbols };
 }
 
 // Compile a .lm source string via the resident native server, returning seed/compiler_core.mjs's

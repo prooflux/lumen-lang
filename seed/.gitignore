@@ -1,5 +1,4 @@
 node_modules/
 package-lock.json
 *.wasm
-perf.baseline.json
 .lumen-cache/

@@ -12,7 +12,8 @@
 //   lumen serve  [socket]            run the warm compiler daemon (lumend) over a Unix socket
 //   lumen mcp                        run the MCP server (stdio) for an LLM client
 //
-// Requires wabt (a dev-only WAT assembler):  npm install   (once, in this directory)
+// Runs on the native compiler + in-process JS interpreter (native/lumenc.bootstrap.c,
+// native/ir_interpreter.mjs). WebAssembly/wabt retired in R5; no `npm install` is needed here.
 import fs from 'node:fs';
 import { explain, SCHEMA_VERSION } from './diagnostics.mjs';
 import { withCache, withCacheAsync } from './cache.mjs';

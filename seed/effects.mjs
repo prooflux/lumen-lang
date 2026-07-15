@@ -1,5 +1,3 @@
-import { CODE_BASE } from './compiler_core.mjs';
-
 // effects.mjs (C0) - per-function derived capability rows, via a direct-call-graph closure over
 // the already-compiled IR. This is a PRACTICAL, RETROFITTED analysis, deliberately built ahead of
 // the real capability type system (W2 Capabilities v1, docs/spec/LAMBDA_CAP.md): Lumen-mu today
@@ -26,16 +24,12 @@ export const CAPABILITY_REGISTRY = {
   Console: new Set([10, 16]),   // PRINTINT, PRINTTEXT
 };
 
-// IR layout constants shared with compiler_core.mjs (CODE_BASE) and lumen_mcp.mjs's own
-// symbolsFromSource (the [170000,177000) symbol table, 12 bytes/entry: name_off:i32, name_len:i32,
-// entry:i32 - "entry" is the position of the function's own RESERVE/op-13 header word, the same
-// value CALL's first operand resolves to after $resolve_fixups; see effects_test.mjs for the
-// cross-check that a symbol's `entry` always lands on a real op-13 boundary this file finds).
-const SYM_BASE = 170000;
-const SYM_END = 177000;
-const SYM_ENTRY_BYTES = 12;
-const SRC_BASE = 100000;
-const SRC_END = 170000;
+// R5: symbol entries (name, entry) come straight from compile()'s own `symbols` field (native/
+// native_compile.mjs's trailer, same shape lumen_mcp.mjs's symbolsFromSource already consumes) -
+// no raw memory scan or region constants needed here anymore. "entry" is the position of the
+// function's own RESERVE/op-13 header word, the same value CALL's first operand resolves to
+// after $resolve_fixups; see effects_test.mjs for the cross-check that a symbol's `entry` always
+// lands on a real op-13 boundary this file finds.
 
 // Operand-word counts. DELIBERATELY NOT the same object as compiler_core.mjs's ONE_OPERAND / any
 // of the several near-duplicates elsewhere in this repo (native/pipeline.mjs pre-D2, native/
@@ -121,22 +115,18 @@ export function closeEffects(functions, registry = CAPABILITY_REGISTRY) {
   return result;
 }
 
-// Read the compiler's symbol table (see the SYM_* constants above) into entry -> {name, line,
-// signature}. Mirrors seed/lumen_mcp.mjs's symbolsFromSource byte-for-byte in technique (same
-// region, same field layout, same "a function can have >1 symtab record; keep the first" rule),
-// reimplemented here rather than imported because lumen_mcp.mjs is an executable MCP server entry
-// point (top-level side effects on import), not a library module.
-function readSymbolTable(ex, source) {
-  const mem = new DataView(ex.mem.buffer);
-  const u8 = new Uint8Array(ex.mem.buffer);
+// Read the compiler's own symbol-table trailer (compile()'s `symbols` field, straight from
+// native/native_compile.mjs's R5 trailer - see that file's parseSymTrailer) into entry -> {name,
+// line, signature}. R5: no raw memory scan anymore (there is no shared, externally-pokable
+// compile-time memory to scan post-compile - see seed/compiler_core.mjs's exportsShim comment);
+// this mirrors seed/lumen_mcp.mjs's symbolsFromSource in technique (same "a function can have >1
+// symtab record; keep the first" rule, same source-text line/signature lookup), reimplemented
+// here rather than imported because lumen_mcp.mjs is an executable MCP server entry point
+// (top-level side effects on import), not a library module.
+function readSymbolTable(symbols, source) {
   const byEntry = new Map();
-  for (let addr = SYM_BASE; addr < SYM_END; addr += SYM_ENTRY_BYTES) {
-    const nameOff = mem.getInt32(addr, true);
-    const nameLen = mem.getInt32(addr + 4, true);
-    const entry = mem.getInt32(addr + 8, true);
-    if (nameOff < SRC_BASE || nameOff >= SRC_END || nameLen <= 0) continue;
-    if (byEntry.has(entry)) continue;
-    const name = Buffer.from(u8.slice(nameOff, nameOff + nameLen)).toString('utf8');
+  for (const { name, entry } of symbols) {
+    if (!name || byEntry.has(entry)) continue;
     const marker = `fn ${name}(`;
     const idx = source.indexOf(marker);
     let line = -1, signature = '';
@@ -169,11 +159,10 @@ export function effectsFromSource(lumen, source, registry = CAPABILITY_REGISTRY)
   const c = lumen.compile(source);
   if (!c.ok) return { ok: false, functions: [], rawDiags: c.rawDiags };
 
-  const ex = lumen.exports;
-  const words = new Int32Array(ex.mem.buffer, CODE_BASE, c.irWords);
+  const words = c.words;
   const fns = extractFunctions(words);
   const closed = closeEffects(fns, registry);
-  const names = readSymbolTable(ex, source);
+  const names = readSymbolTable(c.symbols, source);
 
   const functions = fns.map((fn) => {
     const meta = names.get(fn.entry) || { name: `fn@${fn.entry}`, line: -1, signature: '' };

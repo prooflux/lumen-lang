@@ -51,17 +51,18 @@ check('a one-byte source change misses the cache', () => {
   assert.notEqual(cacheKey(sourceA, 'check'), cacheKey(sourceB, 'check'), 'keys must differ');
 });
 
-// (3) a compiler-identity change (lumenc.wat content) invalidates cache entries.
-// We do NOT touch the real lumenc.wat; we replicate cacheKey's hashing logic on a
-// mutated wat string and assert the resulting key differs from the real one.
-check('a mutated compiler identity (lumenc.wat content) changes the cache key', () => {
+// (3) a compiler-identity change (native/lumenc.bootstrap.c content) invalidates cache entries.
+// We do NOT touch the real bootstrap file; we replicate cacheKey's hashing logic on a mutated
+// copy and assert the resulting key differs from the real one. (R5: the identity source moved
+// from the retired seed/lumenc.wat to native/lumenc.bootstrap.c - see cache.mjs's header.)
+check('a mutated compiler identity (native/lumenc.bootstrap.c content) changes the cache key', () => {
   const source = 'let x = 1;';
-  const realWat = fs.readFileSync(path.join(HERE, 'lumenc.wat'), 'utf8');
-  const mutatedWat = realWat + ' ;; simulated compiler change, never written to disk';
+  const realBootstrapC = fs.readFileSync(path.join(HERE, '../native/lumenc.bootstrap.c'), 'utf8');
+  const mutatedBootstrapC = realBootstrapC + '\n// simulated compiler change, never written to disk';
 
   const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
-  const realKey = `${sha256(source)}-${sha256(realWat)}-check`;
-  const mutatedKey = `${sha256(source)}-${sha256(mutatedWat)}-check`;
+  const realKey = `${sha256(source)}-${sha256(realBootstrapC)}-check`;
+  const mutatedKey = `${sha256(source)}-${sha256(mutatedBootstrapC)}-check`;
 
   assert.equal(realKey, cacheKey(source, 'check'), 'sanity: our replicated hash matches cacheKey');
   assert.notEqual(realKey, mutatedKey, 'a compiler-identity change must produce a different key');

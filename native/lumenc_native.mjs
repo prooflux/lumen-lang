@@ -20,7 +20,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { freshInstance, writeSrc, emitWith, EMIT_FN_BASE, EMIT_FN_CEIL } from './pipeline.mjs';
+import { emitWith, EMIT_FN_BASE, EMIT_FN_CEIL } from './pipeline.mjs';
+import { compileToIRNativeRaw } from './native_compile.mjs';
 
 const CODE_BASE = 11328;      // emitted IR words (matches seed/compiler_core.mjs CODE_BASE)
 const SRC_BASE = 100000;      // SRC() in the seed's memory map
@@ -46,55 +47,27 @@ export const LIT_HEAP_BYTES = LIT_HEAP_CEIL - LIT_HEAP_BASE;   // 36288
 const DIAG_BASE = 297000;
 const DIAG_CEIL = 299000;
 const DIAG_RECORD_CAP = Math.floor((DIAG_CEIL - DIAG_BASE) / 12);   // 500 (code,name_off,name_len) triples
+// TOKENS() = 299000 (seed/lumenc.lm) - immediately after DIAG_CEIL, per the D4/#87 repack. The
+// two trailer-dump sites below still read the PRE-#87 address (396000) inherited from this
+// branch's pre-rebase state; that stale offset silently reads zeroed memory, so lumen_tokens
+// always returned an all-zero token stream (loop_test.mjs's "lumen_tokens returns the token
+// stream with lexemes" - caught post-rebase, fixed here to match main's #87 repack).
+const TOKENS_BASE = 299000;
 
 const EMIT_FN_SRC = fs.readFileSync(new URL('./emit_fn.lm', import.meta.url), 'utf8');
 const LUMENC_SRC = fs.readFileSync(new URL('../seed/lumenc.lm', import.meta.url), 'utf8');
 
-// Compile lumenc.lm with the seed once, returning the RAW IR (words/main/strings) plus the
-// lex_compile entry pc, all read from the one instance that produced them.
+// Compile lumenc.lm with the native compiler once, returning the RAW IR (words/main/strings)
+// plus the lex_compile entry pc, all from the SAME compileToIRNativeRaw call that produced
+// them (R5: this used to re-derive strings/symbols by scanning a wasm instance's own memory;
+// compileToIRNativeRaw now returns all three directly - see native/native_compile.mjs's R5
+// symbol-table trailer - so this is simpler than the wasm-era version, not just wasm-free).
 async function compileLumencRaw() {
-  const I = await freshInstance();
-  const len = writeSrc(I, LUMENC_SRC);
-  const irWords = I.ex.compile(len);
-  if (I.ex.dbg_nerr() > 0) throw new Error(`lumenc.lm compile: ${I.ex.dbg_nerr()} error(s)`);
-  const main = I.ex.dbg_main();
-  const words = Int32Array.from(new Int32Array(I.ex.mem.buffer, CODE_BASE, irWords));
-
-  // strings sidecar - identical walk to compileToIR in pipeline.mjs
-  const ptrs = [];
-  let pc = 0;
-  while (pc < words.length) {
-    const op = words[pc];
-    if (op === 57) { pc = pc + 3 + words[pc + 1]; continue; }
-    if (op === 15) ptrs.push(words[pc + 1]);
-    let oplen = 0;
-    if (op === 1 || op === 2 || op === 6 || op === 7 || op === 13 || op === 14 || op === 15 || op === 25) oplen = 1;
-    else if (op === 8 || op === 29) oplen = 2;
-    pc = pc + 1 + oplen;
-  }
-  const uniquePtrs = [...new Set(ptrs)];
-  const view = new DataView(I.ex.mem.buffer);
-  const mem8 = new Uint8Array(I.ex.mem.buffer);
-  const strings = uniquePtrs.map(ptr => {
-    const slen = view.getInt32(ptr, true);
-    const bytes = mem8.slice(ptr + 4, ptr + 4 + slen);
-    return { ptr, len: slen, bytes };
-  });
-
-  // symbol table scan - same region/stride/technique as seed/selfhost_diff.mjs
-  let lexCompileEntry = -1;
-  for (let addr = SYMTAB_BASE; addr < SYMTAB_CEIL; addr += 12) {
-    const name_off = view.getInt32(addr, true);
-    const name_len = view.getInt32(addr + 4, true);
-    const entry = view.getInt32(addr + 8, true);
-    if (name_off >= SRC_BASE && name_off < SYMTAB_BASE && name_len > 0) {
-      const name = Buffer.from(mem8.slice(name_off, name_off + name_len)).toString('utf8');
-      if (name === 'lex_compile') lexCompileEntry = entry;
-    }
-  }
-  if (lexCompileEntry === -1) throw new Error('lex_compile entry not found in lumenc.lm symbol table');
-
-  return { words, main, strings, lexCompileEntry };
+  const r = compileToIRNativeRaw(LUMENC_SRC);
+  if (r.nerr > 0) throw new Error(`lumenc.lm compile: ${r.nerr} error(s)`);
+  const sym = r.symbols.find((s) => s.name === 'lex_compile');
+  if (!sym) throw new Error('lex_compile entry not found in lumenc.lm symbol table');
+  return { words: r.words, main: r.main, strings: r.strings, lexCompileEntry: sym.entry };
 }
 
 // Replace the emitter's one-shot `int main(void){...f<main>();return 0;}` with a driver that
@@ -202,12 +175,28 @@ static void lm_resident_loop(void){
     int32_t ndiag=nerr;
     if(ndiag<0)ndiag=0;
     if(ndiag>${DIAG_RECORD_CAP})ndiag=${DIAG_RECORD_CAP};
-    uint32_t payload_len=(uint32_t)(4+4+(emitc>0?(uint32_t)emitc*4u:0u)+4+${LIT_HEAP_BYTES}u+4+(uint32_t)ndiag*12u);
+    // R5: symbol-table (lumenc.lm's SYMBOLS()=170000, count at load32(12)) and token-stream
+    // (TOKENS()=299000, count at load32(8)) trailers, appended after the diagnostics block, so
+    // the MCP introspection tools (lumen_symbols/lumen_tokens/lumen_profile) can retire their
+    // wasm-instance memory peek without losing any capability - lumenc.lm tracks both at the
+    // SAME addresses the wasm seed does (see seed/lumenc.lm's own header comment), so this is a
+    // faithful mirror, not a new invention. Only the OCCUPIED prefix of each region is sent
+    // (nsym*12 / ntok*12 bytes), not the whole fixed window, so a small program pays a small cost.
+    int32_t ntok=*(int32_t*)(LMEM+8);
+    if(ntok<0)ntok=0;
+    if(ntok>16000)ntok=16000;
+    int32_t nsym=*(int32_t*)(LMEM+12);
+    if(nsym<0)nsym=0;
+    if(nsym>583)nsym=583;
+    uint32_t payload_len=(uint32_t)(4+4+(emitc>0?(uint32_t)emitc*4u:0u)+4+${LIT_HEAP_BYTES}u+4+(uint32_t)ndiag*12u
+      +4+(uint32_t)ntok*12u+4+(uint32_t)nsym*12u);
     lm_compile_wr4(payload_len);
     unsigned char h1[4]={(unsigned char)nerr,(unsigned char)(nerr>>8),(unsigned char)(nerr>>16),(unsigned char)(nerr>>24)};
     unsigned char h2[4]={(unsigned char)emitc,(unsigned char)(emitc>>8),(unsigned char)(emitc>>16),(unsigned char)(emitc>>24)};
     unsigned char h3[4]={(unsigned char)mainentry,(unsigned char)(mainentry>>8),(unsigned char)(mainentry>>16),(unsigned char)(mainentry>>24)};
     unsigned char h4[4]={(unsigned char)ndiag,(unsigned char)(ndiag>>8),(unsigned char)(ndiag>>16),(unsigned char)(ndiag>>24)};
+    unsigned char h5[4]={(unsigned char)ntok,(unsigned char)(ntok>>8),(unsigned char)(ntok>>16),(unsigned char)(ntok>>24)};
+    unsigned char h6[4]={(unsigned char)nsym,(unsigned char)(nsym>>8),(unsigned char)(nsym>>16),(unsigned char)(nsym>>24)};
     fwrite(h1,1,4,stdout);
     fwrite(h2,1,4,stdout);
     if(emitc>0)fwrite(LMEM+${OUT_IR_BASE},1,(size_t)emitc*4,stdout);
@@ -215,6 +204,10 @@ static void lm_resident_loop(void){
     fwrite(LMEM+${LIT_HEAP_BASE},1,${LIT_HEAP_BYTES},stdout);
     fwrite(h4,1,4,stdout);
     if(ndiag>0)fwrite(LMEM+${DIAG_BASE},1,(size_t)ndiag*12,stdout);
+    fwrite(h5,1,4,stdout);
+    if(ntok>0)fwrite(LMEM+${TOKENS_BASE},1,(size_t)ntok*12,stdout);
+    fwrite(h6,1,4,stdout);
+    if(nsym>0)fwrite(LMEM+170000,1,(size_t)nsym*12,stdout);
     fflush(stdout);
     lm_compile_reset();
   }
@@ -254,6 +247,30 @@ int main(int argc,char**argv){
   if(emitc>0)fwrite(LMEM+${OUT_IR_BASE},1,(size_t)emitc*4,stdout);
   fwrite(h3,1,4,stdout);
   fwrite(LMEM+${LIT_HEAP_BASE},1,${LIT_HEAP_BYTES},stdout);
+  // R5: diagnostic-record trailer, matching the resident loop's [ndiag][diag] block exactly
+  // (same lumenc.lm err_add region, DIAG_BASE=390000 - see the constant's header comment above).
+  // The one-shot driver previously omitted this entirely; seed/compiler_core.mjs's compile()
+  // needs it for rawDiags (E0001..E0004 codes, byte offsets, names), the same as checkNativeResident.
+  int32_t ndiag=nerr;
+  if(ndiag<0)ndiag=0;
+  if(ndiag>${DIAG_RECORD_CAP})ndiag=${DIAG_RECORD_CAP};
+  unsigned char h4[4]={(unsigned char)ndiag,(unsigned char)(ndiag>>8),(unsigned char)(ndiag>>16),(unsigned char)(ndiag>>24)};
+  fwrite(h4,1,4,stdout);
+  if(ndiag>0)fwrite(LMEM+${DIAG_BASE},1,(size_t)ndiag*12,stdout);
+  // R5: symbol-table + token-stream trailers (see the resident loop's matching comment above;
+  // same lumenc.lm addresses, same occupied-prefix-only convention).
+  int32_t ntok=*(int32_t*)(LMEM+8);
+  if(ntok<0)ntok=0;
+  if(ntok>16000)ntok=16000;
+  int32_t nsym=*(int32_t*)(LMEM+12);
+  if(nsym<0)nsym=0;
+  if(nsym>583)nsym=583;
+  unsigned char h5[4]={(unsigned char)ntok,(unsigned char)(ntok>>8),(unsigned char)(ntok>>16),(unsigned char)(ntok>>24)};
+  unsigned char h6[4]={(unsigned char)nsym,(unsigned char)(nsym>>8),(unsigned char)(nsym>>16),(unsigned char)(nsym>>24)};
+  fwrite(h5,1,4,stdout);
+  if(ntok>0)fwrite(LMEM+${TOKENS_BASE},1,(size_t)ntok*12,stdout);
+  fwrite(h6,1,4,stdout);
+  if(nsym>0)fwrite(LMEM+170000,1,(size_t)nsym*12,stdout);
   return 0;
 }`;
   return csrc.replace(m[0], driver);

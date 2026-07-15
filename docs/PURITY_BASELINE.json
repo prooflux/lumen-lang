@@ -1,5 +1,5 @@
 {
-  "generated_from": "e23abc6ba4bd71ddee5646c2357feb7344d63e2f",
+  "generated_from": "9056f36c2b378428f6643ede13a7640d6c882711",
   "external_binaries": [
     "/usr/bin/true",
     "clang",
@@ -38,8 +38,20 @@
       "bytes": 2358
     },
     {
+      "path": "native/bootstrap_test.mjs",
+      "bytes": 2612
+    },
+    {
       "path": "native/build.mjs",
       "bytes": 5406
+    },
+    {
+      "path": "native/build_bootstrap.mjs",
+      "bytes": 857
+    },
+    {
+      "path": "native/build_emitter_bootstrap.mjs",
+      "bytes": 1138
     },
     {
       "path": "native/content_type_value_test.mjs",
@@ -54,12 +66,20 @@
       "bytes": 14107
     },
     {
+      "path": "native/emit_fn.bootstrap.c",
+      "bytes": 133001
+    },
+    {
+      "path": "native/emitter_bootstrap_test.mjs",
+      "bytes": 4427
+    },
+    {
       "path": "native/fixpoint_emit_test.mjs",
       "bytes": 7695
     },
     {
       "path": "native/fuel_build.mjs",
-      "bytes": 5526
+      "bytes": 6584
     },
     {
       "path": "native/fuel_test.mjs",
@@ -126,6 +146,14 @@
       "bytes": 2274
     },
     {
+      "path": "native/ir_interpreter.mjs",
+      "bytes": 24081
+    },
+    {
+      "path": "native/ir_interpreter_test.mjs",
+      "bytes": 4046
+    },
+    {
       "path": "native/llvm_diff.mjs",
       "bytes": 3712
     },
@@ -135,19 +163,23 @@
     },
     {
       "path": "native/lumemit_native.mjs",
-      "bytes": 6113
+      "bytes": 6664
     },
     {
       "path": "native/lumen_serve_native.mjs",
       "bytes": 33943
     },
     {
+      "path": "native/lumenc.bootstrap.c",
+      "bytes": 184778
+    },
+    {
       "path": "native/lumenc_native.mjs",
-      "bytes": 10145
+      "bytes": 19198
     },
     {
       "path": "native/lumopt_native.mjs",
-      "bytes": 6103
+      "bytes": 6575
     },
     {
       "path": "native/minify.mjs",
@@ -170,6 +202,10 @@
       "bytes": 9496
     },
     {
+      "path": "native/native_compile.mjs",
+      "bytes": 23697
+    },
+    {
       "path": "native/native_compile_test.mjs",
       "bytes": 14380
     },
@@ -179,7 +215,7 @@
     },
     {
       "path": "native/native_fixpoint_test.mjs",
-      "bytes": 11698
+      "bytes": 11168
     },
     {
       "path": "native/native_float_test.mjs",
@@ -202,20 +238,32 @@
       "bytes": 14597
     },
     {
+      "path": "native/native_resident_bench.mjs",
+      "bytes": 6029
+    },
+    {
+      "path": "native/native_resident_test.mjs",
+      "bytes": 10136
+    },
+    {
       "path": "native/native_socket_test.mjs",
       "bytes": 13403
     },
     {
-      "path": "native/optimize_diff.mjs",
-      "bytes": 19611
+      "path": "native/optimize.bootstrap.c",
+      "bytes": 36578
     },
     {
-      "path": "native/patch_wat.mjs",
-      "bytes": 2356
+      "path": "native/optimize_diff.mjs",
+      "bytes": 19302
+    },
+    {
+      "path": "native/parity_corpus_test.mjs",
+      "bytes": 7537
     },
     {
       "path": "native/pipeline.mjs",
-      "bytes": 14602
+      "bytes": 16698
     },
     {
       "path": "native/print_errs.mjs",
@@ -254,10 +302,6 @@
       "bytes": 7133
     },
     {
-      "path": "native/test_compile.mjs",
-      "bytes": 871
-    },
-    {
       "path": "native/to_lower_test.mjs",
       "bytes": 2275
     },
@@ -279,23 +323,23 @@
     },
     {
       "path": "seed/basics.mjs",
-      "bytes": 18264
-    },
-    {
-      "path": "seed/bench.mjs",
-      "bytes": 1556
+      "bytes": 21362
     },
     {
       "path": "seed/cache.mjs",
-      "bytes": 2275
+      "bytes": 3811
     },
     {
       "path": "seed/cache_test.mjs",
-      "bytes": 3803
+      "bytes": 4008
     },
     {
       "path": "seed/compiler_core.mjs",
-      "bytes": 4770
+      "bytes": 6908
+    },
+    {
+      "path": "seed/corpus.mjs",
+      "bytes": 3723
     },
     {
       "path": "seed/diagnostics.mjs",
@@ -311,23 +355,23 @@
     },
     {
       "path": "seed/lumen.mjs",
-      "bytes": 4776
+      "bytes": 5306
     },
     {
       "path": "seed/lumen_mcp.mjs",
-      "bytes": 28208
+      "bytes": 27129
     },
     {
       "path": "seed/lumen_serve.mjs",
       "bytes": 7684
     },
     {
-      "path": "seed/lumenc.mjs",
-      "bytes": 1508
+      "path": "seed/lumend.mjs",
+      "bytes": 6630
     },
     {
-      "path": "seed/lumend.mjs",
-      "bytes": 5039
+      "path": "seed/native_check.mjs",
+      "bytes": 2452
     },
     {
       "path": "seed/perf.mjs",
@@ -339,23 +383,23 @@
     },
     {
       "path": "seed/run.mjs",
-      "bytes": 1766
+      "bytes": 1487
     },
     {
       "path": "seed/safety.mjs",
-      "bytes": 3115
+      "bytes": 5817
     },
     {
       "path": "seed/selfhost_diff.mjs",
-      "bytes": 11376
+      "bytes": 4406
     },
     {
       "path": "seed/selfhost_float_fuzz.mjs",
-      "bytes": 7321
+      "bytes": 7287
     },
     {
       "path": "seed/test.mjs",
-      "bytes": 3139
+      "bytes": 1468
     },
     {
       "path": "tools/architecture-update.mjs",
@@ -375,20 +419,20 @@
     }
   ],
   "totals": {
-    "count": 87,
-    "bytes": 543825,
+    "count": 98,
+    "bytes": 996784,
     "by_category": {
       ".mjs": {
-        "count": 76,
-        "bytes": 495700
+        "count": 84,
+        "bytes": 594302
       },
       ".py": {
         "count": 3,
         "bytes": 9157
       },
       ".c": {
-        "count": 3,
-        "bytes": 13635
+        "count": 6,
+        "bytes": 367992
       },
       "other": {
         "count": 5,

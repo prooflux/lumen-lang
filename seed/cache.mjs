@@ -2,9 +2,15 @@
 //
 // Lumen is deterministic (no I/O beyond console, no time/random), so for a given source
 // and a given compiler build, `check`/`ir`/`run` output is pure. We key cache entries on
-// sha256(source) + sha256(lumenc.wat contents) + kind, so any compiler change (a rebuilt
-// lumenc.wat) invalidates every cached entry automatically. Set LUMEN_NO_CACHE=1 to bypass
-// entirely (no reads, no writes) -- useful for benchmarking or debugging cache bugs.
+// sha256(source) + sha256(compiler identity) + kind, so any compiler change invalidates every
+// cached entry automatically. Set LUMEN_NO_CACHE=1 to bypass entirely (no reads, no writes) --
+// useful for benchmarking or debugging cache bugs.
+//
+// R5: the compiler identity source is native/lumenc.bootstrap.c (the checked-in, reproducible C
+// the native compiler binary is built from - see native/native_compile.mjs's
+// getNativeCompilerBin()), not the retired seed/lumenc.wat. Same semantics as before: this file
+// changes exactly when the compiler's behavior can change (bootstrap_test.mjs's rot guard keeps
+// it in sync with lumenc.lm/emit_fn.lm), so it is an equally faithful invalidation trigger.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -12,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = path.join(HERE, '.lumen-cache');
-const WAT_PATH = path.join(HERE, 'lumenc.wat');
+const COMPILER_IDENTITY_PATH = path.join(HERE, '../native/lumenc.bootstrap.c');
 
 function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
@@ -20,9 +26,9 @@ function sha256(str) {
 
 function compilerIdentityHash() {
   // Read fresh each call: cheap (single stat+read) and keeps the identity hash correct
-  // even if lumenc.wat changes between calls within a long-lived process (lumend/mcp).
-  const wat = fs.readFileSync(WAT_PATH, 'utf8');
-  return sha256(wat);
+  // even if the compiler is rebuilt between calls within a long-lived process (lumend/mcp).
+  const bootstrapC = fs.readFileSync(COMPILER_IDENTITY_PATH, 'utf8');
+  return sha256(bootstrapC);
 }
 
 export function cacheKey(source, kind) {

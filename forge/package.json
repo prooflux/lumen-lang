@@ -8,6 +8,5 @@
     "smoke": "node forge.mjs --from 1 --to 200 --native-every 50",
     "campaign": "node forge.mjs --from 1 --to 20000 --native-every 20",
     "test": "node gen_test.mjs && node forge_test.mjs && node forge_corpus_test.mjs"
-  },
-  "devDependencies": { "wabt": "^1.0.36" }
+  }
 }

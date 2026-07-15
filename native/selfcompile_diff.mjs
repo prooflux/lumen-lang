@@ -69,17 +69,16 @@ async function main() {
   // the stale-duplicate-lex redirect there is intentionally NOT reproduced here - lumenc.lm's
   // stale draft lexer was removed once the self-host floor advanced, and this gate would
   // rather fail loudly than silently patch around a *new* duplicate-symbol regression).
-  const memB = new DataView(L.exports.mem.buffer);
-  const u8B = new Uint8Array(L.exports.mem.buffer);
+  // R5: compiler_core.mjs's exports.mem is the JS interpreter's RUN memory (CODE + heap only) -
+  // it no longer mirrors the native compiler's own internal SYMBOLS/TOKENS scratch tables (see
+  // that file's header comment), so a raw memory-poke at [170000,177000) reads zeroed bytes
+  // post-rebase. compile()'s own `symbols` field (native_compile.mjs's parsed symtab trailer,
+  // already resolved to {name, entry, ...}) is the R5 replacement source for this same data -
+  // same technique lumenc_native.mjs's compileLumencRaw and seed/lumen_mcp.mjs's
+  // symbolsFromSource already use.
   let lexCompileEntry = -1;
-  for (let addr = 170000; addr < 177000; addr += 12) {
-    const name_off = memB.getInt32(addr, true);
-    const name_len = memB.getInt32(addr + 4, true);
-    const entry = memB.getInt32(addr + 8, true);
-    if (name_off >= 100000 && name_off < 170000 && name_len > 0) {
-      const name = Buffer.from(u8B.slice(name_off, name_off + name_len)).toString('utf8');
-      if (name === 'lex_compile') lexCompileEntry = entry;
-    }
+  for (const s of resB.symbols) {
+    if (s.name === 'lex_compile') lexCompileEntry = s.entry;
   }
   if (lexCompileEntry === -1) {
     console.error('FATAL: lex_compile entry not found in lumenc.lm\'s symbol table.');

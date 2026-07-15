@@ -2,9 +2,11 @@
 // from the native pipeline's OWN output (no seed emitWith in the loop), must behave
 // bit-identically to generation 1 and to the seed.
 //
-// GENERATION 1: buildLumencNative() builds the native lumenc binary. Its C source comes from the
-// seed-path emitWith (compileToIR(lumenc.lm) -> emitWith), i.e. the same reference path
-// native_pipeline_test.mjs already gates as byte-identical.
+// GENERATION 1: buildLumencNative() builds the native lumenc binary. Its C source comes from
+// pipeline.mjs's compileToIR(lumenc.lm) -> emitWith (both native post-R5; pre-R5 this was the
+// wasm seed's own compile+emit, hence "gen-1" - the name predates the retirement and is kept for
+// continuity), i.e. the same reference path native_pipeline_test.mjs already gates as
+// byte-identical.
 //
 // EMIT FIXPOINT: run gen-1 lumenc on lumenc.lm's own source. Its extended stdout (nerr, count,
 // main, words, literal blob) is parsed (runNativeLumenc), a strings sidecar is rebuilt from the
@@ -130,52 +132,47 @@ async function main() {
       fail++;
     }
 
-    // ============================== CORPUS: L2 vs seed compileToIR ==============================
-    console.log('\n== Corpus: L2 compiled words vs seed compileToIR, per program ==');
+    // ============================== CORPUS: L2 vs pipeline.mjs compileToIR ==============================
+    console.log('\n== Corpus: L2 compiled words vs pipeline.mjs compileToIR, per program ==');
     for (const rel of CORPUS) {
       const src = readSrc(rel);
       const name = path.basename(rel);
-      const seedIR = await compileToIR(src);
+      const refOut = await compileToIR(src);
       const l2Out = runNativeLumenc(l2Bin, src);
-      let ok = l2Out.nerr === 0 && l2Out.main === seedIR.main && l2Out.words.length === seedIR.words.length;
+      let ok = l2Out.nerr === 0 && l2Out.main === refOut.main && l2Out.words.length === refOut.words.length;
       if (ok) {
-        for (let i = 0; i < seedIR.words.length; i++) {
-          if (seedIR.words[i] !== l2Out.words[i]) { ok = false; break; }
+        for (let i = 0; i < refOut.words.length; i++) {
+          if (refOut.words[i] !== l2Out.words[i]) { ok = false; break; }
         }
       }
-      if (ok) { console.log(`PASS  ${name}: ${l2Out.words.length} words, bit-identical (L2 vs seed compileToIR)`); pass++; }
+      if (ok) { console.log(`PASS  ${name}: ${l2Out.words.length} words, bit-identical (L2 vs pipeline.mjs compileToIR)`); pass++; }
       else {
-        console.log(`FAIL  ${name}: L2 nerr=${l2Out.nerr}, main=f${l2Out.main}, ${l2Out.words.length} words vs seed main=f${seedIR.main}, ${seedIR.words.length} words`);
+        console.log(`FAIL  ${name}: L2 nerr=${l2Out.nerr}, main=f${l2Out.main}, ${l2Out.words.length} words vs ref main=f${refOut.main}, ${refOut.words.length} words`);
         fail++;
       }
     }
 
     // ============================== END-TO-END TIMING ==============================
-    console.log('\n== End-to-end timing: interpreted self-hosted toolchain vs the native pipe ==');
-    console.log('Methodology: (a) interpreted = the honest self-hosted baseline - lumenc.lm compiling');
-    console.log('its own source under the seed VM (not the seed\'s built-in compiler). Reusing that');
-    console.log('exact machinery (seed/selfhost_diff.mjs\'s compileSelfhost: stale-lex-entry CALL');
-    console.log('redirection, fuel-limited VM run) is out of scope for this file (selfhost_diff.mjs is');
-    console.log('not among the files this task may touch, and its redirect logic should not be');
-    console.log('duplicated). Prior measurement recorded in that harness: ~61.7ms for the self-hosted');
-    console.log('compile of lumenc.lm, plus ~128.75ms for the interpreted emitWith stage - both cited');
-    console.log('here as reference, not re-derived in this run. As the sanctioned fallback, this run');
-    console.log('measures and clearly labels the WASM-SEED number (compileToIR, the seed\'s own');
-    console.log('built-in compiler, not lumenc.lm self-hosted) for the compile stage, plus the');
-    console.log('interpreted emitWith stage measured directly here; (b) native = gen-1 lumenc spawn +');
-    console.log('native lumemit spawn, wall-clock, spawn included, and again with a measured spawn');
-    console.log('floor subtracted from each side.');
+    console.log('\n== End-to-end timing: pipeline.mjs one-shot path vs the direct gen-1/gen-2 native pipe ==');
+    console.log('Methodology (post-R5, both sides are native; this compares two DIFFERENT native call');
+    console.log('paths, not native-vs-wasm): (a) = pipeline.mjs\'s compileToIR + emitWith, the same');
+    console.log('entry points every other file in this repo calls (compileToIR internally builds/caches');
+    console.log('its own native compiler binary via native_compile.mjs; emitWith does the same for the');
+    console.log('emitter via emitC). (b) = this file\'s OWN gen-1 lumenc binary (buildLumencNative, a');
+    console.log('separately-built binary from the same bootstrap C) spawned directly + native lumemit');
+    console.log('spawned directly, wall-clock, spawn included, and again with a measured spawn floor');
+    console.log('subtracted from each side. Both measure real subprocess spawns; the difference is');
+    console.log('which binary-build/caching path is exercised, not a wasm/native split.');
 
     const N = 5;
     const emitFnSrc = fs.readFileSync(path.join(__dirname, 'emit_fn.lm'), 'utf8');
 
-    // (a) wasm-seed compile stage (compileToIR), clearly labeled as such - NOT the self-hosted
-    // number; see the caveat above.
+    // (a) pipeline.mjs's native compileToIR path.
     let t0 = process.hrtime.bigint();
     for (let i = 0; i < N; i++) await compileToIR(lumencSrc);
     const seedCompileMs = Number(process.hrtime.bigint() - t0) / 1e6 / N;
 
-    // (a) interpreted emitWith stage, measured directly.
+    // (a) pipeline.mjs's native emitWith path, measured directly.
     t0 = process.hrtime.bigint();
     for (let i = 0; i < N; i++) await emitWith(emitFnSrc, refIR.words, refIR.main, refIR.strings, EMIT_FN_BASE, EMIT_FN_CEIL);
     const interpEmitMs = Number(process.hrtime.bigint() - t0) / 1e6 / N;
@@ -195,16 +192,14 @@ async function main() {
     const floorMs = Number(process.hrtime.bigint() - t0) / 1e6 / FLOOR_N;
     const nativePipeFloorAdjMs = nativePipeMs - 2 * floorMs; // two spawns per native-pipe iteration
 
-    console.log(`\n(a) interpreted, wasm-seed compile stage (compileToIR, ${N} runs): ${seedCompileMs.toFixed(2)}ms/run  [labeled: wasm-seed, NOT self-hosted]`);
-    console.log(`    prior self-hosted-interpreted reference (selfhost_diff.mjs style): ~61.7ms/run (not re-derived here)`);
-    console.log(`(a) interpreted emitWith stage (${N} runs): ${interpEmitMs.toFixed(2)}ms/run`);
-    console.log(`    prior reference: ~128.75ms/run (not re-derived here)`);
-    console.log(`(a) interpreted total (this run, compile+emit): ${(seedCompileMs + interpEmitMs).toFixed(2)}ms/run`);
-    console.log(`(b) native pipe (gen-1 lumenc spawn + native lumemit spawn, spawn included, ${N} runs): ${nativePipeMs.toFixed(2)}ms/run`);
+    console.log(`\n(a) pipeline.mjs compileToIR (${N} runs): ${seedCompileMs.toFixed(2)}ms/run`);
+    console.log(`(a) pipeline.mjs emitWith stage (${N} runs): ${interpEmitMs.toFixed(2)}ms/run`);
+    console.log(`(a) pipeline.mjs total (this run, compile+emit): ${(seedCompileMs + interpEmitMs).toFixed(2)}ms/run`);
+    console.log(`(b) direct gen-1/gen-2 native pipe (lumenc spawn + native lumemit spawn, spawn included, ${N} runs): ${nativePipeMs.toFixed(2)}ms/run`);
     console.log(`spawn floor (/usr/bin/true): ${floorMs.toFixed(3)}ms/call`);
     console.log(`(b) native pipe minus 2x spawn floor: ~${nativePipeFloorAdjMs.toFixed(2)}ms/run`);
-    console.log(`ratio, spawn-included (native/interpreted): ${(nativePipeMs / (seedCompileMs + interpEmitMs)).toFixed(2)}x`);
-    console.log(`ratio, spawn-floor-adjusted (native/interpreted): ${(nativePipeFloorAdjMs / (seedCompileMs + interpEmitMs)).toFixed(2)}x`);
+    console.log(`ratio, spawn-included (b/a): ${(nativePipeMs / (seedCompileMs + interpEmitMs)).toFixed(2)}x`);
+    console.log(`ratio, spawn-floor-adjusted (b/a): ${(nativePipeFloorAdjMs / (seedCompileMs + interpEmitMs)).toFixed(2)}x`);
   }
 
   console.log(`\nSummary: ${pass} pass, ${fail} fail`);

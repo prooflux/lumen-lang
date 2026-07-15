@@ -1,9 +1,20 @@
-// forge.mjs - the 5-path differential runner.
+// forge.mjs - the differential runner.
 //
-// For each generated seed program, run it through 5 independent paths and cross-check:
-//   a. INTERP        - compile+run on the seed VM (the reference oracle for b/c/d/e)
-//   b. SELFHOST-IR    - lumenc.lm (running on the seed VM) compiles the program; diff its
-//                       emitted IR word-for-word against the seed compiler's own IR
+// R5: this used to be a "5-path" runner where path b (SELFHOST-IR) proved lumenc.lm self-hosted
+// (running interpreted atop the wasm seed) matches the seed's OWN direct compile - two
+// independent implementations, the same trust story seed/selfhost_diff.mjs's census told (see
+// that file's R5 header comment for the full argument). Now there is only ONE compiler
+// (lumenc.lm IS the native compiler - native/lumenc_native.mjs's header comment), so paths a and
+// b necessarily agree (both call the exact same compileToIRNative underneath) - compareIR(a, b)
+// is kept as a determinism check (does the SAME native compiler reproduce itself across two
+// independent calls, back to back), not an independent-oracle proof; that role now belongs to
+// native/native_fixpoint_test.mjs (generation-2 vs generation-1) and the cross-backend agreement
+// between paths d (C) and e (LLVM) below, both still checked against path a every run.
+// For each generated seed program, run it through these paths and cross-check:
+//   a. INTERP         - compile+run via the native compiler + in-process JS interpreter
+//                       (native/ir_interpreter.mjs) - the reference for c/d/e
+//   b. SELFHOST-IR    - a second, independent native compile of the same source; diff its IR
+//                       word-for-word against path a (determinism check - see above)
 //   c. OPT            - optimizeIR(seed IR) run on the interpreter; stdout/exit vs path a
 //   d. C              - native/pipeline.mjs buildAndRunFn(src); stdout/exit vs path a (every nativeEvery-th seed)
 //   e. LLVM           - native/pipeline.mjs buildAndRunLlvm(src); stdout/exit vs path a (every nativeEvery-th seed)
@@ -12,9 +23,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import wabtInit from 'wabt';
-import { createCompiler, CODE_BASE } from '../seed/compiler_core.mjs';
 import { optimizeIR, runIR, buildAndRunFn, buildAndRunLlvm } from '../native/pipeline.mjs';
+import { compileToIRNativeRaw } from '../native/native_compile.mjs';
+import { createInterpreter } from '../native/ir_interpreter.mjs';
 import { generate } from './genprog.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -36,131 +47,23 @@ function parseArgs(argv) {
   return args;
 }
 
-// ---------- path a: INTERP (fresh instance per run, exact pattern from seed/test.mjs) ----------
-const SRC_BASE = 100000;
-let wabtBinary, wabtModule = null;
-async function loadWabtBinary() {
-  if (wabtBinary) return wabtBinary;
-  const wabt = await wabtInit();
-  const wat = fs.readFileSync(new URL('../seed/lumenc.wat', import.meta.url), 'utf8');
-  wabtBinary = wabt.parseWat('lumenc.wat', wat).toBinary({}).buffer;
-  // Compile the wasm module ONCE; instantiating from raw bytes re-JITs the entire module
-  // per program (the dominant cost of any instance-C campaign).
-  wabtModule = await WebAssembly.compile(wabtBinary);
-  return wabtBinary;
-}
-
+// ---------- path a: INTERP (native compile + in-process JS interpreter, zero wasm) ----------
 async function runInterp(src) {
-  const binary = await loadWabtBinary();
-  let out = '';
-  const instance = await WebAssembly.instantiate(wabtModule, {
-    lumen: { console_print: (p, l) => { out += Buffer.from(new Uint8Array(instance.exports.mem.buffer, p, l)).toString('utf8'); } },
-  });
-  const ex = instance.exports;
-  const b = Buffer.from(src, 'utf8');
-  new Uint8Array(ex.mem.buffer, SRC_BASE, b.length).set(b);
-  if (ex.set_fuel_max) ex.set_fuel_max(50000000n);
+  const r = compileToIRNativeRaw(src);
+  const interp = createInterpreter();
+  interp.writeCode(r.words);
+  interp.seedStrings(r.strings);
+  interp.set_fuel_max(50000000n);
   let exit = 0;
-  try {
-    ex.compile_and_run(b.length);
-  } catch (e) {
-    exit = 1;
-  }
-  const irWords = ex.dbg_emit();
-  const words = Int32Array.from(new Int32Array(ex.mem.buffer, CODE_BASE, irWords));
-  const main = ex.dbg_main();
-  return { stdout: out, exit, words, main };
+  try { if (r.nerr === 0) interp.run(r.main); }
+  catch (e) { exit = 1; }
+  return { stdout: interp.getOut(), exit, words: r.words, main: r.main };
 }
 
-// ---------- path b: SELFHOST-IR (instance-C machinery copied from seed/selfhost_diff.mjs; DO NOT edit that file) ----------
-let selfhostState = null; // { L, lmIR, resBIrWords, lexCompileEntry, lexEntries, binary }
-async function loadSelfhostState() {
-  if (selfhostState) return selfhostState;
-  const binary = await loadWabtBinary();
-  const L = await createCompiler();
-  const lmSrcPath = path.join(__dirname, '..', 'seed', 'lumenc.lm');
-  const lmSrc = fs.readFileSync(lmSrcPath, 'utf8');
-  const resB = L.compile(lmSrc);
-  if (!resB.ok) throw new Error('forge: failed to compile lumenc.lm under seed VM');
-  const lmIR = new Int32Array(L.exports.mem.buffer, CODE_BASE, resB.irWords).slice();
-
-  const memB = new DataView(L.exports.mem.buffer);
-  const u8B = new Uint8Array(L.exports.mem.buffer);
-  let lexCompileEntry = -1;
-  const lexEntries = [];
-  for (let addr = 150000; addr < 157000; addr += 12) {
-    const name_off = memB.getInt32(addr, true);
-    const name_len = memB.getInt32(addr + 4, true);
-    const entry = memB.getInt32(addr + 8, true);
-    if (name_off >= 100000 && name_off < 150000 && name_len > 0) {
-      const name = Buffer.from(u8B.slice(name_off, name_off + name_len)).toString('utf8');
-      if (name === 'lex_compile') lexCompileEntry = entry;
-      else if (name === 'lex') lexEntries.push(entry);
-    }
-  }
-  if (lexCompileEntry === -1 || lexEntries.length === 0) {
-    throw new Error(`forge: symbol extraction failed. lex_compile: ${lexCompileEntry}, lex: ${lexEntries.length}`);
-  }
-
-  selfhostState = { binary, L, lmIR, irWords: resB.irWords, lexCompileEntry, lexEntries };
-  return selfhostState;
-}
-
-// compile testSource with lumenc.lm running on a fresh instance C - exact pattern from
-// seed/selfhost_diff.mjs's compileSelfhost().
+// ---------- path b: SELFHOST-IR (R5: a second independent native compile - see header comment) ----------
 async function compileSelfhost(testSource) {
-  const st = await loadSelfhostState();
-  const instC = await WebAssembly.instantiate(wabtModule, {
-    lumen: { console_print: (p, l) => {} }
-  });
-  const exC = instC.exports;
-
-  new Int32Array(exC.mem.buffer, CODE_BASE, st.irWords).set(st.lmIR);
-
-  const codeMem = new Int32Array(exC.mem.buffer, CODE_BASE, st.irWords + 10);
-  if (st.lexEntries.length > 1) {
-    const staleEntries = new Set(st.lexEntries.slice(0, -1));
-    const goodEntry = st.lexEntries[st.lexEntries.length - 1];
-    const TWO_WORD = new Set([1, 2, 6, 7, 13, 14, 15, 25]);
-    let i = 0;
-    while (i < st.irWords) {
-      const op = codeMem[i];
-      if (op === 8) {
-        if (staleEntries.has(codeMem[i + 1])) codeMem[i + 1] = goodEntry;
-        i += 3;
-      } else if (op === 29) {
-        i += 3;
-      } else if (op === 57) {
-        i += codeMem[i + 1] + 3;
-      } else if (TWO_WORD.has(op)) {
-        i += 2;
-      } else {
-        i += 1;
-      }
-    }
-  }
-
-  const testBytes = Buffer.from(testSource, 'utf8');
-  new Uint8Array(exC.mem.buffer, 100000, testBytes.length).set(testBytes);
-  new Uint8Array(exC.mem.buffer, 0, 1024).fill(0);
-
-  const stubIndex = st.irWords;
-  codeMem[stubIndex] = 1;
-  codeMem[stubIndex + 1] = testBytes.length;
-  codeMem[stubIndex + 2] = 8;
-  codeMem[stubIndex + 3] = st.lexCompileEntry;
-  codeMem[stubIndex + 4] = 1;
-  codeMem[stubIndex + 5] = 0;
-
-  exC.set_fuel_max(50000000n);
-  exC.run(stubIndex);
-
-  const memView = new DataView(exC.mem.buffer);
-  const emitCount = memView.getInt32(0, true);
-  const nerr = memView.getInt32(28, true);
-  const emittedIR = new Int32Array(exC.mem.buffer, 211328, emitCount).slice();
-
-  return { nerr, emitCount, emittedIR };
+  const r = compileToIRNativeRaw(testSource);
+  return { nerr: r.nerr, emitCount: r.words.length, emittedIR: r.words };
 }
 
 function compareIR(seedIR, selfhostIR) {

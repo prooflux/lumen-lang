@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { compileToIR } from './pipeline.mjs';
-import { buildLumencNative } from './lumenc_native.mjs';
+import { buildLumencNative, SRC_CAP } from './lumenc_native.mjs';
 import { createCompiler } from '../seed/compiler_core.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,18 +49,20 @@ const OUT_OF_SCOPE_LOGGED = ['native/test_load32.lm'];
 // Trap-hardening probe: black_scholes.lm graduated INTO the corpus when lumenc.lm learned the
 // Float front-end (the same trajectory safe_div/propagate took when it learned sum types), so
 // the probe is now a STRUCTURALLY invalid input that no language growth can ever legalize: a
-// source larger than the compiler's 50,000-byte SRC window (compiler_core.mjs SRC_CAPACITY).
+// source larger than the compiler's live SRC window (SRC_CAP, imported from lumenc_native.mjs).
 // The overrun drives a wild memory access, which the hardened preamble must convert to the
 // controlled exit 70 + "lumen: memory trap" + empty stdout. If a future change turns this
 // into a clean diagnostic instead, this check fails loudly and the fixture gets rethought
 // deliberately - it must never silently degrade to a no-op.
+// Capacity-derived: always exceed the live SRC region so this probe can never go stale
+// against a capacity bump (it did once: a hardcoded 60000 fell inside the 70000 region).
 function oversizedSource() {
   const filler = 'fn f0() -> Int { return 1 }\n';
   let big = '';
-  while (big.length < 60000) big += filler;
+  while (big.length < SRC_CAP + 10000) big += filler;
   return big + 'fn main(c: Console) -> Unit { c.print_int(1) return () }\n';
 }
-const TRAP_PROBE = [{ name: 'oversized-source-60KB', src: oversizedSource() }];
+const TRAP_PROBE = [{ name: 'oversized-source-beyond-SRC_CAP', src: oversizedSource() }];
 
 function readSrc(rel) {
   return fs.readFileSync(path.join(__dirname, rel), 'utf8');

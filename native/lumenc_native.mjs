@@ -226,6 +226,10 @@ int main(int argc,char**argv){
     return 0;
   }
   size_t srclen=fread(LMEM+${SRC_BASE},1,${SRC_CAP},stdin);
+  if(srclen==(size_t)${SRC_CAP}u && fgetc(stdin)!=EOF){
+    fprintf(stderr,"lumen: memory trap: source exceeds the %u-byte SRC window\\n",(unsigned)${SRC_CAP}u);
+    return 70;
+  }
   f${lexCompileEntry}((int64_t)srclen);
   int32_t nerr=*(int32_t*)(LMEM+${OUT_NERR_ADDR});
   int32_t emitc=*(int32_t*)(LMEM+${OUT_EMIT_COUNT_ADDR});

@@ -454,6 +454,10 @@ int main(int argc,char**argv){
     return 0;
   }
   size_t srclen=fread(LMEM+100000,1,70000,stdin);
+  if(srclen==(size_t)70000u && fgetc(stdin)!=EOF){
+    fprintf(stderr,"lumen: memory trap: source exceeds the %u-byte SRC window\n",(unsigned)70000u);
+    return 70;
+  }
   f16522((int64_t)srclen);
   int32_t nerr=*(int32_t*)(LMEM+28);
   int32_t emitc=*(int32_t*)(LMEM+0);

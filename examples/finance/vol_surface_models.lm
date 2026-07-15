@@ -1,0 +1,75 @@
+# SABR (Hagan) and rough-volatility IV kernels: native Lumen ports of the
+# volatility_surface.js primitives that power beta-app.fdv-quants.com/volatility-surface
+# (SABR Model, Rough Bergomi, Rough Heston tabs). Companion to vol_surface_heston.lm.
+# Probes vs the exact JS oracle, IV scaled x1e12:
+#   SABR  (S=100 r=.045 sigma0=.2 alpha=.35 beta=.5 rho=-.7): K70_T.25=62655898705 K85_T.5=42827773965
+#   ROUGH (S=100 r=.045 H=.1 xi0=.05 nu=.3 rho=-.7 lam=1):    K70_T.25=211900577088 K85_T.5=233179706005
+
+fn heston_iv(S: Float, K: Float, T: Float, r: Float, v0: Float, kappa: Float, theta: Float, xi: Float, rho: Float) -> Float {
+  let F: Float = S * exp(r * T)
+  let k: Float = ln(K / F)
+  var vAvg: Float = v0
+  if kappa * T > 0.000001 {
+    vAvg = theta + (v0 - theta) * (1.0 - exp(0.0 - kappa * T)) / (kappa * T)
+  }
+  let sig: Float = sqrt(vAvg)
+  let skew: Float = rho * xi / (2.0 * sig) * (1.0 - exp(0.0 - kappa * T / 2.0)) / (kappa * T / 2.0 + 0.0000000001)
+  let curv: Float = xi * xi / (12.0 * vAvg) * (1.0 - 0.5 * exp(0.0 - kappa * T))
+  var iv: Float = sig * (1.0 + skew * k + curv * k * k)
+  if iv < 0.01 { iv = 0.01 }
+  return iv
+}
+
+# SABR implied vol via Hagan's asymptotic formula (non-ATM path; the log^4 term is
+# expanded rather than pow(neg, 4) so the negative log-moneyness base is exact).
+fn sabr_iv(S: Float, K: Float, T: Float, r: Float, sigma0: Float, alpha: Float, beta: Float, rho: Float) -> Float {
+  let F: Float = S * exp(r * T)
+  let ob: Float = 1.0 - beta
+  if abs(K - F) < 0.0000000001 * F {
+    let Fb: Float = pow(F, ob)
+    let atm: Float = (sigma0 / Fb) * (1.0 + (ob * ob / 24.0 * sigma0 * sigma0 / pow(F, 2.0 - 2.0 * beta) + rho * beta * alpha * sigma0 / (4.0 * Fb) + (2.0 - 3.0 * rho * rho) / 24.0 * alpha * alpha) * T)
+    if atm < 0.01 { return 0.01 }
+    return atm
+  }
+  let FK: Float = F * K
+  let FKb: Float = pow(FK, ob / 2.0)
+  let logFK: Float = ln(F / K)
+  let z: Float = alpha / sigma0 * FKb * logFK
+  var xz: Float = 1.0
+  if abs(z) >= 0.0000000001 {
+    let st: Float = sqrt(1.0 - 2.0 * rho * z + z * z)
+    let dc: Float = (st + z - rho) / (1.0 - rho)
+    if dc > 0.0 { xz = z / ln(dc) }
+  }
+  let lf2: Float = logFK * logFK
+  let ob2: Float = ob * ob
+  let denom: Float = FKb * (1.0 + ob2 / 24.0 * lf2 + ob2 * ob2 / 1920.0 * lf2 * lf2)
+  let FK1b: Float = pow(FK, ob)
+  let tf: Float = 1.0 + (ob2 / 24.0 * sigma0 * sigma0 / FK1b + rho * beta * alpha * sigma0 / (4.0 * FKb) + (2.0 - 3.0 * rho * rho) / 24.0 * alpha * alpha) * T
+  var out: Float = sigma0 / denom * xz * tf
+  if out < 0.01 { out = 0.01 }
+  return out
+}
+
+# Rough-vol IV: Heston core with rough params + a short-maturity skew enhancement T^(H-0.5).
+fn rough_iv(S: Float, K: Float, T: Float, r: Float, H: Float, xi0: Float, nu: Float, rho: Float, lam: Float) -> Float {
+  var kappa: Float = 0.5
+  if lam > 0.0 { kappa = lam }
+  let iv0: Float = heston_iv(S, K, T, r, xi0, kappa, xi0, nu * 2.0, rho)
+  let rf: Float = pow(T, H - 0.5)
+  let mny: Float = ln(K / S)
+  var iv: Float = iv0 * (1.0 + rf * mny * 0.5)
+  if iv < 0.01 { iv = 0.01 }
+  return iv
+}
+
+fn pS(console: Console, lbl: Text, iv: Float) -> Unit {
+  console.print(text_concat(lbl, text_concat(int_to_text(round(iv * 1000000000000.0)), "\n")))
+}
+
+fn main(console: Console) -> Unit {
+  pS(console, "SABR_K70_T025=", sabr_iv(100.0, 70.0, 0.25, 0.045, 0.2, 0.35, 0.5, 0.0 - 0.7))
+  pS(console, "SABR_K85_T05=", sabr_iv(100.0, 85.0, 0.5, 0.045, 0.2, 0.35, 0.5, 0.0 - 0.7))
+  pS(console, "ROUGH_K70_T025=", rough_iv(100.0, 70.0, 0.25, 0.045, 0.1, 0.05, 0.3, 0.0 - 0.7, 1.0))
+  pS(console, "ROUGH_K85_T05=", rough_iv(100.0, 85.0, 0.5, 0.045, 0.1, 0.05, 0.3, 0.0 - 0.7, 1.0))
+}

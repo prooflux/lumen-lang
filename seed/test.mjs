@@ -35,6 +35,8 @@ const cases = [
   ['../examples/finance/bump_greeks.lm', '104506\n\n6368\n\n18763\n\n375239\n\n'],   // bump-Greeks finite-difference kernel: delta/gamma/vega via central diff on BS pricer, scaled by 10000/1000000/10000
   ['../examples/finance/swap_rate.lm', '839457\n\n45647\n\n30249\n\n35171\n\n'],   // par interest-rate swap kernel: discount factors and annuity, scaled x1000000/10000/1000000
   ['../examples/finance/vol_surface_heston.lm', 'K70_T025=216972279389\nK100_T10=210276489335\nK130_T20=207265613578\nK85_T05=214200288766\n'],   // Heston IV surface (Lewis/Gatheral approx): 4 canonical grid points, IV scaled x1e12, matches the shipped beta-app volatility_surface.js oracle to 12 sig digits
+  ['../examples/finance/vol_surface_models.lm', 'SABR_K70_T025=62655898705\nSABR_K85_T05=42827773965\nROUGH_K70_T025=211900577088\nROUGH_K85_T05=233179706005\n'],   // SABR (Hagan) + rough-vol IV kernels: match the beta-app SABR/Rough Bergomi/Rough Heston tabs to 12 sig digits
+  ['../examples/finance/bs_greeks.lm', '10564878806636,625244998846,18053194042,-17312088315,379117074890,519596210780,-197295620606,60523333027,6299367315063,-455014176,-82967891957,-9946798717,-126855973238568,17023430182847\n'],   // Black-Scholes price + all 13 Greeks (A&S normal CDF): drives the beta-app Greeks Surfaces + Options Analyzer tabs, matches the shipped JS oracle to 12 sig digits
 ];
 
 const wabt = await wabtInit();

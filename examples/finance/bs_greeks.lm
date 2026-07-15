@@ -1,0 +1,74 @@
+# Black-Scholes price + all 13 Greeks in native Lumen: a port of the blackScholesGreeks
+# primitive in volatility_surface.js that drives the Greeks Surfaces and Options Analyzer
+# tabs on beta-app.fdv-quants.com/volatility-surface. Uses the Abramowitz-Stegun (a1..a5)
+# normal CDF the JS ships, so the numbers match that surface exactly.
+# Probe (call, S=100 K=100 T=1 r=.045 sigma=.21 q=0), each value scaled x1e12:
+#   price 10564878806636  delta 625244998846  gamma 18053194042  theta -17312088315
+#   vega 379117074890  rho 519596210780  vanna -197295620606  charm 60523333027
+#   vomma 6299367315063  speed -455014176  zomma -82967891957  color -9946798717
+#   ultima -126855973238568  veta 17023430182847
+
+fn ncdf(x0: Float) -> Float {
+  var sg: Float = 1.0
+  if x0 < 0.0 { sg = 0.0 - 1.0 }
+  let x: Float = abs(x0) / sqrt(2.0)
+  let t: Float = 1.0 / (1.0 + 0.3275911 * x)
+  let y: Float = 1.0 - (((((1.061405429 * t + (0.0 - 1.453152027)) * t) + 1.421413741) * t + (0.0 - 0.284496736)) * t + 0.254829592) * t * exp(0.0 - x * x)
+  return 0.5 * (1.0 + sg * y)
+}
+
+fn npdf(x: Float) -> Float {
+  return exp(0.0 - 0.5 * x * x) / sqrt(2.0 * 3.141592653589793)
+}
+
+fn emit(console: Console, v: Float, first: Int) -> Unit {
+  let s: Int = round(v * 1000000000000.0)
+  if first == 1 { console.print(int_to_text(s)) } else { console.print(text_concat(",", int_to_text(s))) }
+}
+
+# is_call: 1 = call, 0 = put. Prints price + 13 Greeks, comma-separated, scaled x1e12.
+fn greeks(console: Console, S: Float, K: Float, T: Float, r: Float, sigma: Float, q: Float, is_call: Int) -> Unit {
+  let sq: Float = sqrt(T)
+  let d1: Float = (ln(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * sq)
+  let d2: Float = d1 - sigma * sq
+  let nd1: Float = npdf(d1)
+  let Nd1: Float = ncdf(d1)
+  let Nd2: Float = ncdf(d2)
+  let dc: Float = exp(0.0 - r * T)
+  let dd: Float = exp(0.0 - q * T)
+  var price: Float = 0.0
+  var delta: Float = 0.0
+  var theta: Float = 0.0
+  var rho: Float = 0.0
+  var charm: Float = 0.0
+  if is_call == 1 {
+    price = S * dd * Nd1 - K * dc * Nd2
+    delta = dd * Nd1
+    theta = (0.0 - dd * S * nd1 * sigma / (2.0 * sq) + q * S * dd * Nd1 - r * K * dc * Nd2) / 365.0
+    rho = K * T * dc * Nd2 / 100.0
+    charm = 0.0 - q * dd * Nd1 + dd * nd1 * (2.0 * (r - q) * T - d2 * sigma * sq) / (2.0 * T * sigma * sq)
+  } else {
+    price = K * dc * ncdf(0.0 - d2) - S * dd * ncdf(0.0 - d1)
+    delta = dd * (Nd1 - 1.0)
+    theta = (0.0 - dd * S * nd1 * sigma / (2.0 * sq) - q * S * dd * ncdf(0.0 - d1) + r * K * dc * ncdf(0.0 - d2)) / 365.0
+    rho = (0.0 - K * T * dc * ncdf(0.0 - d2)) / 100.0
+    charm = q * dd * ncdf(0.0 - d1) + dd * nd1 * (2.0 * (r - q) * T - d2 * sigma * sq) / (2.0 * T * sigma * sq)
+  }
+  let gamma: Float = dd * nd1 / (S * sigma * sq)
+  let vega: Float = S * dd * nd1 * sq / 100.0
+  let vanna: Float = (0.0 - dd * nd1 * d2) / sigma
+  let vomma: Float = S * dd * sq * nd1 * d1 * d2 / sigma
+  let speed: Float = (0.0 - gamma * (d1 / (sigma * sq) + 1.0)) / S
+  let zomma: Float = gamma * (d1 * d2 - 1.0) / sigma
+  let color: Float = (0.0 - gamma / (2.0 * T)) * (2.0 * q * T + 1.0 + 2.0 * d1 * (r - q) * sq / sigma - d1 * d2)
+  let vr: Float = S * dd * nd1 * sq
+  let ultima: Float = (0.0 - vr / (sigma * sigma)) * (d1 * d2 * (1.0 - d1 * d2) + d1 * d1 + d2 * d2)
+  let veta: Float = (0.0 - vr) * (q + d1 * (r - q) / (sigma * sq) - (1.0 + d1 * d2) / (2.0 * T))
+  emit(console, price, 1) emit(console, delta, 0) emit(console, gamma, 0) emit(console, theta, 0) emit(console, vega, 0) emit(console, rho, 0)
+  emit(console, vanna, 0) emit(console, charm, 0) emit(console, vomma, 0) emit(console, speed, 0) emit(console, zomma, 0) emit(console, color, 0) emit(console, ultima, 0) emit(console, veta, 0)
+  console.print("\n")
+}
+
+fn main(console: Console) -> Unit {
+  greeks(console, 100.0, 100.0, 1.0, 0.045, 0.21, 0.0, 1)
+}

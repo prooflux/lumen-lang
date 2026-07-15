@@ -6,6 +6,8 @@
 //   lumen check  <file.lm> --json     compile only; emit the structured Diagnostic stream as JSON
 //   lumen fix    <file.lm>            apply confident fixes, print the repaired source (--write to save)
 //   lumen ir     <file.lm>            print the compiled IR (one instruction per line)
+//   lumen effects <file.lm>           per-function derived capability rows (C0; see effects.mjs)
+//   lumen effects <file.lm> --json    same, as structured JSON (registry, functions, summary)
 //   lumen explain <E0003>            explain a diagnostic code
 //   lumen serve  [socket]            run the warm compiler daemon (lumend) over a Unix socket
 //   lumen mcp                        run the MCP server (stdio) for an LLM client
@@ -17,7 +19,7 @@ import { withCache, withCacheAsync } from './cache.mjs';
 import { checkAuto } from './native_check.mjs';
 
 function usage() {
-  console.error('usage: lumen <run|check|fix|ir|explain|serve|mcp> [file.lm|CODE|socket] [--json] [--write]');
+  console.error('usage: lumen <run|check|fix|ir|effects|explain|serve|mcp> [file.lm|CODE|socket] [--json] [--write]');
   process.exit(2);
 }
 
@@ -43,7 +45,7 @@ if (cmd === 'serve' || cmd === 'mcp') {
   const child = spawn(process.execPath, [mod.pathname, ...positionals], { stdio: 'inherit' });
   child.on('exit', c => process.exit(c ?? 0));
 } else {
-  if (!['run', 'check', 'fix', 'ir'].includes(cmd) || !arg) usage();
+  if (!['run', 'check', 'fix', 'ir', 'effects'].includes(cmd) || !arg) usage();
 
   let source;
   try { source = fs.readFileSync(arg, 'utf8'); }
@@ -96,6 +98,33 @@ if (cmd === 'serve' || cmd === 'mcp') {
     const r = withCache('ir', source, () => lumen.ir(source));
     if (!r.ok) { for (const d of buildDiagnostics(r.rawDiags, source)) console.error(renderHuman(arg, d)); process.exit(1); }
     console.log(r.text);
+    process.exit(0);
+  }
+
+  if (cmd === 'effects') {
+    // C0: per-function derived capability rows (seed/effects.mjs). Cached like `ir` (same
+    // compiler-facing cost profile: one compile, then a pure in-memory walk).
+    const { effectsFromSource } = await import('./effects.mjs');
+    const r = withCache('effects', source, () => effectsFromSource(lumen, source));
+    if (!r.ok) {
+      const diags = buildDiagnostics(r.rawDiags, source);
+      if (flags.has('--json')) {
+        process.stdout.write(JSON.stringify({ schema: SCHEMA_VERSION, ok: false, diagnostics: diags }) + '\n');
+        process.exit(1);
+      }
+      for (const d of diags) console.error(renderHuman(arg, d));
+      console.error(`lumen: ${diags.length} error(s); not analyzed.`);
+      process.exit(1);
+    }
+    if (flags.has('--json')) {
+      process.stdout.write(JSON.stringify({ schema: SCHEMA_VERSION, ok: true, registry: r.registry, functions: r.functions, summary: r.summary }) + '\n');
+      process.exit(0);
+    }
+    for (const f of r.functions) {
+      console.log(`${f.name.padEnd(28)} ${f.effects.length === 0 ? 'pure' : f.effects.join(',')}`);
+    }
+    const pct = r.summary.total === 0 ? 100 : Math.round(r.summary.purityFraction * 100);
+    console.log(`\n${r.summary.pure}/${r.summary.total} functions pure (${pct}%)`);
     process.exit(0);
   }
 

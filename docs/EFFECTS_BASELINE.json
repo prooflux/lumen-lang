@@ -1,0 +1,185 @@
+{
+  "generated_from": "fb850ed528ddeca2b48cf51d85253cc5dbdc549f",
+  "registry": [
+    "Console"
+  ],
+  "totals": {
+    "files": 34,
+    "functions": 90,
+    "pure": 46,
+    "impure": 44,
+    "purityFraction": 0.5111111111111111
+  },
+  "files": [
+    {
+      "path": "mu/examples/add.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/arrays.lm",
+      "functions": 1,
+      "pure": 0
+    },
+    {
+      "path": "mu/examples/bitwise.lm",
+      "functions": 1,
+      "pure": 0
+    },
+    {
+      "path": "mu/examples/bools.lm",
+      "functions": 3,
+      "pure": 2
+    },
+    {
+      "path": "mu/examples/compare.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/count.lm",
+      "functions": 1,
+      "pure": 0
+    },
+    {
+      "path": "mu/examples/decimal.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/fact.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/fib.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/fib_print.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/fizzbuzz.lm",
+      "functions": 3,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/floats.lm",
+      "functions": 6,
+      "pure": 5
+    },
+    {
+      "path": "mu/examples/forward.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/gcd.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/greet.lm",
+      "functions": 1,
+      "pure": 0
+    },
+    {
+      "path": "mu/examples/hello.lm",
+      "functions": 1,
+      "pure": 0
+    },
+    {
+      "path": "mu/examples/locals.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/max.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/mutual.lm",
+      "functions": 3,
+      "pure": 2
+    },
+    {
+      "path": "mu/examples/propagate.lm",
+      "functions": 3,
+      "pure": 2
+    },
+    {
+      "path": "mu/examples/rawmem.lm",
+      "functions": 1,
+      "pure": 0
+    },
+    {
+      "path": "mu/examples/records.lm",
+      "functions": 3,
+      "pure": 2
+    },
+    {
+      "path": "mu/examples/report.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/safe_div.lm",
+      "functions": 3,
+      "pure": 1
+    },
+    {
+      "path": "mu/examples/sum_loop.lm",
+      "functions": 1,
+      "pure": 0
+    },
+    {
+      "path": "examples/finance/black_scholes.lm",
+      "functions": 4,
+      "pure": 2
+    },
+    {
+      "path": "examples/finance/bond_price.lm",
+      "functions": 3,
+      "pure": 1
+    },
+    {
+      "path": "examples/finance/bs_greeks.lm",
+      "functions": 5,
+      "pure": 2
+    },
+    {
+      "path": "examples/finance/bump_greeks.lm",
+      "functions": 7,
+      "pure": 5
+    },
+    {
+      "path": "examples/finance/implied_vol.lm",
+      "functions": 6,
+      "pure": 5
+    },
+    {
+      "path": "examples/finance/swap_rate.lm",
+      "functions": 2,
+      "pure": 0
+    },
+    {
+      "path": "examples/finance/vol_surface_grid.lm",
+      "functions": 2,
+      "pure": 1
+    },
+    {
+      "path": "examples/finance/vol_surface_heston.lm",
+      "functions": 3,
+      "pure": 1
+    },
+    {
+      "path": "examples/finance/vol_surface_models.lm",
+      "functions": 5,
+      "pure": 3
+    }
+  ]
+}

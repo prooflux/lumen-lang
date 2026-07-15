@@ -49,6 +49,11 @@ jobs:
           # `wabt` from native/node_modules, so the native deps must be present first.
           (cd ../native && npm install)
           npm test
+          # C0: capability-purity ratchet (seed/effects.mjs). effects_test.mjs already ran as
+          # part of `npm test` above; this runs the gate's own pure-function test then the gate
+          # itself (BLOCKING: soundness cross-check, named finance-kernel purity, purity-fraction
+          # ratchet vs docs/EFFECTS_BASELINE.json), mirroring scoreboard_gate's test-then-check pairing.
+          node ../tools/effects_gate_test.mjs && node ../tools/effects_gate.mjs
       - name: native gates (bit-identity vs the interpreter oracle)
         working-directory: native
         run: |

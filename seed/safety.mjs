@@ -15,31 +15,40 @@ function check(name, cond) { total++; if (cond) { pass++; console.log(`PASS  ${n
 
 // --- Group 1: malformed sources must COMPILE-TERMINATE, never hang. ---
 //
-// R5 FINDING (see the R5 PR body's "lumenc.lm gaps discovered" section; same root cause as
-// seed/basics.mjs's documented EOF/grouping-parser gaps, more severe manifestations of it):
-// lumenc.lm's c_block() has no EOF check, and its expression parser does not reject a bare
-// operator with no operands. On the retired wasm seed EVERY case below returned cleanly
-// (nerr=0 or nerr>0, verified at baseline - this file's own pre-R5 run never threw). On the
-// native compiler, three cases now diverge:
+// R5 FINDING + FIX (see the R5 PR body's "lumenc.lm gaps discovered" section): lumenc.lm's
+// c_block() had no EOF check at all - it looped on tk(get_tp())==6 (the closing '}') with no
+// bound, unlike the wasm seed, which also checks tk(tp)==14 (the lexer's own EOF sentinel
+// token; lumenc.lm's lexer already emits this token and OTHER parser functions already check
+// for it - c_block() alone had never been given the check). This crashed the native compiler
+// ("memory trap") on 'unterminated block WITH a statement inside' below - fixed to mirror the
+// seed exactly (stop the loop on '}' OR EOF, then emit E0004 if it wasn't '}'), verified bit-
+// identical nerr against the wasm seed across 4 regression cases before wasm was retired -
+// see seed/lumenc.lm's c_block() and seed/basics.mjs's matching E0004 test.
+//
+// Two DIFFERENT, narrower gaps remain (same "under-validation vs the retired wasm seed" class,
+// lower severity, not fixed here - see the R5 PR body):
+//   - 'truncated fn' (bare `fn` keyword, no name/params/body at all): CRASHES the native
+//     compiler. This is c_fn()'s OWN missing EOF handling (name/param/return-type parsing can
+//     each hit EOF before ever reaching a block), a different function than c_block() and a
+//     larger, riskier fix to attempt under time pressure - flagged as the remaining highest-
+//     priority lumenc.lm follow-up. A crash is still a TERMINATION (execFileSync throws, control
+//     returns to us; this process does not hang and the job does not time out - the exact
+//     property this file gates), so it does not violate this file's core safety invariant; it is
+//     NOT the graceful, diagnosed termination the retired wasm seed always achieved. Unlike wasm
+//     (where an out-of-bounds access always traps harmlessly inside the sandboxed linear memory),
+//     a crash in natively-compiled code is a real memory-safety event, not just a missing
+//     diagnostic - this is why it stays flagged as high-priority even though it "only" crashes.
 //   - 'stray operators in body': silently ACCEPTS (nerr=0) input the seed rejected - the same
-//     "under-validation" class already documented in basics.mjs.
-//   - 'truncated fn' and 'unterminated block' (this specific variant, WITH a statement inside
-//     the unruly block - a plain empty unterminated block, tested separately in basics.mjs,
-//     merely silently accepts): CRASH the native compiler process ("memory trap").
-// A crash is still a TERMINATION (execFileSync throws, control returns to us; this process does
-// not hang and the job does not time out - the exact property this file gates), so it does not
-// violate this file's core safety invariant. It is NOT the graceful, diagnosed termination the
-// retired wasm seed always achieved, and it is flagged here as the single highest-priority
-// lumenc.lm follow-up discovered in the whole R5 investigation: unlike wasm (where an
-// out-of-bounds access always traps harmlessly inside the sandboxed linear memory), a crash in
-// natively-compiled code is a real memory-safety event, not just a missing diagnostic. Each
-// affected case is labeled inline with its verified category; nothing here is silently weakened.
+//     "under-validation" class already documented in basics.mjs's grouping-parser cases.
+// Each affected case is labeled inline with its verified category; nothing here is silently
+// weakened, and every case that regressed to a crash-or-accept has been re-verified strict now
+// that the c_block() fix landed.
 const malformed = [
   ['unexpected token in block', 'fn main(console: Console) -> Unit {\n  @\n}\n', 'strict'],
   ['garbage at top level',      '@@@ ### ^^^\n', 'strict'],
   ['truncated fn (KNOWN GAP, HIGHEST PRIORITY: crashes the native compiler - see header comment)', 'fn\n', 'gap-crash'],
   ['empty source',             '', 'strict-clean'],
-  ['unterminated block WITH a statement inside (KNOWN GAP, HIGHEST PRIORITY: crashes the native compiler - see header comment)', 'fn main(console: Console) -> Unit {\n  let x = 1\n', 'gap-crash'],
+  ['unterminated block WITH a statement inside (FIXED: c_block() EOF guard - see header comment)', 'fn main(console: Console) -> Unit {\n  let x = 1\n', 'strict'],
   ['stray operators in body (KNOWN GAP: lumenc.lm silently accepts; wasm seed rejected)', 'fn main(console: Console) -> Unit {\n  + * / %\n}\n', 'gap-silent'],
 ];
 for (const [name, src, category] of malformed) {

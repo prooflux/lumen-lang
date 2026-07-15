@@ -271,15 +271,19 @@ eq('subtracting a negative',      runMain('c.print_int(3 - -7)'), '10\n');
 deepEq('E0001 unknown variable', codesOf('fn main(c: Console) -> Unit {\n  c.print_int(zzz)\n}\n'), ['E0001:zzz']);
 deepEq('E0002 unknown function', codesOf('fn main(c: Console) -> Unit {\n  c.print_int(nope(1))\n}\n'), ['E0002:nope']);
 deepEq('E0003 unexpected token', codesOf('fn main(c: Console) -> Unit {\n  @\n}\n'), ['E0003:@']);
-// R5 KNOWN GAP (discovered, not caused, by the wasm retirement - see the R5 PR body's
-// "lumenc.lm gaps discovered" section): the retired wasm seed's hand-written parser rejects an
-// unterminated block with E0004; seed/lumenc.lm's self-hosted c_block() has no EOF check at all
-// (verified: it loops on tk(get_tp())==6 with no bound), so the native compiler currently
-// compiles this input to nerr=0 instead. It does NOT hang for this input (verified empirically),
-// but the missing EOF guard is a latent risk on other malformed inputs and is flagged as a
-// priority follow-up for lumenc.lm, independent of R5. Assertion updated to the VERIFIED
-// current native behavior, not weakened silently.
-deepEq('E0004 unterminated block (KNOWN GAP: lumenc.lm has no EOF check in c_block; wasm seed had E0004 here)', codesOf('fn main(c: Console) -> Unit {\n'), []);
+// R5 FIX (found and fixed during the same investigation, not merely wasm rewiring): lumenc.lm's
+// c_block() had NO EOF check at all (verified: it looped on tk(get_tp())==6 unbounded), unlike
+// the wasm seed, which checks tk(tp)==14 (the lexer's own EOF sentinel token - lumenc.lm's
+// lexer already emits this same token, other parser functions already check for it, c_block()
+// alone had never been given the check). Fixed to mirror the seed exactly: stop the loop on
+// EITHER '}' or EOF, then emit E0004 if the loop ended without seeing '}'. Verified bit-
+// identical nerr against the wasm seed across 4 regression cases (empty unterminated block,
+// unterminated-with-a-statement, a combined bad-token+unterminated case, and a normal-program
+// non-regression check) before the wasm seed was retired. This also fixed two OTHER call sites
+// that hit the exact same crash this gap caused: seed/safety.mjs's 'unterminated block WITH a
+// statement inside' case and seed/loop_test.mjs's diagnostics fixture, both previously crashing
+// ("memory trap") the native compiler - see those files' own updated comments.
+deepEq('E0004 unterminated block', codesOf('fn main(c: Console) -> Unit {\n'), ['E0004']);
 deepEq('clean program emits no diagnostics', codesOf('fn main(c: Console) -> Unit {\n  c.print_int(1)\n}\n'), []);
 // R5 KNOWN GAP (same class as above): lumenc.lm's grouping-expression error recovery does not
 // yet catch these two malformed shapes the wasm seed catches (a bad token inside parens; an

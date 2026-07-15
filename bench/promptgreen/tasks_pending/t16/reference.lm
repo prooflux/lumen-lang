@@ -1,0 +1,42 @@
+fn max0(x: Float) -> Float {
+  if x > 0.0 {
+    return x
+  }
+  return 0.0
+}
+
+fn call_price() -> Float {
+  let s = 100.0
+  let k = 100.0
+  let u = 1.1
+  let d = 0.9
+  let r_growth = 1.05
+
+  let q = (r_growth - d) / (u - d)
+  let qc = 1.0 - q
+
+  let s3 = s * pow(u, 3.0)
+  let s2 = s * pow(u, 2.0) * d
+  let s1 = s * u * pow(d, 2.0)
+  let s0 = s * pow(d, 3.0)
+
+  let payoff3 = max0(s3 - k)
+  let payoff2 = max0(s2 - k)
+  let payoff1 = max0(s1 - k)
+  let payoff0 = max0(s0 - k)
+
+  let prob3 = pow(q, 3.0)
+  let prob2 = 3.0 * pow(q, 2.0) * qc
+  let prob1 = 3.0 * q * pow(qc, 2.0)
+  let prob0 = pow(qc, 3.0)
+
+  let expected = prob3 * payoff3 + prob2 * payoff2 + prob1 * payoff1 + prob0 * payoff0
+  let discount = pow(r_growth, 3.0)
+
+  return expected / discount
+}
+
+fn main(console: Console) {
+  let scaled = call_price() * 10000.0
+  console.print_int(round(scaled))
+}

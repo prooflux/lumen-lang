@@ -1,0 +1,14 @@
+fn installment(principal: Dec, rate_bps: Int, months: Int) -> Dec {
+  let repay = dec_div(principal, months)
+  let annual_rate = dec_div(rate_bps, 10000)
+  let monthly_rate = dec_div(annual_rate, 12)
+  let interest = principal * monthly_rate
+  return repay + interest
+}
+
+fn main(console: Console) -> Unit {
+  console.print(dec_to_text(installment(12000.00d, 600, 12)))
+  console.print("\n")
+  console.print(dec_to_text(installment(1000.00d, 0, 3)))
+  console.print("\n")
+}

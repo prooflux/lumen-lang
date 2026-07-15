@@ -1,0 +1,26 @@
+fn horner(coeffs: Float[], n: Int, x: Float) -> Float {
+  var result = aget(coeffs, n - 1)
+  var i = n - 2
+  while i >= 0 {
+    result = result * x + aget(coeffs, i)
+    i = i - 1
+  }
+  return result
+}
+
+fn main(console: Console) {
+  var c = array(4)
+  aset(c, 0, 2.0)
+  aset(c, 1, -3.0)
+  aset(c, 2, 0.0)
+  aset(c, 3, 1.0)
+
+  var v1 = horner(c, 4, 2.0)
+  console.print_int(round(v1 * 10000.0))
+
+  var v2 = horner(c, 4, -2.0)
+  console.print_int(round(v2 * 10000.0))
+
+  var v3 = horner(c, 4, 0.0)
+  console.print_int(round(v3 * 10000.0))
+}

@@ -1,0 +1,27 @@
+fn digit_sum(n: Int) -> Int {
+  var s = 0
+  var x = n
+  while x > 0 {
+    let d = x - (x / 10) * 10
+    s = s + d
+    x = x / 10
+  }
+  return s
+}
+
+fn report(n: Int, console: Console) -> Unit {
+  var x = n
+  var iters = 0
+  while x >= 10 {
+    x = digit_sum(x)
+    iters = iters + 1
+  }
+  console.print_int(x)
+  console.print_int(iters)
+}
+
+fn main(console: Console) -> Unit {
+  report(9875, console)
+  report(7, console)
+  report(0, console)
+}

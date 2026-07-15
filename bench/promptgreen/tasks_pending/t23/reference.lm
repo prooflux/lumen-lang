@@ -1,0 +1,23 @@
+fn main(console: Console) -> Unit {
+  let n_limit = 1000
+  let flags = array(n_limit)
+  var i = 0
+  while i < n_limit {
+    aset(flags, i, 0.0)
+    i = i + 1
+  }
+  var count = 0
+  var n = 2
+  while n < n_limit {
+    if aget(flags, n) == 0.0 {
+      count = count + 1
+      var j = n * n
+      while j < n_limit {
+        aset(flags, j, 1.0)
+        j = j + n
+      }
+    }
+    n = n + 1
+  }
+  console.print_int(count)
+}

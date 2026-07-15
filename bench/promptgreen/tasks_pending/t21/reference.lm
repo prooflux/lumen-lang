@@ -1,0 +1,21 @@
+fn main(console: Console) -> Unit {
+  let a = array(10)
+  aset(a, 0, 5.5)
+  aset(a, 1, 5.5)
+  aset(a, 2, 5.5)
+  aset(a, 3, 5.5)
+  aset(a, 4, 5.5)
+  aset(a, 5, 5.5)
+  aset(a, 6, 5.5)
+  aset(a, 7, 5.5)
+  aset(a, 8, 5.5)
+  aset(a, 9, 5.5)
+
+  var i = 0
+  while i <= 7 {
+    let s = aget(a, i) + aget(a, i + 1) + aget(a, i + 2)
+    let m = s / 3.0
+    console.print_int(round(m * 10000.0))
+    i = i + 1
+  }
+}

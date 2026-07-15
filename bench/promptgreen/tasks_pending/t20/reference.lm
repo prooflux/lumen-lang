@@ -1,0 +1,67 @@
+fn dot(u: Float[], v: Float[], n: Int) -> Float {
+  var sum = 0.0
+  var i = 0
+  while i < n {
+    sum = sum + aget(u, i) * aget(v, i)
+    i = i + 1
+  }
+  return sum
+}
+
+fn norm(u: Float[], n: Int) -> Float {
+  var sum = 0.0
+  var i = 0
+  while i < n {
+    var x = aget(u, i)
+    sum = sum + x * x
+    i = i + 1
+  }
+  return sqrt(sum)
+}
+
+fn main(console: Console) -> Unit {
+  var u = array(8)
+  aset(u, 0, 1.0)
+  aset(u, 1, 2.0)
+  aset(u, 2, 3.0)
+  aset(u, 3, 4.0)
+  aset(u, 4, 5.0)
+  aset(u, 5, 6.0)
+  aset(u, 6, 7.0)
+  aset(u, 7, 8.0)
+
+  var v = array(8)
+  aset(v, 0, 8.0)
+  aset(v, 1, 7.0)
+  aset(v, 2, 6.0)
+  aset(v, 3, 5.0)
+  aset(v, 4, 4.0)
+  aset(v, 5, 3.0)
+  aset(v, 6, 2.0)
+  aset(v, 7, 1.0)
+
+  console.print_int(round(dot(u, v, 8) * 10000.0))
+  console.print_int(round(norm(u, 8) * 10000.0))
+
+  var w = array(8)
+  aset(w, 0, 1.0)
+  aset(w, 1, 0.0)
+  aset(w, 2, -1.0)
+  aset(w, 3, 0.0)
+  aset(w, 4, 1.0)
+  aset(w, 5, 0.0)
+  aset(w, 6, -1.0)
+  aset(w, 7, 0.0)
+
+  var x = array(8)
+  aset(x, 0, 0.0)
+  aset(x, 1, 1.0)
+  aset(x, 2, 0.0)
+  aset(x, 3, 1.0)
+  aset(x, 4, 0.0)
+  aset(x, 5, 1.0)
+  aset(x, 6, 0.0)
+  aset(x, 7, 1.0)
+
+  console.print_int(round(dot(w, x, 8) * 10000.0))
+}

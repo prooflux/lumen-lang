@@ -1,0 +1,9 @@
+fn net_amount() -> Dec {
+  let sum = 50.00d + 45.00d + 35.00d
+  let rate = dec_div(1.00d, 0.008192d)
+  return sum - rate
+}
+
+fn main(console: Console) {
+  console.print(text_concat(dec_to_text(net_amount()), "\n"))
+}

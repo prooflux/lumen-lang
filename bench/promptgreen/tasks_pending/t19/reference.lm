@@ -1,0 +1,49 @@
+fn max_drawdown(prices: Float[], n: Int) -> Float {
+  var peak = aget(prices, 0)
+  var maxdd = 0.0
+  var i = 0
+  while i < n {
+    var p = aget(prices, i)
+    if p > peak {
+      peak = p
+    }
+    var dd = (peak - p) / peak
+    if dd > maxdd {
+      maxdd = dd
+    }
+    i = i + 1
+  }
+  return maxdd
+}
+
+fn main(console: Console) -> Unit {
+  var a = array(12)
+  aset(a, 0, 100.0)
+  aset(a, 1, 105.0)
+  aset(a, 2, 102.0)
+  aset(a, 3, 110.0)
+  aset(a, 4, 90.0)
+  aset(a, 5, 95.0)
+  aset(a, 6, 80.0)
+  aset(a, 7, 85.0)
+  aset(a, 8, 88.0)
+  aset(a, 9, 120.0)
+  aset(a, 10, 118.0)
+  aset(a, 11, 130.0)
+  console.print_int(round(max_drawdown(a, 12) * 1000000.0))
+
+  var b = array(12)
+  aset(b, 0, 100.0)
+  aset(b, 1, 101.0)
+  aset(b, 2, 102.0)
+  aset(b, 3, 103.0)
+  aset(b, 4, 104.0)
+  aset(b, 5, 105.0)
+  aset(b, 6, 106.0)
+  aset(b, 7, 107.0)
+  aset(b, 8, 108.0)
+  aset(b, 9, 109.0)
+  aset(b, 10, 110.0)
+  aset(b, 11, 111.0)
+  console.print_int(round(max_drawdown(b, 12) * 1000000.0))
+}

@@ -1,0 +1,65 @@
+fn luhn_check(digits: Int, n: Int) -> Int {
+  var sum = 0
+  var i = n - 1
+  var pos = 0
+  while i >= 0 {
+    var d = to_int(aget(digits, i))
+    if pos % 2 == 1 {
+      d = d * 2
+      if d > 9 {
+        d = d - 9
+      }
+    }
+    sum = sum + d
+    pos = pos + 1
+    i = i - 1
+  }
+  if sum % 10 == 0 {
+    return 1
+  } else {
+    return 0
+  }
+}
+
+fn main(console: Console) -> Unit {
+  var n = 16
+
+  var card1 = array(n)
+  aset(card1, 0, 4.0)
+  aset(card1, 1, 5.0)
+  aset(card1, 2, 3.0)
+  aset(card1, 3, 2.0)
+  aset(card1, 4, 0.0)
+  aset(card1, 5, 1.0)
+  aset(card1, 6, 5.0)
+  aset(card1, 7, 1.0)
+  aset(card1, 8, 1.0)
+  aset(card1, 9, 2.0)
+  aset(card1, 10, 8.0)
+  aset(card1, 11, 3.0)
+  aset(card1, 12, 0.0)
+  aset(card1, 13, 3.0)
+  aset(card1, 14, 6.0)
+  aset(card1, 15, 6.0)
+
+  var card2 = array(n)
+  aset(card2, 0, 4.0)
+  aset(card2, 1, 5.0)
+  aset(card2, 2, 3.0)
+  aset(card2, 3, 2.0)
+  aset(card2, 4, 0.0)
+  aset(card2, 5, 1.0)
+  aset(card2, 6, 5.0)
+  aset(card2, 7, 1.0)
+  aset(card2, 8, 1.0)
+  aset(card2, 9, 2.0)
+  aset(card2, 10, 8.0)
+  aset(card2, 11, 3.0)
+  aset(card2, 12, 0.0)
+  aset(card2, 13, 3.0)
+  aset(card2, 14, 6.0)
+  aset(card2, 15, 7.0)
+
+  console.print_int(luhn_check(card1, n))
+  console.print_int(luhn_check(card2, n))
+}

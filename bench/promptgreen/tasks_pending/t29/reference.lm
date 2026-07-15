@@ -1,0 +1,32 @@
+fn main(console: Console) -> Unit {
+  let cf = array(4)
+  aset(cf, 0, -1000.0)
+  aset(cf, 1, 300.0)
+  aset(cf, 2, 400.0)
+  aset(cf, 3, 500.0)
+
+  var lo = -0.5
+  var hi = 1.0
+
+  var i = 0
+  while i < 60 {
+    var mid = (lo + hi) / 2.0
+    var npv_lo = 0.0
+    var npv_mid = 0.0
+    var j = 0
+    while j < alen(cf) {
+      npv_lo = npv_lo + aget(cf, j) / pow(1.0 + lo, to_float(j))
+      npv_mid = npv_mid + aget(cf, j) / pow(1.0 + mid, to_float(j))
+      j = j + 1
+    }
+    if npv_lo * npv_mid <= 0.0 {
+      hi = mid
+    } else {
+      lo = mid
+    }
+    i = i + 1
+  }
+
+  var r = (lo + hi) / 2.0
+  console.print_int(round(r * 1000000.0))
+}

@@ -1,0 +1,28 @@
+fn f(x: Float, target: Float) -> Float {
+  return x * x * x + x - target
+}
+
+fn bisect(lo: Float, hi: Float, target: Float) -> Float {
+  var a = lo
+  var b = hi
+  var i = 0
+  while i < 100 {
+    var mid = (a + b) / 2.0
+    if f(mid, target) < 0.0 {
+      a = mid
+    } else {
+      b = mid
+    }
+    i = i + 1
+  }
+  return (a + b) / 2.0
+}
+
+fn main(console: Console) {
+  var r1 = bisect(0.0, 5.0, 30.0)
+  console.print_int(round(r1 * 1000000.0))
+  var r2 = bisect(-5.0, 5.0, 0.0)
+  console.print_int(round(r2 * 1000000.0))
+  var r3 = bisect(0.0, 2.0, 2.0)
+  console.print_int(round(r3 * 1000000.0))
+}

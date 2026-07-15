@@ -1,0 +1,21 @@
+fn main(console: Console) -> Unit {
+  let start = 27
+  var n = start
+  var steps = 0
+  var peak = start
+
+  while n != 1 {
+    if n - (n / 2) * 2 == 0 {
+      n = n / 2
+    } else {
+      n = 3 * n + 1
+    }
+    steps = steps + 1
+    if n > peak {
+      peak = n
+    }
+  }
+
+  console.print_int(steps)
+  console.print_int(peak)
+}

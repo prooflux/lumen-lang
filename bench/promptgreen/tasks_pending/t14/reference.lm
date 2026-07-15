@@ -1,0 +1,30 @@
+fn main(console: Console) -> Unit {
+  let income = 10000.00d
+  let b1_top = 10000d
+  let b2_top = 30000d
+
+  var b1 = income
+  if b1 > b1_top { b1 = b1_top }
+
+  var b2 = income - b1_top
+  if b2 < 0d { b2 = 0d }
+  var b2_span = b2_top - b1_top
+  if b2 > b2_span { b2 = b2_span }
+
+  var b3 = income - b2_top
+  if b3 < 0d { b3 = 0d }
+
+  let tax1 = dec_div(b1 * 10, 100)
+  let tax2 = dec_div(b2 * 20, 100)
+  let tax3 = dec_div(b3 * 30, 100)
+  let total = tax1 + tax2 + tax3
+
+  console.print(dec_to_text(tax1))
+  console.print("\n")
+  console.print(dec_to_text(tax2))
+  console.print("\n")
+  console.print(dec_to_text(tax3))
+  console.print("\n")
+  console.print(dec_to_text(total))
+  console.print("\n")
+}

@@ -1,0 +1,20 @@
+fn print_shares(amount: Dec, n: Int, console: Console) -> Unit {
+  let cents = round(dec_to_float(amount) * 100.0)
+  let base = cents / n
+  let rem = cents % n
+  var i = 1
+  while i <= n {
+    var share = base
+    if i <= rem {
+      share = base + 1
+    }
+    console.print(dec_to_text(dec_div(share, 100)))
+    console.print("\n")
+    i = i + 1
+  }
+}
+
+fn main(console: Console) -> Unit {
+  print_shares(100.07d, 3, console)
+  print_shares(90.00d, 3, console)
+}

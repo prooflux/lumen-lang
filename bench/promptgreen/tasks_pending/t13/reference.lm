@@ -1,0 +1,12 @@
+fn main(console: Console) -> Unit {
+  var balance = 1000.00d
+  let rate_bp = 137
+  var i = 0
+  while i < 5 {
+    let interest = dec_div(balance * rate_bp, 10000)
+    balance = balance + interest
+    console.print(dec_to_text(balance))
+    console.print("\n")
+    i = i + 1
+  }
+}

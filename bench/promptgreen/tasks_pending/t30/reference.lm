@@ -1,0 +1,32 @@
+fn main(console: Console) -> Unit {
+  let data = array(10)
+  aset(data, 0, 2.0)
+  aset(data, 1, 4.0)
+  aset(data, 2, 4.0)
+  aset(data, 3, 4.0)
+  aset(data, 4, 5.0)
+  aset(data, 5, 5.0)
+  aset(data, 6, 7.0)
+  aset(data, 7, 9.0)
+  aset(data, 8, 10.0)
+  aset(data, 9, 3.0)
+
+  var n = 0
+  var mean = 0.0
+  var m2 = 0.0
+  var i = 0
+  while i < alen(data) {
+    n = n + 1
+    let x = aget(data, i)
+    let delta = x - mean
+    mean = mean + delta / to_float(n)
+    let delta2 = x - mean
+    m2 = m2 + delta * delta2
+    i = i + 1
+  }
+
+  var variance = m2 / to_float(n)
+
+  console.print_int(round(mean * 10000.0))
+  console.print_int(round(variance * 10000.0))
+}

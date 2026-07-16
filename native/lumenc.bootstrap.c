@@ -6,13 +6,16 @@
 #include <signal.h>
 #include <unistd.h>
 static const unsigned char lm_trap_msg[19] = {108,117,109,101,110,58,32,109,101,109,111,114,121,32,116,114,97,112,10};
-static void lm_trap(int sig){ write(2, lm_trap_msg, 19); _exit(70); }
+static void lm_trap(int sig){ fflush(stdout); write(2, lm_trap_msg, 19); _exit(70); }
 __attribute__((constructor)) static void lm_install_traps(void){ signal(SIGBUS, lm_trap); signal(SIGSEGV, lm_trap); }
-static void pic(int64_t v){uint64_t u; int n; char b[24];
-if(v<0){putchar(45);u=0-(uint64_t)v;}else{u=(uint64_t)v;}
-if(u==0){putchar(48);putchar(10);return;}
-n=0; while(u!=0){b[n]=(char)(48+(int)(u%10));n=n+1;u=u/10;}
-while(n!=0){n=n-1;putchar((int)b[n]);} putchar(10);}
+static void pic(int64_t v){uint64_t u; int n; int neg; char b[24]; char out[26]; int m;
+neg=0; if(v<0){neg=1;u=0-(uint64_t)v;}else{u=(uint64_t)v;}
+n=0;
+if(u==0){b[n]=48;n=n+1;} else { while(u!=0){b[n]=(char)(48+(int)(u%10));n=n+1;u=u/10;} }
+m=0; if(neg){out[m]=45;m=m+1;}
+while(n!=0){n=n-1;out[m]=b[n];m=m+1;}
+out[m]=10;m=m+1;
+fwrite(out,1,(size_t)m,stdout);}
 static double l2d(int64_t b){double d; memcpy(&d,&b,8); return d;}
 static int64_t d2l(double d){int64_t b; memcpy(&b,&d,8); return b;}
 static int64_t f2i_sat(double x){if(isnan(x))return 0; if(x>=9223372036854775808.0)return INT64_MAX; if(x< -9223372036854775808.0)return INT64_MIN; return (int64_t)x;}

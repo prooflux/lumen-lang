@@ -1,0 +1,17 @@
+# Bug #25 regression: Int literals whose magnitude exceeds i32 range used to be silently
+# truncated in the lexer (both compilers accumulated/stored a literal's digits through a
+# 32-bit field). Exercises the exact boundary (i32::MAX, still the untouched fast path),
+# several magnitudes past it up to i64::MAX (the documented scope ceiling: literals support
+# 0..2^63-1, negation is a separate unary op), and unary minus over a big-magnitude operand
+# (desugars to `0 - x`, so this also proves the synthesized constant composes with SUB).
+# Expected stdout:
+# "2147483647\n2147483648\n9007199254740993\n4611686018427387904\n9223372036854775807\n-4611686018427387905\n-4611686018427387905\n"
+fn main(c: Console) -> Unit {
+  c.print_int(2147483647)                # i32::MAX: unchanged single-PUSH path (regression guard)
+  c.print_int(2147483648)                # 2^31: smallest magnitude that overflows i32
+  c.print_int(9007199254740993)          # 2^53 + 1: also past f64's exact-integer range
+  c.print_int(4611686018427387904)       # 2^62
+  c.print_int(9223372036854775807)       # i64::MAX: the scope ceiling
+  c.print_int(0 - 4611686018427387905)   # negative via explicit "0 - x" (what unary minus desugars to)
+  c.print_int(-4611686018427387905)      # the same value via real unary-minus syntax
+}

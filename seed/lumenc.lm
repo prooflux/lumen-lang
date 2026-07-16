@@ -1251,7 +1251,23 @@ fn lex(srclen: Int) -> Unit {
             if isfloat == 1 {
               tokset(n, 30, SRC() + dstart, i - dstart)
             } else {
-              tokset(n, 2, val, 0)
+              # Bug #25: `val` is already the correct 64-bit Int (Lumen's Int is i64 end to
+              # end; the loop above never truncates) - the truncation used to happen only in
+              # tokset's own store32 when writing it to the token's `a` field. Fix: a literal
+              # that fits i32 (the overwhelming majority) keeps the exact single-tokset call
+              # (kind 2, a=value, b=0) so every existing golden/census program still compiles
+              # to byte-identical IR (no regolding). A literal outside i32 range gets a new
+              # token kind (32) carrying its low/high 32-bit halves: `val` passed straight
+              # through (tokset's store32 keeps only its low 32 bits, exactly the "lo" half),
+              # and `shr(val, 32)` (the same builtin the Dec literal path just above already
+              # uses for its own hi half) supplies the high half explicitly. c_primary
+              # reconstructs the i64 constant from those halves using only existing opcodes
+              # (PUSH/SHL/SHR/BOR) - zero new opcodes.
+              if val > 2147483647 {
+                tokset(n, 32, val, shr(val, 32))
+              } else {
+                tokset(n, 2, val, 0)
+              }
             }
           }
           n = n + 1
@@ -1414,6 +1430,36 @@ fn c_primary() -> Unit {
   if k == 2 {
     emitw(1)
     emitw(ta(get_tp()))
+    adv()
+    set_etype(0)
+    return ()
+  }
+  if k == 32 {
+    # Bug #25: BigInt literal (magnitude past i32 range). Reconstruct the i64 constant from
+    # its low/high 32-bit halves (token fields a, b) using only existing opcodes - PUSH/SHL/
+    # SHR/BOR - so no new opcode is introduced. hi is always <= 0x7FFFFFFF (source magnitudes
+    # are capped at 2^63-1; negation is a separate unary op), so PUSHing it never hits PUSH's
+    # sign-extension edge case. lo may have its own top bit set, so PUSH lo; PUSH 32; SHL
+    # discards whatever sign-extension garbage PUSH produced (shifted out of the low 64 bits,
+    # standard wrapping shift), then PUSH 32; SHR (logical/unsigned - verified identical
+    # across all four engines: this compiler's own bytecode interpreter port, the C emitter,
+    # the LLVM emitter) zero-extends lo back down before BOR-ing it with hi<<32.
+    let hi = tb(get_tp())
+    let lo = ta(get_tp())
+    emitw(1)
+    emitw(hi)
+    emitw(1)
+    emitw(32)
+    emitw(61)
+    emitw(1)
+    emitw(lo)
+    emitw(1)
+    emitw(32)
+    emitw(61)
+    emitw(1)
+    emitw(32)
+    emitw(62)
+    emitw(59)
     adv()
     set_etype(0)
     return ()

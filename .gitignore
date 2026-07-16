@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# promptgreen local run logs; promoted to results/ only by a reporting PR
+bench/promptgreen/runs/

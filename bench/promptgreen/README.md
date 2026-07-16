@@ -45,11 +45,54 @@ weaker claim than "does it work."
   correct solution, verified to compile clean and pass its own hidden tests), and
   `hidden_tests.mjs` (exports `run(compileFn, source) -> {green, detail}`; never shown to an
   author).
-- `selftest.mjs`: runs the scripted author over all 10 tasks and asserts the measured
-  rounds-to-green vector exactly matches the scripted expectation, every reference.lm compiles
-  clean and passes its own hidden tests, every non-green round actually carries a diagnostic
-  (the broken attempts are not accidentally green), and the JSONL log is well-formed. Exit
-  0/1.
+- `selftest.mjs`: runs the scripted author over the dev+held_out shards (the same 10 frozen
+  tasks as always) and asserts the measured rounds-to-green vector exactly matches the scripted
+  expectation, every reference.lm across all 38 tasks compiles clean and passes its own hidden
+  tests, every non-green round actually carries a diagnostic (the broken attempts are not
+  accidentally green), the manifest and the tasks/ directory agree with each other, the
+  held_out and metamorphic seals still verify, and the JSONL log is well-formed. Exit 0/1.
+
+## Corpus shards
+
+Task discovery is manifest-driven, not a bare directory scan. `shards.json` is the single
+source of truth for which task ids exist, which shard each belongs to, and (for the two
+sealed shards) the SHA-256 that proves nothing changed since sealing:
+
+- **`dev`** (`t01`, `t02`): iteration only. Used to debug the harness, the author-integration,
+  and the prompting before any sealed run. Never contributes an observation to H1, H2, or H3.
+  No seal (nothing to protect; it is expected to change).
+- **`held_out`** (`t03`..`t10`, n=8): the v1 primary evaluation set. Sealed
+  (`shards.json` -> `shards.held_out.seal`, version `v1`). `runner.mjs`'s `listTaskIds()`
+  default (`['dev', 'held_out']`) is exactly this classic 10-task set, unchanged in substance
+  from before this manifest existed.
+- **`metamorphic`** (`m03`..`m10`): semantics-preserving transforms of `held_out`, one variant
+  per task, the memorization control described in `PREREGISTRATION_v1.md` Addendum 1. Sealed
+  (version `v1-addendum1`). Reachable only via an explicit `listTaskIds(['metamorphic'])`; the
+  default task list never silently picks these up.
+- **`extended`** (`t11`..`t30`): the staged v2 corpus (20 tasks: exact-decimal money kernels
+  exercising the `Dec` type, float quant kernels, and integer algorithms; each verified before
+  staging and each carrying a Python twin under `py/` for the eventual Config B comparison). No
+  seal yet and no observation in v1; these move into a sealed shard of their own once the >=
+  100-task v2 registration lands. Previously staged under a separate `tasks_pending/`
+  directory kept out of `runner.mjs`'s old bare-regex discovery; that directory no longer
+  exists, since discovery is manifest-driven now and `extended`'s `observation: false` already
+  keeps these 20 out of any measured run.
+
+`seal_check.mjs` is the pure fs+crypto module that recomputes and checks these seals (no
+compiler import, so it can run standalone or before the compiler is even built):
+
+```
+node bench/promptgreen/seal_check.mjs --shard held_out
+node bench/promptgreen/seal_check.mjs --all      # every shard; unsealed shards print "skipped"
+```
+
+It exports `loadShards()`, `computeShardSha(shardName)`, `verifyShardSeal(shardName)` (returns
+`{ ok, expected, actual }`), and `assertSealsForMeasuredRun(shardName)` (throws unless the shard
+has a seal AND it verifies; call this before treating any run against a sealed shard as a
+measured observation). `selftest.mjs` runs `verifyShardSeal` against `held_out` and
+`metamorphic` on every CI run, so a one-byte change to any sealed task's `spec.md`,
+`reference.lm`, or `hidden_tests.mjs` turns the gate red immediately: this is the tamper alarm,
+not just a one-time check at authoring time.
 
 ## What v0 does NOT measure
 
@@ -63,10 +106,13 @@ weaker claim than "does it work."
   crude placeholder with no relationship to any real tokenizer. It exists so the JSONL schema
   has the right shape before a pinned tokenizer lands. Never report a number derived from it
   as "tokens": call it "approx tokens" and say what it is a proxy for.
-- **10 tasks, not 100+.** The section-4 target corpus is >= 100 tasks. This lane freezes 10 to
-  prove the rig; growing the corpus is WP-promptgreen (parallel, ongoing), one task per PR,
-  each with its own spec/reference/hidden test set, never touching the language to make a task
-  fit (see the brief's stop rule: if a task needs an unshipped feature, change the task).
+- **10 measured tasks, not 100+.** The section-4 target corpus is >= 100 tasks. `held_out` (8)
+  plus `dev` (2) is the set any run actually measures against today; the `extended` shard (20
+  more, `t11`..`t30`) is staged and verified but carries `observation: false` in `shards.json`,
+  so it contributes nothing to H1-H3 until its own sealed v2 registration lands. Growing the
+  corpus further is WP-promptgreen (parallel, ongoing), one task per PR, each with its own
+  spec/reference/hidden test set, never touching the language to make a task fit (see the
+  brief's stop rule: if a task needs an unshipped feature, change the task).
 
 ## How a real author plugs in later
 

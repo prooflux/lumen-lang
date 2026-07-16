@@ -7,12 +7,18 @@
 // Token counting is a pluggable hook: tokenize(text) -> int. The default below is a
 // PLACEHOLDER (chars/4) until a pinned real tokenizer lands; never report its output as
 // "tokens" without the "approx" prefix (see README.md).
+//
+// Task discovery is manifest-driven (shards.json), not a bare directory scan: see
+// shards.json's "corpus shards" section in README.md. listTaskIds() defaults to the two
+// shards that make up the classic 10-task selftest set (dev + held_out); the metamorphic
+// shard is reachable only by asking for it explicitly, so it never silently joins a run.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createCompiler } from '../../seed/compiler_core.mjs';
 import { buildDiagnostics } from '../../seed/diagnostics.mjs';
+import { loadShards } from './seal_check.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,8 +33,19 @@ export function approxTokens(text) {
 
 export const TASKS_DIR = path.join(__dirname, 'tasks');
 
-export function listTaskIds() {
-  return fs.readdirSync(TASKS_DIR).filter(n => /^t\d+$/.test(n)).sort();
+// Task ids for a set of shards (see shards.json), sorted. Defaults to dev+held_out: the same
+// 10 frozen tasks the classic selftest has always measured. Pass ['metamorphic'] explicitly
+// to reach m03..m10, or ['extended'] for the staged v2 corpus (t11..t30, not yet part of any
+// measured run).
+export function listTaskIds(shardNames = ['dev', 'held_out']) {
+  const shards = loadShards();
+  const ids = [];
+  for (const name of shardNames) {
+    const shard = shards.shards[name];
+    if (!shard) throw new Error(`listTaskIds: unknown shard '${name}' (see shards.json)`);
+    ids.push(...shard.tasks);
+  }
+  return ids.sort();
 }
 
 export function loadTask(taskId) {

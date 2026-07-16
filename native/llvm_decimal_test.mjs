@@ -155,10 +155,15 @@ for (const [name, src, golden] of CORPUS) {
 console.log(`\n${pass}/${pass + fail} decimal programs translated by emit_llvm.lm are bit-identical to the interpreter (fail ${fail})`);
 
 // 3. Trap parity (Honesty rules): DADD overflow, dec_div by zero, DFROMI overflow. Each prints a
-// prefix, then traps. Int literals here are deliberately kept i32-small (see the tracked lexer
-// bug: "Int literals silently truncate past i32 range in $lex") - DFROMI's overflow is reached
-// by multiplying two small literals at runtime (Int arithmetic is unchecked 64-bit) rather than
-// by writing one huge literal token, so this test is not confounded by that unrelated bug.
+// prefix, then traps. Bug #25 ("Int literals silently truncate past i32 range in $lex") is now
+// fixed (front-end constant synthesis in both $lex/$c_primary and their lumenc.lm mirrors, zero
+// new opcodes - see mu/examples/int_big.lm and seed/corpus.mjs's census entry for the dedicated
+// regression coverage). 'dfromi_overflow_trap' still reaches DFROMI's overflow path the original
+// way (multiplying two small literals at runtime) precisely so this file's coverage is unchanged;
+// 'dfromi_overflow_trap_big_literal' below is the cheap extra oracle case the fix makes possible:
+// a single literal written directly past i32 range (2^53+1, already covered end to end by
+// int_big.lm) now lexes correctly and DFROMI's overflow trap is reached from it directly, with
+// no runtime-multiplication workaround needed.
 const TRAPS = [
   ['dadd_overflow_trap', `fn main(c: Console) -> Unit {
   c.print_int(123)
@@ -173,6 +178,12 @@ const TRAPS = [
   ['dfromi_overflow_trap', `fn main(c: Console) -> Unit {
   c.print_int(789)
   let big = 1000000 * 1000000 * 10
+  let x = big + 1.0d
+}
+`],
+  ['dfromi_overflow_trap_big_literal', `fn main(c: Console) -> Unit {
+  c.print_int(987)
+  let big = 9007199254740993
   let x = big + 1.0d
 }
 `],

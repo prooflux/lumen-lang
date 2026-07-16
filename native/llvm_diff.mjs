@@ -28,7 +28,7 @@ fn main(c: Console) -> Unit {
 
 const SCALAR = [
   'fib_print', 'add', 'max', 'fact', 'locals', 'forward', 'mutual', 'compare', 'gcd', 'count', 'sum_loop',
-  'hello', 'greet', 'report', 'fizzbuzz', 'safe_div', 'propagate', 'bitwise'
+  'hello', 'greet', 'report', 'fizzbuzz', 'safe_div', 'propagate', 'bitwise', 'int_big'
 ];
 
 const lumen = await createCompiler();

@@ -737,6 +737,9 @@
   ;; ---------- tokenizer ----------
   (func $lex (param $srclen i32)
     (local $i i32) (local $n i32) (local $c i32) (local $start i32) (local $val i32)
+    (local $ival i64)   ;; Bug #25: Int literal digit accumulator, widened to i64 (was i32,
+                        ;; silently truncating any literal past ~2.1e9). $val (i32) stays for
+                        ;; the unrelated single-char-token dispatch further down this function.
     (local.set $i (i32.const 0)) (local.set $n (i32.const 0))
     (block $end
       (loop $L
@@ -768,13 +771,19 @@
         (if (call $is_digit (local.get $c))
           (then
             (local.set $start (local.get $i))
-            (local.set $val (i32.const 0))
+            (local.set $ival (i64.const 0))
             (block $de
               (loop $dl
                 (br_if $de (i32.ge_u (local.get $i) (local.get $srclen)))
                 (local.set $c (call $b (local.get $i)))
                 (br_if $de (i32.eqz (call $is_digit (local.get $c))))
-                (local.set $val (i32.add (i32.mul (local.get $val) (i32.const 10)) (i32.sub (local.get $c) (i32.const 48))))
+                ;; Bug #25: accumulate as i64 (was i32, silently wrapping past ~2.1e9). Scope is
+                ;; 0..2^63-1 (magnitudes only; negation is a separate unary op elsewhere in this
+                ;; function) - a literal with ~19+ digits still wraps here exactly like every
+                ;; other Int overflow in this language (Int add/mul never trap), which is
+                ;; accepted, documented behavior, not a new diagnostic surface.
+                (local.set $ival (i64.add (i64.mul (local.get $ival) (i64.const 10))
+                                           (i64.extend_i32_u (i32.sub (local.get $c) (i32.const 48)))))
                 (local.set $i (i32.add (local.get $i) (i32.const 1)))
                 (br $dl)))
             ;; Dec literal (D1)? an integer with no fraction, immediately followed by a 'd'
@@ -814,7 +823,19 @@
                   (i32.add (i32.const 100000) (local.get $start)) (i32.sub (local.get $i) (local.get $start)))
                 (local.set $n (i32.add (local.get $n) (i32.const 1)))
                 (br $L)))
-            (call $tokset (local.get $n) (i32.const 2) (local.get $val) (i32.const 0))
+            ;; Bug #25: a literal that fits i32 (the overwhelming majority) keeps the exact
+            ;; single-PUSH encoding (kind 2, a=value, b=0) so every existing golden/census
+            ;; program still compiles to byte-identical IR (no regolding). A literal outside
+            ;; i32 range gets a new token kind (32) carrying its low/high 32-bit halves;
+            ;; $c_primary reconstructs the i64 constant from those halves using only existing
+            ;; opcodes (PUSH/SHL/SHR/BOR) - zero new opcodes.
+            (if (i64.le_s (local.get $ival) (i64.const 2147483647))
+              (then
+                (call $tokset (local.get $n) (i32.const 2) (i32.wrap_i64 (local.get $ival)) (i32.const 0)))
+              (else
+                (call $tokset (local.get $n) (i32.const 32)
+                  (i32.wrap_i64 (local.get $ival))
+                  (i32.wrap_i64 (i64.shr_u (local.get $ival) (i64.const 32))))))
             (local.set $n (i32.add (local.get $n) (i32.const 1)))
             (br $L)))
         ;; identifier
@@ -1072,6 +1093,28 @@
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 2))   ;; INT
       (then
         (call $emitw (i32.const 1)) (call $emitw (call $ta (global.get $tp)))
+        (global.set $ety (i32.const 0))
+        (call $adv) (return)))
+    (if (i32.eq (call $tk (global.get $tp)) (i32.const 32))   ;; BigInt literal (Bug #25): magnitude past i32 range
+      (then
+        ;; Reconstruct the i64 constant from its low/high 32-bit halves (token fields a, b)
+        ;; using only existing opcodes - PUSH/SHL/SHR/BOR - so no new opcode is introduced.
+        ;; hi is always <= 0x7FFFFFFF (source magnitudes are capped at 2^63-1; negation is a
+        ;; separate unary op), so PUSHing it never hits PUSH's sign-extension edge case. lo
+        ;; may have its own top bit set, so PUSH lo; PUSH 32; SHL discards whatever
+        ;; sign-extension garbage PUSH produced (shifted out of the low 64 bits, standard
+        ;; wrapping shift), then PUSH 32; SHR (logical/unsigned - verified identical across
+        ;; all four engines: this wat interpreter, native/ir_interpreter.mjs, emit_fn.lm's C,
+        ;; emit_llvm.lm's LLVM lshr) zero-extends lo back down before BOR-ing it with hi<<32.
+        (call $emitw (i32.const 1)) (call $emitw (call $tb (global.get $tp)))   ;; PUSH hi
+        (call $emitw (i32.const 1)) (call $emitw (i32.const 32))               ;; PUSH 32
+        (call $emitw (i32.const 61))                                          ;; SHL -> hi<<32
+        (call $emitw (i32.const 1)) (call $emitw (call $ta (global.get $tp)))  ;; PUSH lo
+        (call $emitw (i32.const 1)) (call $emitw (i32.const 32))               ;; PUSH 32
+        (call $emitw (i32.const 61))                                          ;; SHL -> discard sign-ext garbage; lo now sits in bits[32:63]
+        (call $emitw (i32.const 1)) (call $emitw (i32.const 32))               ;; PUSH 32
+        (call $emitw (i32.const 62))                                          ;; SHR -> zero-extended lo
+        (call $emitw (i32.const 59))                                          ;; BOR -> (hi<<32) | lo
         (global.set $ety (i32.const 0))
         (call $adv) (return)))
     (if (i32.eq (call $tk (global.get $tp)) (i32.const 29))   ;; FLOAT literal

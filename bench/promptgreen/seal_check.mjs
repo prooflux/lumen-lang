@@ -58,7 +58,7 @@ export function computeShardSha(shardName, shards = loadShards()) {
   return hash.digest('hex');
 }
 
-// { ok, expected, actual } — expected/actual are null if the shard has no registered seal.
+// { ok, expected, actual }: expected/actual are null if the shard has no registered seal.
 export function verifyShardSeal(shardName, shards = loadShards()) {
   const shard = shardOrThrow(shards, shardName);
   if (!shard.seal) {

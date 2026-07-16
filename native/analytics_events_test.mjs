@@ -135,7 +135,9 @@ async function makeInterpreterRuntime() {
 
 // --- NATIVE runtime: the same framed request/response driver as state_eventlog_test.mjs. ---
 function patchMainToStateLoop(csrc) {
-  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);(f\d+)\(\);return 0;\}/);
+  // S1b: generic setvbuf mode/size match (not hardcoded _IONBF,0) - see the matching comment in
+  // lumenc_native.mjs's patchMainToCompileDriver for why.
+  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,[A-Za-z_]+,\d+\);(f\d+)\(\);return 0;\}/);
   if (!m) throw new Error('could not find the emitted main entry to patch');
   const entry = m[1];
   const loop = `

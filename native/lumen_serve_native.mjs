@@ -264,7 +264,9 @@ export async function buildNativeServeHandlers(routes, proxyMode, handlersSrc) {
 // Replace the emitter's one-shot `int main(){ ...; fN(); return 0; }` with a length-framed serve loop
 // that calls the same entry fN per request over stdin/stdout.
 function patchMainToServeLoop(csrc) {
-  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);(f\d+)\(\);return 0;\}/);
+  // S1b: generic setvbuf mode/size match (not hardcoded _IONBF,0) - see the matching comment in
+  // lumenc_native.mjs's patchMainToCompileDriver for why.
+  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,[A-Za-z_]+,\d+\);(f\d+)\(\);return 0;\}/);
   if (!m) throw new Error('could not find the emitted main entry to patch');
   const entry = m[1];
   const loop = `static uint32_t lm_rd4(void){unsigned char h[4]; if(fread(h,1,4,stdin)!=4)return 0xffffffffu; return (uint32_t)h[0]|((uint32_t)h[1]<<8)|((uint32_t)h[2]<<16)|((uint32_t)h[3]<<24);}
@@ -336,7 +338,9 @@ int main(void){lm_preload();lm_serve_loop();return 0;}`;
 // close cycles indefinitely, which is the same claim patchMainToServeLoop's immortality gate makes
 // for the pipe transport.
 function patchMainToSocketServer(csrc) {
-  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);(f\d+)\(\);return 0;\}/);
+  // S1b: generic setvbuf mode/size match (not hardcoded _IONBF,0) - see the matching comment in
+  // lumenc_native.mjs's patchMainToCompileDriver for why.
+  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,[A-Za-z_]+,\d+\);(f\d+)\(\);return 0;\}/);
   if (!m) throw new Error('could not find the emitted main entry to patch');
   const entry = m[1];
   const loop = `#include <sys/socket.h>

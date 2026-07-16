@@ -64,6 +64,7 @@ jobs:
           node native_fn_test.mjs
           node native_float_test.mjs
           node native_decimal_test.mjs
+          node native_buffered_stdout_test.mjs
           node llvm_diff.mjs
           node llvm_float_test.mjs
           node llvm_decimal_test.mjs

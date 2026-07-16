@@ -125,7 +125,11 @@ async function compileLumencRaw() {
 // and discarded) so a request that describes more bytes than the window holds cannot desync the
 // next request's length header on the same pipe.
 export function patchMainToCompileDriver(csrc, lexCompileEntry) {
-  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,_IONBF,0\);f\d+\(\);return 0;\}/);
+  // S1b: setvbuf's mode/size args are matched generically (not hardcoded to _IONBF,0) because
+  // native/emit_fn.lm's emitted preamble now buffers stdout (_IOFBF,65536) instead of leaving it
+  // unbuffered - this regex runs against C emitted by that same preamble via self-application, so
+  // it must tolerate whichever buffering mode emit_fn.lm currently emits.
+  const m = csrc.match(/int main\(void\)\{setvbuf\(stdout,0,[A-Za-z_]+,\d+\);f\d+\(\);return 0;\}/);
   if (!m) throw new Error('could not find the emitted main entry to patch');
   const driver = `static uint32_t lm_compile_rd4(void){
   unsigned char h[4];

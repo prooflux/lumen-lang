@@ -1,0 +1,17 @@
+# ABSORBED from Python math.isqrt (oracle: examples/absorbed/py/isqrt.py).
+# Verified against the live CPython oracle at absorption time; frozen outputs in
+# examples/absorbed/fixtures/isqrt.fixture.json, re-verified hermetically in CI.
+# Domain: Int in [0, 10^12] per the fixture (math.isqrt raises on negatives, so the
+# verified domain is nonnegative; this kernel returns 0 for negative input, a documented
+# extension outside the certified domain). Integer Newton iteration, floor(sqrt(n)).
+fn isqrt(n: Int) -> Int {
+  if n < 0 { return 0 }
+  if n < 2 { return n }
+  var x = n
+  var y = (x + 1) / 2
+  while y < x {
+    x = y
+    y = (x + n / x) / 2
+  }
+  return x
+}

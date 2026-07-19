@@ -1,0 +1,19 @@
+# ABSORBED from Python math.gcd (oracle: examples/absorbed/py/gcd.py).
+# Verified against the live CPython oracle at absorption time; frozen oracle outputs live in
+# examples/absorbed/fixtures/gcd.fixture.json and are re-verified hermetically by
+# tools/absorb/absorb_gate.mjs in CI (no Python needed after absorption).
+# Domain: Int x Int within the fixture's recorded ranges. Python's bignum behavior outside
+# i64 is out of scope by construction; math.gcd's result is always nonnegative, mirrored
+# here by taking magnitudes first.
+fn gcd(a: Int, b: Int) -> Int {
+  var x = a
+  if x < 0 { x = 0 - x }
+  var y = b
+  if y < 0 { y = 0 - y }
+  while y != 0 {
+    let t = x % y
+    x = y
+    y = t
+  }
+  return x
+}

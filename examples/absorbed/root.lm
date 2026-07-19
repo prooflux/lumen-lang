@@ -1,0 +1,10 @@
+# ABSORBED from Python math.sqrt of the magnitude (oracle: examples/absorbed/py/root.py).
+# Verified against the live CPython oracle at absorption time; frozen outputs in
+# examples/absorbed/fixtures/root.fixture.json, re-verified hermetically in CI.
+# Comparison mode: scaled-1e12 (floor(v * 1e12 + 0.5) as float64 on both sides), the
+# Float-absorption proof-of-plumbing. sqrt lowers to the same platform sqrt on both sides
+# so this passes bit-tight; transcendental absorptions with algorithmically different
+# foreign implementations are the documented frontier (see tools/absorb/README.md).
+fn root(x: Float) -> Float {
+  return sqrt(abs(x))
+}

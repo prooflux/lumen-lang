@@ -1,0 +1,20 @@
+# ABSORBED from Python math.comb (oracle: examples/absorbed/py/comb.py).
+# Verified against the live CPython oracle at absorption time; frozen outputs in
+# examples/absorbed/fixtures/comb.fixture.json, re-verified hermetically in CI.
+# Domain: n, k in [0, 30] per the fixture (C(30, 15) = 155117520 and every multiplicative
+# intermediate fits i64 comfortably; math.comb raises on negatives, so the certified
+# domain is nonnegative; k > n returns 0 exactly as math.comb does). Multiplicative
+# formula with symmetric reduction; each division is exact by construction.
+fn comb(n: Int, k: Int) -> Int {
+  if k < 0 { return 0 }
+  if k > n { return 0 }
+  var kk = k
+  if kk > n - kk { kk = n - kk }
+  var r = 1
+  var i = 1
+  while i <= kk {
+    r = (r * (n - kk + i)) / i
+    i = i + 1
+  }
+  return r
+}

@@ -118,3 +118,11 @@ jobs:
           # Only its PURE functions (G9 stdout comparator, median, spawn-cost clamp, row/table
           # rendering, the AUTO-block splice) are gated here, deterministically, no timing.
           node bench/latency_shootout_selftest.mjs
+      - name: absorb gate (foreign-oracle kernels stay pinned and green)
+        working-directory: .
+        run: |
+          # absorb_selftest exercises the live-oracle path (python3, same precedent as
+          # native/decimal_oracle_test.mjs); absorb_gate is hermetic: it re-verifies every
+          # absorbed kernel against its FROZEN oracle outputs and sha pins, no Python needed.
+          node tools/absorb/absorb_selftest.mjs
+          node tools/absorb/absorb_gate.mjs

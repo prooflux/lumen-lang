@@ -1,0 +1,19 @@
+# fib.lm - recursive-call kernel, twin of fib.c.
+# Inspiration: llvm/examples/Fibonacci/fibonacci.cpp (naive recursive fib, the canonical
+# recursive-call microbenchmark shipped in LLVM's own examples tree) and the classic gcc.dg
+# recursion torture tests. Reimplemented from scratch in the documented Lumen-mu subset
+# (recursion + Int arithmetic only, no library call reused).
+#
+# Prints fib(32) as a decimal integer followed by newline. fib(32) = 2178309.
+
+fn fib(n: Int) -> Int {
+  if n < 2 {
+    return n
+  }
+  return fib(n - 1) + fib(n - 2)
+}
+
+fn main(console: Console) -> Unit {
+  console.print_int(fib(32))
+  return ()
+}

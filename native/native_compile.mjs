@@ -19,6 +19,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { buildNativeBinaryFromC, SRC_CAP } from './lumenc_native.mjs';
 import { runLumemitNative } from './lumemit_native.mjs';
 import { runLumoptNative } from './lumopt_native.mjs';
+import { ccInvocation } from './cc_wrapper.mjs';
 
 export { SRC_CAP };
 
@@ -54,8 +55,8 @@ export function getNativeCompilerBin() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumenc0-'));
   const bin = path.join(dir, 'lumenc0');
   try {
-    execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, BOOTSTRAP_C_PATH],
-      { stdio: ['ignore', 'ignore', 'pipe'] });
+    const { cmd, args } = ccInvocation(['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, BOOTSTRAP_C_PATH]);
+    execFileSync(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   } catch (e) {
     throw new Error(`clang failed building native compiler from lumenc.bootstrap.c: ${String(e.stderr || e.message).slice(0, 500)}`);
   }
@@ -72,8 +73,8 @@ export function getNativeEmitterBin() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumemit0-'));
   const bin = path.join(dir, 'lumemit0');
   try {
-    execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, EMIT_FN_BOOTSTRAP_C_PATH],
-      { stdio: ['ignore', 'ignore', 'pipe'] });
+    const { cmd, args } = ccInvocation(['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, EMIT_FN_BOOTSTRAP_C_PATH]);
+    execFileSync(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   } catch (e) {
     throw new Error(`clang failed building native emitter from emit_fn.bootstrap.c: ${String(e.stderr || e.message).slice(0, 500)}`);
   }
@@ -87,8 +88,8 @@ export function getNativeOptimizerBin() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumopt0-'));
   const bin = path.join(dir, 'lumopt0');
   try {
-    execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, OPTIMIZE_BOOTSTRAP_C_PATH],
-      { stdio: ['ignore', 'ignore', 'pipe'] });
+    const { cmd, args } = ccInvocation(['-ffp-contract=off', '-fno-fast-math', '-O2', '-o', bin, OPTIMIZE_BOOTSTRAP_C_PATH]);
+    execFileSync(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   } catch (e) {
     throw new Error(`clang failed building native optimizer from optimize.bootstrap.c: ${String(e.stderr || e.message).slice(0, 500)}`);
   }
@@ -283,7 +284,13 @@ export async function runFnNativeOptimized(src, opt = '-O2') {
 // which kills the WHOLE resident process, not just the one request that triggered it. This
 // class treats an unexpected child exit as fatal to every request still pending on it and marks
 // itself dead; getResidentCompiler() below spawns a fresh instance on the next call after that.
-class ResidentCompiler {
+// Exported (R6) so callers that already hold a separately-built binary matching this same
+// patchMainToCompileDriver contract (e.g. native_fixpoint_test.mjs's generation-1/generation-2
+// binaries, native_pipeline_test.mjs's/native_compile_test.mjs's buildLumencNative binary) can
+// spin up their OWN resident session instead of spawning a fresh process per compile - the exact
+// mechanism getResidentCompiler()/compileToIRNativeResident below already use for the shared
+// lumenc0 binary, just not previously reusable for a caller's own separately-built binary.
+export class ResidentCompiler {
   constructor(bin) {
     this.bin = bin;
     this.child = null;

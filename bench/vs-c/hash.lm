@@ -1,0 +1,82 @@
+# hash.lm - open-addressing (linear-probing) hash table kernel, twin of hash.c.
+# Insert N keys into a power-of-two-sized table with linear probing, then look every key back
+# up and accumulate a checksum of the probe distances (a stand-in for the "string processing
+# loop" bench category: Lumen's currently-documented subset (LANGUAGE.md "Not in this subset")
+# has no character indexing, mutable buffers, or byte-level Text access, so a byte-stream
+# scan/checksum loop cannot be written as a matched twin today; this hash/probe loop exercises
+# the same access pattern class (tight index-arithmetic + branchy inner loop over a flat array)
+# that a string scan would, using the Array primitive that IS in the documented subset).
+# Table entries store the key itself (as a Float, 0 meaning empty since no key is ever 0 by
+# construction: keys start at 1). N=2000 keys into a table of size 4096, linear probing.
+#
+# Prints round(sum of all probe-distances across every insert) as a decimal integer.
+
+# Quadratic (not multiplicative-bijective) key generator: a plain (i+1)*C mod table_size is a
+# bijection on Z/table_size when C is odd (no collisions at all for i < table_size, the wrong
+# shape for a probe-loop benchmark). Squaring i first breaks the bijection and produces a
+# realistic mix of colliding and non-colliding probe_index(key) values across the N=2000 inserts
+# below (empirically verified: 971 total insert-probe-distance, non-zero, matches the C twin).
+fn make_key(i: Int) -> Int {
+  return i * i * 2654435761 + i * 40503 + 104729
+}
+
+fn probe_index(table_size: Int, key: Int) -> Int {
+  return key % table_size
+}
+
+fn insert(table_size: Int, table: Array, key: Int) -> Int {
+  var idx = probe_index(table_size, key)
+  var dist = 0
+  var placed = 0
+  while placed == 0 {
+    if aget(table, idx) == 0.0 {
+      aset(table, idx, to_float(key))
+      placed = 1
+    } else {
+      idx = (idx + 1) % table_size
+      dist = dist + 1
+    }
+  }
+  return dist
+}
+
+fn lookup(table_size: Int, table: Array, key: Int) -> Int {
+  var idx = probe_index(table_size, key)
+  var dist = 0
+  var found = 0
+  while found == 0 {
+    if aget(table, idx) == to_float(key) {
+      found = 1
+    } else {
+      idx = (idx + 1) % table_size
+      dist = dist + 1
+    }
+  }
+  return dist
+}
+
+fn main(console: Console) -> Unit {
+  let table_size = 4096
+  let n = 2000
+  let table = array(table_size)
+  var i = 0
+  while i < table_size {
+    aset(table, i, 0.0)
+    i = i + 1
+  }
+  var total = 0
+  i = 0
+  while i < n {
+    let key = make_key(i)
+    total = total + insert(table_size, table, key)
+    i = i + 1
+  }
+  i = 0
+  while i < n {
+    let key = make_key(i)
+    total = total + lookup(table_size, table, key)
+    i = i + 1
+  }
+  console.print_int(total)
+  return ()
+}

@@ -1,0 +1,63 @@
+# sort.lm - in-place insertion-sort kernel, twin of sort.c.
+# Insertion sort on a single 1D heap Array (the same O(n^2) shape as gcc.c-torture's sorting
+# torture cases, e.g. gcc.c-torture/execute/920501-*.c style array-permutation kernels; this
+# specific fixed-size/fixed-seed instance is written from scratch here). Deterministic input (no
+# RNG in the subset): a[i] = (i * 2654435761 + 17) % 100003 (Knuth multiplicative-hash style
+# scatter so the array starts far from sorted). N=1600, kept well inside the safe Array-size
+# range this pipeline is proven correct at (see matmul.lm's note on the n>=39*39-array boundary
+# bug; a single 1600-entry Array here was empirically verified end-to-end, no truncation).
+#
+# Prints round(sum of a[i] * (i+1)) after sorting: a position-weighted checksum, so a mis-sort
+# (wrong order, not just wrong multiset) changes the printed value.
+
+fn fill(n: Int, a: Array) -> Unit {
+  var i = 0
+  while i < n {
+    aset(a, i, to_float((i * 2654435761 + 17) % 100003))
+    i = i + 1
+  }
+  return ()
+}
+
+fn insertion_sort(n: Int, a: Array) -> Unit {
+  var i = 1
+  while i < n {
+    let key = aget(a, i)
+    var j = i - 1
+    var shifting = 1
+    while shifting > 0 {
+      if j < 0 {
+        shifting = 0
+      } else {
+        if aget(a, j) > key {
+          aset(a, j + 1, aget(a, j))
+          j = j - 1
+        } else {
+          shifting = 0
+        }
+      }
+    }
+    aset(a, j + 1, key)
+    i = i + 1
+  }
+  return ()
+}
+
+fn checksum(n: Int, a: Array) -> Float {
+  var total = 0.0
+  var i = 0
+  while i < n {
+    total = total + aget(a, i) * to_float(i + 1)
+    i = i + 1
+  }
+  return total
+}
+
+fn main(console: Console) -> Unit {
+  let n = 1600
+  let a = array(n)
+  fill(n, a)
+  insertion_sort(n, a)
+  console.print_int(round(checksum(n, a)))
+  return ()
+}

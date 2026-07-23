@@ -1,0 +1,79 @@
+# matmul.lm - dense square matrix-multiply kernel, twin of matmul.c.
+# Naive triple-nested-loop dense matmul (the standard HPC microbenchmark; the same ijk kernel
+# shape used as the innermost loop of countless GCC/LLVM auto-vectorization and loop-optimization
+# regression tests, e.g. gcc.dg/vect/vect-*.c and llvm's LoopVectorize test corpus), though this
+# specific fixed-size/fixed-seed instance is written from scratch here since Lumen's documented
+# subset has no 2D array type, only 1D heap Float arrays addressed via aget/aset.
+#
+# N=48. a[i][j] and b[i][j] are deterministic (no RNG in the subset): a[i][j] = (i*7+j*3) % 13,
+# b[i][j] = (i*5+j*11) % 17. c = a * b (standard dense product). Prints round(sum of all c
+# entries) as a decimal integer followed by newline. Checksum cross-checked bit-for-bit against
+# the C twin by G0 in run.mjs (both computed in double/Float).
+
+fn idx(n: Int, i: Int, j: Int) -> Int {
+  return i * n + j
+}
+
+fn fill(n: Int, arr: Array, is_a: Int) -> Unit {
+  var i = 0
+  while i < n {
+    var j = 0
+    while j < n {
+      if is_a > 0 {
+        aset(arr, idx(n, i, j), to_float((i * 7 + j * 3) % 13))
+      } else {
+        aset(arr, idx(n, i, j), to_float((i * 5 + j * 11) % 17))
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  return ()
+}
+
+fn matmul(n: Int, a: Array, b: Array, c: Array) -> Unit {
+  var i = 0
+  while i < n {
+    var j = 0
+    while j < n {
+      var sum = 0.0
+      var k = 0
+      while k < n {
+        sum = sum + aget(a, idx(n, i, k)) * aget(b, idx(n, k, j))
+        k = k + 1
+      }
+      aset(c, idx(n, i, j), sum)
+      j = j + 1
+    }
+    i = i + 1
+  }
+  return ()
+}
+
+fn checksum(n: Int, c: Array) -> Float {
+  var total = 0.0
+  var i = 0
+  while i < n * n {
+    total = total + aget(c, i)
+    i = i + 1
+  }
+  return total
+}
+
+fn main(console: Console) -> Unit {
+  # NOTE: n is capped at 38, not a rounder number like 40/48. This is deliberate, not a bug:
+  # native/emit_fn.lm's array/record heap has a fixed LM_CAP_BYTES=36288 cap, and lm_anew()
+  # intentionally exit(0)s (silent halt, no crash) past it - itself a gated golden test
+  # (heap_boundary_over_silent_halt). Three Array(n*n) allocations here cost 3*(4+8*n*n) bytes:
+  # 34,668 B at n=38 (under the cap), 36,516 B at n=39 (over it). See SCOREBOARD.md "Known
+  # limits" for the full root-cause writeup; raising the cap is a follow-up, not this PR.
+  let n = 38
+  let a = array(n * n)
+  let b = array(n * n)
+  let c = array(n * n)
+  fill(n, a, 1)
+  fill(n, b, 0)
+  matmul(n, a, b, c)
+  console.print_int(round(checksum(n, c)))
+  return ()
+}

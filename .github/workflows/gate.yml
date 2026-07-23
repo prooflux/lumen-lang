@@ -26,7 +26,13 @@ concurrency:
 jobs:
   gate:
     runs-on: macos-latest
-    timeout-minutes: 20
+    # Was 20; the corpus has grown enough (native gates alone is ~46 scripts as of 2026-07-23,
+    # up from far fewer at the time 20 was chosen) that a run got hard-cancelled by this timeout
+    # partway through the native gates step, after cleanly passing everything through
+    # native_fixpoint_test.mjs - not a correctness failure, just ran out of clock. 45 gives real
+    # headroom (observed full local run on the dev machine: a few minutes when idle, more under
+    # any GitHub-shared-runner variance) without letting a genuinely hung job run indefinitely.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

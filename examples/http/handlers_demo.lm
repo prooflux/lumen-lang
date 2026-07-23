@@ -210,7 +210,7 @@ fn h_bs() -> Int {
     waste = text_concat(waste, "0123456789")
     wi = wi + 1
   }
-  if text_eq(waste, "") == 1 {
+  if text_eq(waste, "") {
     return 0
   }
   let S: Float = to_float(s_i)

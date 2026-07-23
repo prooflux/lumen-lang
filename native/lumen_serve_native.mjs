@@ -496,13 +496,34 @@ function frame(bytes) {
 function loadConfig(cfgPath) {
   const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
   const dir = path.dirname(cfgPath);
-  cfg.routes = cfg.routes.map((r) => (r.handler ? { ...r } : {
+  // hostFile routes: bodies too large for the kernel's in-memory body window (the route
+  // table streams bodies into the compiled kernel at startup, bounded by BODY_CAP; a
+  // multi-megabyte PDF cannot live there). These are served by the HOST from disk when the
+  // kernel reports "no local route" - an explicit, declared seam, not a silent fallback:
+  // the route still appears in the config with method/path/status/contentType, only its
+  // body stays on disk. The kernel remains authoritative for every route it can hold.
+  cfg.hostFiles = new Map();
+  for (const r of cfg.routes.filter((x) => x.hostFile)) {
+    const file = path.resolve(dir, r.hostFile);
+    fs.accessSync(file); // fail at startup, not first request
+    cfg.hostFiles.set(`${r.method || 'GET'} ${r.path}`, {
+      file, status: r.status || 200, contentType: r.contentType || 'application/octet-stream',
+    });
+  }
+  cfg.routes = cfg.routes.filter((r) => !r.hostFile).map((r) => (r.handler ? { ...r } : {
     ...r,
     bodyBytes: typeof r.body === 'string' ? Buffer.from(r.body, 'utf8')
       : r.bodyFile ? fs.readFileSync(path.resolve(dir, r.bodyFile)) : Buffer.alloc(0),
   }));
   if (cfg.handlersFile) cfg.handlersSrc = fs.readFileSync(path.resolve(dir, cfg.handlersFile), 'utf8');
   return cfg;
+}
+
+function serveHostFile(entry) {
+  const body = fs.readFileSync(entry.file);
+  const head = `HTTP/1.1 ${entry.status} OK\r\nContent-Type: ${entry.contentType}\r\n`
+    + `Content-Length: ${body.length}\r\nConnection: keep-alive\r\n\r\n`;
+  return Buffer.concat([Buffer.from(head, 'latin1'), body]);
 }
 
 // A single native child processes requests FIFO over its stdin/stdout pipe. This serializer writes a
@@ -594,8 +615,11 @@ async function runServer(cfgPath) {
   const origin = cfg.proxyPass ? new URL(cfg.proxyPass) : null;
   const port = process.env.PORT ? Number(process.env.PORT) : cfg.port;   // Cloud Run injects PORT
   const { bin, bodyBlock } = cfg.handlersSrc
-    ? await buildNativeServeHandlers(cfg.routes, !!origin, cfg.handlersSrc)
-    : await buildNativeServe(cfg.routes, !!origin);
+    ? await buildNativeServeHandlers(cfg.routes, !!origin || cfg.hostFiles.size > 0, cfg.handlersSrc)
+    : await buildNativeServe(cfg.routes, !!origin || cfg.hostFiles.size > 0);
+  // proxy-mode flag doubles as yield-unmatched-to-host: with host-served files declared, the
+  // kernel must hand unmatched requests back (empty response) so the host can serve the file
+  // or produce the 404 itself; without either, the kernel's own in-kernel 404 stays in force.
   const serve = makeServer(bin, bodyBlock);
 
   const server = net.createServer((socket) => {
@@ -608,8 +632,11 @@ async function runServer(cfgPath) {
         buf = slice.rest;
         const line = slice.req.slice(0, slice.req.indexOf('\r\n')).toString('latin1');
         let resp = await serve(slice.req);
-        if (resp.length === 0) {                          // unmatched -> proxy to origin (keep-alive)
-          if (!origin) { resp = Buffer.from('HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: keep-alive\r\n\r\nNot Found', 'latin1'); }
+        if (resp.length === 0) {                          // kernel says no local route
+          const [m, p] = line.split(' ');
+          const hf = cfg.hostFiles && cfg.hostFiles.get(`${m} ${(p || '').split('?')[0]}`);
+          if (hf) { resp = serveHostFile(hf); }           // declared host-served large file
+          else if (!origin) { resp = Buffer.from('HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: keep-alive\r\n\r\nNot Found', 'latin1'); }
           else { resp = await proxyRequest(origin, slice.req); process.stdout.write(`${line} -> proxied\n`); }
         }
         socket.write(resp);                               // keep-alive: write and continue the loop
@@ -623,6 +650,7 @@ async function runServer(cfgPath) {
   server.listen(port, () => {
     console.log(`Lumen HTTP server (NATIVE, kernel compiled via emit_fn.lm) listening on :${port}`);
     console.log(`routes: ${cfg.routes.map((r) => `${r.method} ${r.path}`).join(', ')} (keep-alive)`);
+    if (cfg.hostFiles && cfg.hostFiles.size) console.log(`host-served files: ${[...cfg.hostFiles.keys()].join(', ')}`);
     if (origin) console.log(`proxy: unmatched requests -> ${origin.origin}`);
   });
 }
@@ -655,7 +683,34 @@ if (process.argv[1] && process.argv[1].endsWith('lumen_serve_native.mjs') && pro
     else { console.log(`FAIL  ${JSON.stringify(req.split('\r\n')[0])}\n  got  ${JSON.stringify(got)}\n  want ${JSON.stringify(want)}`); fail++; }
   }
   console.log(fail === 0 ? `\n${cases.length}/${cases.length} native serve-loop responses correct.` : `\nFAIL: ${fail}`);
-  process.exit(fail === 0 ? 0 : 1);
+
+  // hostFile routes: loadConfig must split them out of the kernel table (they never enter
+  // the body window) and serveHostFile must frame them correctly from disk.
+  console.log('== hostFile route self-test ==');
+  const os = await import('node:os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-serve-hostfile-'));
+  const big = Buffer.alloc(3 * 1024 * 1024, 0x41); // 3 MB, past the old 2 MB asset cap
+  fs.writeFileSync(path.join(tmp, 'big.pdf'), big);
+  fs.writeFileSync(path.join(tmp, 'cfg.json'), JSON.stringify({
+    port: 0,
+    routes: [
+      { method: 'GET', path: '/', status: 200, contentType: 'text/plain', body: 'hi' },
+      { method: 'GET', path: '/big.pdf', status: 200, contentType: 'application/pdf', hostFile: 'big.pdf' },
+    ],
+  }));
+  const cfg2 = loadConfig(path.join(tmp, 'cfg.json'));
+  let hfFail = 0;
+  if (cfg2.routes.length !== 1 || cfg2.routes[0].path !== '/') { console.log('FAIL  hostFile route leaked into the kernel table'); hfFail++; }
+  else console.log('PASS  hostFile route kept out of the kernel body window');
+  const framed = serveHostFile(cfg2.hostFiles.get('GET /big.pdf'));
+  const headEnd = framed.indexOf('\r\n\r\n');
+  const head2 = framed.subarray(0, headEnd).toString('latin1');
+  if (!head2.includes('Content-Length: ' + big.length) || !head2.includes('application/pdf')) { console.log('FAIL  hostFile response head wrong: ' + head2); hfFail++; }
+  else if (!framed.subarray(headEnd + 4).equals(big)) { console.log('FAIL  hostFile body bytes differ'); hfFail++; }
+  else console.log('PASS  3 MB hostFile framed byte-exact from disk');
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log(hfFail === 0 ? '2/2 hostFile checks correct.' : `FAIL: ${hfFail}`);
+  process.exit(fail + hfFail === 0 ? 0 : 1);
 }
 
 // server mode: node lumen_serve_native.mjs <config.json>

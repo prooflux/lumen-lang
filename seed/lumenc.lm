@@ -514,6 +514,14 @@ fn is_str_alen(off: Int, len: Int) -> Int {
   return 1
 }
 
+# Int arrays reuse the Float-array opcodes (49-52, raw i64 slots): "i" prefix + same suffix.
+fn is_iapfx(off: Int, len: Int) -> Int {
+  if len < 2 { return 0 }
+  if load8(off) != 105 { return 0 }
+  if load8(off + 1) != 97 { return 0 }
+  return 1
+}
+
 fn is_str_console_print(off: Int, len: Int) -> Int {
   if len != 5 { return 0 }
   if load8(off + 0) != 112 { return 0 }
@@ -1676,6 +1684,12 @@ fn c_primary() -> Unit {
       if is_str_aget(off, length) == 1 { emitw(50)  set_etype(1)  return () }
       if is_str_aset(off, length) == 1 { emitw(51)  set_expr_pushes(0)  return () }
       if is_str_alen(off, length) == 1 { emitw(52)  return () }
+      if is_iapfx(off, length) == 1 {
+        if is_str_array(off + 1, length - 1) == 1 { emitw(49)  return () }
+        if is_str_aget(off + 1, length - 1) == 1 { emitw(50)  return () }
+        if is_str_aset(off + 1, length - 1) == 1 { emitw(51)  set_expr_pushes(0)  return () }
+        if is_str_alen(off + 1, length - 1) == 1 { emitw(52)  return () }
+      }
       if is_str_to_float(off, length) == 1 { emitw(30)  set_etype(1)  return () }
       if is_str_sqrt(off, length) == 1 { emitw(44)  set_etype(1)  return () }
       if is_str_abs(off, length) == 1 { emitw(45)  set_etype(1)  return () }

@@ -97,6 +97,17 @@
   (data (i32.const 180112) "dec_div")
   (data (i32.const 180128) "dec_to_text")
   (data (i32.const 180144) "dec_to_float")
+  ;; Int arrays: same heap-backed layout as Float arrays (array/aget/aset/alen), parallel
+  ;; builtin names so the element type recorded in $ety is Int (0) instead of Float (1).
+  ;; iarray/iaget/iaset/ialen compile to the IDENTICAL opcodes as array/aget/aset/alen
+  ;; (49/50/51/52): the array runtime already stores raw i64 slots with no int/float
+  ;; reinterpretation on read or write, so an Int array and a Float array are the same
+  ;; object at runtime and only differ in which builtin name the source used (and thus
+  ;; which $ety the compiler records for the loaded/stored value).
+  (data (i32.const 180160) "iarray")
+  (data (i32.const 180176) "iaget")
+  (data (i32.const 180192) "iaset")
+  (data (i32.const 180208) "ialen")
 
   (global $osp     (mut i32) (i32.const 0))
   (global $csp     (mut i32) (i32.const 0))
@@ -1279,14 +1290,22 @@
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248320) (i32.const 5))   ;; array(n) -> handle
                 (then (call $emitw (i32.const 49)) (global.set $ety (i32.const 0)) (return)))
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248380) (i32.const 5))   ;; load8(addr) -> Int (byte, zero-ext)
-                (then (call $emitw (i32.const 55)) (global.set $ety (i32.const 0)) (return)))))
+                (then (call $emitw (i32.const 55)) (global.set $ety (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 180176) (i32.const 5))   ;; iaget(a,i) -> Int (same opcode as aget; ety=Int)
+                (then (call $emitw (i32.const 50)) (global.set $ety (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 180192) (i32.const 5))   ;; iaset(a,i,x) -> Unit (same opcode as aset)
+                (then (call $emitw (i32.const 51)) (global.set $ety (i32.const 0)) (global.set $expr_pushes (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 180208) (i32.const 5))   ;; ialen(a) -> Int (same opcode as alen)
+                (then (call $emitw (i32.const 52)) (global.set $ety (i32.const 0)) (return)))))
             (if (i32.eq (local.get $len) (i32.const 6)) (then
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248240) (i32.const 6))   ;; to_int(x): Float -> Int (trunc)
                 (then (call $emitw (i32.const 42)) (global.set $ety (i32.const 0)) (return)))
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248360) (i32.const 6))   ;; load32(addr) -> Int (raw mem, sign-ext)
                 (then (call $emitw (i32.const 53)) (global.set $ety (i32.const 0)) (return)))
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248390) (i32.const 6))   ;; store8(addr,val) -> Unit
-                (then (call $emitw (i32.const 56)) (global.set $ety (i32.const 0)) (global.set $expr_pushes (i32.const 0)) (return)))))
+                (then (call $emitw (i32.const 56)) (global.set $ety (i32.const 0)) (global.set $expr_pushes (i32.const 0)) (return)))
+              (if (call $eqlit (local.get $off) (local.get $len) (i32.const 180160) (i32.const 6))   ;; iarray(n) -> handle (same opcode as array)
+                (then (call $emitw (i32.const 49)) (global.set $ety (i32.const 0)) (return)))))
             (if (i32.eq (local.get $len) (i32.const 7)) (then
               (if (call $eqlit (local.get $off) (local.get $len) (i32.const 248370) (i32.const 7))   ;; store32(addr,val) -> Unit
                 (then (call $emitw (i32.const 54)) (global.set $ety (i32.const 0)) (global.set $expr_pushes (i32.const 0)) (return)))

@@ -1,0 +1,60 @@
+# Heap-backed Int arrays, exercised end to end: iarray(n) allocation, iaset/iaget round-trips,
+# ialen, an Int arrays driving a while loop (running sum), and an insertion sort. Int arrays
+# reuse the EXACT SAME heap layout and opcodes as Float arrays (array/aget/aset/alen): the
+# array runtime stores raw i64 slots with no int/float reinterpretation on read or write, so
+# iarray/iaget/iaset/ialen differ from their Float counterparts only in the front-end's
+# recorded element type (Int, not Float) - no new memory model, no new opcodes.
+# Compiles+runs on the seed AND (self-hosted) on lumenc.lm, bit-identically.
+# Expected stdout: "5\n42\n30\n0\n12345\n".
+fn main(c: Console) -> Unit {
+  let a = iarray(5)
+  c.print_int(ialen(a))                       # 5
+
+  # set/get round-trip, no to_int/to_float coercion needed anywhere
+  iaset(a, 0, 7)
+  iaset(a, 1, 35)
+  c.print_int(iaget(a, 0) + iaget(a, 1))       # 42
+
+  # running sum over squares, array driving a while loop
+  var i: Int = 0
+  while i < ialen(a) {
+    iaset(a, i, i * i)
+    i = i + 1
+  }
+  var s: Int = 0
+  var j: Int = 0
+  while j < ialen(a) {
+    s = s + iaget(a, j)
+    j = j + 1
+  }
+  c.print_int(s)                                # 0+1+4+9+16 = 30
+
+  # out-of-bounds get is 0 (same bounds-guard as Float arrays)
+  c.print_int(iaget(a, 99))                     # 0
+
+  # insertion sort: the canonical kernel Float arrays cannot express (no total order on
+  # Float bit patterns the way this suite cares about; Int comparison is exact)
+  iaset(a, 0, 5)
+  iaset(a, 1, 3)
+  iaset(a, 2, 4)
+  iaset(a, 3, 1)
+  iaset(a, 4, 2)
+  var k: Int = 1
+  while k < ialen(a) {
+    let key = iaget(a, k)
+    var m: Int = k - 1
+    while m >= 0 and iaget(a, m) > key {
+      iaset(a, m + 1, iaget(a, m))
+      m = m - 1
+    }
+    iaset(a, m + 1, key)
+    k = k + 1
+  }
+  var p: Int = 0
+  var out: Int = 0
+  while p < ialen(a) {
+    out = out * 10 + iaget(a, p)
+    p = p + 1
+  }
+  c.print_int(out)                              # 12345
+}

@@ -170,6 +170,15 @@ eq('array set/get', runFull('fn main(c: Console) -> Unit {\n  let a = array(2)\n
 eq('array sum loop', runFull('fn main(c: Console) -> Unit {\n  let a = array(3)\n  aset(a, 0, 10.0)\n  aset(a, 1, 20.0)\n  aset(a, 2, 30.0)\n  var s: Float = 0.0\n  var i: Int = 0\n  while i < alen(a) {\n    s = s + aget(a, i)\n    i = i + 1\n  }\n  c.print_int(to_int(s))\n}\n'), '60\n');
 eq('array oob get is 0', runFull('fn main(c: Console) -> Unit {\n  let a = array(1)\n  aset(a, 0, 9.0)\n  c.print_int(to_int(aget(a, 5)))\n}\n'), '0\n');
 
+// ---- Int arrays: same heap-backed layout as Float arrays, parallel builtins
+// iarray(n) iaget(a,i) iaset(a,i,x) ialen(a); values stay Int end to end (no to_int/to_float
+// round-trip needed) ----
+eq('iarray len', runMain('c.print_int(ialen(iarray(5)))'), '5\n');
+eq('iarray set/get', runFull('fn main(c: Console) -> Unit {\n  let a = iarray(2)\n  iaset(a, 0, 7)\n  iaset(a, 1, 35)\n  c.print_int(iaget(a, 0) + iaget(a, 1))\n}\n'), '42\n');
+eq('iarray running sum', runFull('fn main(c: Console) -> Unit {\n  let a = iarray(5)\n  var i: Int = 0\n  while i < ialen(a) {\n    iaset(a, i, i * i)\n    i = i + 1\n  }\n  var s: Int = 0\n  var j: Int = 0\n  while j < ialen(a) {\n    s = s + iaget(a, j)\n    j = j + 1\n  }\n  c.print_int(s)\n}\n'), '30\n');
+eq('iarray oob get is 0', runFull('fn main(c: Console) -> Unit {\n  let a = iarray(1)\n  iaset(a, 0, 9)\n  c.print_int(iaget(a, 5))\n}\n'), '0\n');
+eq('iarray insertion sort', runFull('fn main(c: Console) -> Unit {\n  let a = iarray(5)\n  iaset(a, 0, 5)\n  iaset(a, 1, 3)\n  iaset(a, 2, 4)\n  iaset(a, 3, 1)\n  iaset(a, 4, 2)\n  var i: Int = 1\n  while i < ialen(a) {\n    let key = iaget(a, i)\n    var j: Int = i - 1\n    while j >= 0 and iaget(a, j) > key {\n      iaset(a, j + 1, iaget(a, j))\n      j = j - 1\n    }\n    iaset(a, j + 1, key)\n    i = i + 1\n  }\n  var k: Int = 0\n  var out: Int = 0\n  while k < ialen(a) {\n    out = out * 10 + iaget(a, k)\n    k = k + 1\n  }\n  c.print_int(out)\n}\n'), '12345\n');
+
 // ---- records (compile-time sugar over arrays: field name -> stable global slot) ----
 eq('record construct + field read', runFull('type Pt = { x: Float, y: Float }\nfn main(c: Console) -> Unit {\n  let p = Pt { x: 1.5, y: 2.5 }\n  c.print_int(to_int((p.x + p.y) * 10.0))\n}\n'), '40\n');
 eq('record as fn param', runFull('type Cf = { amt: Float, t: Float }\nfn pv1(z: Cf, r: Float) -> Float { return z.amt / pow(1.0 + r, z.t) }\nfn main(c: Console) -> Unit {\n  let x = Cf { amt: 100.0, t: 2.0 }\n  c.print_int(round(pv1(x, 0.05) * 100.0))\n}\n'), '9070\n');

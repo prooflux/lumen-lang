@@ -184,6 +184,14 @@ async function main() {
   }
 
   // ============================== TIMING ==============================
+  // Wall-clock benchmarking with ZERO correctness assertions. Per repo discipline these
+  // numbers are local-only (like native_bench.mjs and perf.mjs, both deliberately excluded
+  // from gate.yml); on shared CI runners the repeated WebAssembly.instantiate of the large
+  // emitter module has hung the whole job to its 20-minute timeout three times (issue #94,
+  // runs 29464285527 / 29465999516 / 29969882725), so the section is skipped there.
+  if (process.env.CI) {
+    console.log('\n== Timing: emit stage, interpreted vs native == SKIPPED in CI (wall-clock is local-only; issue #94)');
+  } else {
   console.log('\n== Timing: emit stage, interpreted vs native ==');
   {
     const src = readSrc('../seed/lumenc.lm');
@@ -230,6 +238,7 @@ async function main() {
       console.log(`  fizzbuzz.lm: interpreted ${interpMs2.toFixed(2)}ms/run, native (spawn-included) ${nativeMs2.toFixed(2)}ms/run,`);
       console.log(`  native minus spawn floor ~${(nativeMs2 - floorMs).toFixed(2)}ms/run, ratio ${(nativeMs2 / interpMs2).toFixed(2)}x`);
     }
+  }
   }
 
   // ============================== PART D: native lumopt (bounded) ==============================

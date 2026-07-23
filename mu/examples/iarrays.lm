@@ -5,7 +5,35 @@
 # iarray/iaget/iaset/ialen differ from their Float counterparts only in the front-end's
 # recorded element type (Int, not Float) - no new memory model, no new opcodes.
 # Compiles+runs on the seed AND (self-hosted) on lumenc.lm, bit-identically.
-# Expected stdout: "5\n42\n30\n0\n12345\n".
+# Expected stdout: "5\n42\n30\n0\n12345\n21\n9\n".
+
+# Read-only Int-array kernels, deliberately pure (no Console parameter, no print calls): each
+# takes only the array handle and an explicit length, touches no capability-carrying opcode, and
+# mutates nothing (not even the array itself) - a linear scan via iaget/ialen only. Both are
+# exercised from main below.
+fn iarray_sum(a: Int, n: Int) -> Int {
+  var total: Int = 0
+  var i: Int = 0
+  while i < n {
+    total = total + iaget(a, i)
+    i = i + 1
+  }
+  return total
+}
+
+fn iarray_max(a: Int, n: Int) -> Int {
+  var m: Int = iaget(a, 0)
+  var i: Int = 1
+  while i < n {
+    let v = iaget(a, i)
+    if v > m {
+      m = v
+    }
+    i = i + 1
+  }
+  return m
+}
+
 fn main(c: Console) -> Unit {
   let a = iarray(5)
   c.print_int(ialen(a))                       # 5
@@ -57,4 +85,13 @@ fn main(c: Console) -> Unit {
     p = p + 1
   }
   c.print_int(out)                              # 12345
+
+  # exercise the pure read-only kernels above over a fresh array
+  let b = iarray(4)
+  iaset(b, 0, 3)
+  iaset(b, 1, 7)
+  iaset(b, 2, 2)
+  iaset(b, 3, 9)
+  c.print_int(iarray_sum(b, ialen(b)))          # 3+7+2+9 = 21
+  c.print_int(iarray_max(b, ialen(b)))          # 9
 }

@@ -30,6 +30,12 @@ npm test                               # conformance + safety + loop + cache gat
 The runnable conformance programs live in `mu/examples/`. (The top-level `examples/`
 directory holds forward-looking programs that exercise not-yet-landed syntax.)
 
+Before opening a PR, run the full gate suite with `node tools/gate_all.mjs` (the exact sequence
+`.github/workflows/gate.yml` runs, not a hand-remembered subset - see [`AGENTS.md`](AGENTS.md) for
+why that distinction matters). Branch protection on `main` requires the `gate` check to pass before
+any update lands; `node tools/land_pr.mjs <pr-number>` runs the full fetch/merge/gate/push protocol
+in one command. If you are an AI agent working this repo, read [`AGENTS.md`](AGENTS.md) first.
+
 ## The document map
 
 - [`VISION_2035.md`](VISION_2035.md): the ten-year destination and the bets.

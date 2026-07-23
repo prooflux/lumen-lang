@@ -250,7 +250,15 @@ LLVM), flagging any divergence. Robustness compounds without hand-writing every 
 
 Every change is held by the same gates locally and in CI, so nothing merges unproven. The oracle
 gates assert bit-identity against the interpreter reference; `perf.mjs` asserts no throughput
-regression; the Forge adds adversarial coverage. The full gate list run by `.github/workflows/gate.yml`:
+regression; the Forge adds adversarial coverage. Run the exact sequence `.github/workflows/gate.yml`
+runs with `node tools/gate_all.mjs` (or `--quick` for a fast, non-CI-equivalent local sanity net) -
+a hand-remembered subset of this list will eventually miss something, as happened 2026-07-23 when a
+real regression (`text_eq` returning `Bool` breaking `examples/http/handlers_demo.lm`) sat on `main`
+with a red `gate` check because no agent working the repo that day ran the one script
+(`native_handlers_test.mjs`) that would have caught it. Branch protection on `main` now requires
+the `gate` check to pass before any update lands, including direct pushes (see `AGENTS.md`); land
+changes via PR, or with `node tools/land_pr.mjs <pr-number>` for the full fetch/merge/gate/push
+protocol in one command. The full gate list run by `.github/workflows/gate.yml`:
 
 <!-- AUTO:gates -->
 - `optimize_diff.mjs`

@@ -1,0 +1,11 @@
+# ABSORBED from C stdlib llabs (oracle: examples/absorbed/c/llabs.c, --oracle c).
+# Verified against a live gcc/clang C oracle at absorption time (the C/C++ oracle backend
+# added to tools/absorb/absorb.mjs); frozen outputs live in
+# examples/absorbed/fixtures/iabs.fixture.json and are re-verified hermetically by
+# tools/absorb/absorb_gate.mjs in CI (no C compiler needed after absorption).
+# Domain: Int within the fixture's recorded ranges. llabs's undefined behavior at
+# LLONG_MIN is out of scope (out of range of the certified domain).
+fn iabs(x: Int) -> Int {
+  if x < 0 { return 0 - x }
+  return x
+}

@@ -159,6 +159,98 @@ function runPythonOracle(pyPath, fnName, inputs, ret) {
   return { lines: out.split('\n').filter((l) => l.length > 0), pyver };
 }
 
+// C/C++ oracle backend. Mirrors the Python oracle contract exactly: the foreign
+// implementation is EXECUTED (a real gcc/g++ or clang/clang++ compiles a harness that
+// #includes the oracle source and calls the real function, the binary runs, its stdout is
+// the ground truth), never transcribed on trust. Oracle source files are thin wrappers
+// around real C/C++ standard-library or compiler-builtin functions (see
+// examples/absorbed/c/, examples/absorbed/cpp/), same role as the Python oracle .py files.
+//
+// Compiler discovery prefers a prebuilt binary under the cloned /Users/freedom/repos-languages
+// sources (gcc/build/gcc/xgcc for C, llvm/build/bin/clang++ for C++) and falls back to
+// whatever gcc/g++/clang/clang++ is on PATH, exactly the fallback discipline already used by
+// the repo's bench-vs-c track: whichever compiler is actually used is recorded (binary path,
+// --version banner) in the frozen fixture, never silently assumed.
+const CLONED_LANGUAGES_ROOT = '/Users/freedom/repos-languages';
+
+function candidateCompilers(oracle) {
+  if (oracle === 'cpp') {
+    return [
+      { bin: path.join(CLONED_LANGUAGES_ROOT, 'llvm', 'build', 'bin', 'clang++'), label: 'cloned llvm (prebuilt, repos-languages/llvm)' },
+      { bin: 'clang++', label: 'system clang++' },
+      { bin: 'g++', label: 'system g++' },
+    ];
+  }
+  return [
+    { bin: path.join(CLONED_LANGUAGES_ROOT, 'gcc', 'build', 'gcc', 'xgcc'), label: 'cloned gcc (prebuilt, repos-languages/gcc)' },
+    { bin: 'gcc', label: 'system gcc' },
+    { bin: 'clang', label: 'system clang' },
+  ];
+}
+
+function discoverCompiler(oracle) {
+  for (const c of candidateCompilers(oracle)) {
+    if (path.isAbsolute(c.bin) && !fs.existsSync(c.bin)) continue;
+    try {
+      execFileSync(c.bin, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      return c;
+    } catch { /* try next candidate */ }
+  }
+  throw new Error(`no usable ${oracle} compiler found (checked cloned ${CLONED_LANGUAGES_ROOT} prebuilt, then system PATH)`);
+}
+
+function cLiteral(arg) {
+  // Int params are generated as plain decimal text; suffix LL so large magnitudes stay i64
+  // in the C/C++ harness exactly as they do in the Lumen driver and the Python oracle.
+  if (arg.type === 'Int') return `${arg.value}LL`;
+  return arg.value; // Float params are already exact-3-decimal literal text
+}
+
+function buildCHarness(oracleSource, fnName, inputs, ret, oracle) {
+  const includes = oracle === 'cpp'
+    ? '#include <cstdio>\n#include <cmath>\n#include <cstdint>\n#include <numeric>\n#include <algorithm>\n'
+    : '#include <stdio.h>\n#include <math.h>\n#include <stdint.h>\n#include <stdlib.h>\n';
+  const printLines = inputs.map((row) => {
+    const args = row.map(cLiteral).join(', ');
+    if (ret === 'Int') return `  printf("%lld\\n", (long long)${fnName}(${args}));`;
+    return `  { double v = (double)${fnName}(${args}); double s = floor(v * 1e12 + 0.5); printf("%.0f\\n", s); }`;
+  });
+  const mainSig = oracle === 'cpp' ? 'int main() {' : 'int main(void) {';
+  return `${includes}\n${oracleSource}\n\n${mainSig}\n${printLines.join('\n')}\n  return 0;\n}\n`;
+}
+
+function runCOracle(srcPath, fnName, inputs, ret, oracle) {
+  const oracleSource = fs.readFileSync(srcPath, 'utf8');
+  const harness = buildCHarness(oracleSource, fnName, inputs, ret, oracle);
+  const compiler = discoverCompiler(oracle);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-absorb-oracle-'));
+  const ext = oracle === 'cpp' ? 'cpp' : 'c';
+  const srcFile = path.join(tmpDir, `oracle.${ext}`);
+  const binFile = path.join(tmpDir, 'oracle.bin');
+  fs.writeFileSync(srcFile, harness);
+  const stdFlag = oracle === 'cpp' ? '-std=c++20' : '-std=c11';
+  try {
+    execFileSync(compiler.bin, [stdFlag, '-O2', '-o', binFile, srcFile, '-lm'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (e) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    throw new Error(`${oracle} oracle failed to compile with ${compiler.label} (${compiler.bin}): ${String(e.stderr || e.message).slice(0, 500)}`);
+  }
+  let out;
+  try {
+    out = execFileSync(binFile, [], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+  let version = 'unknown';
+  try { version = execFileSync(compiler.bin, ['--version'], { encoding: 'utf8' }).split('\n')[0].trim(); } catch { /* best-effort */ }
+  return {
+    lines: out.split('\n').filter((l) => l.length > 0),
+    compilerLabel: compiler.label,
+    compilerBin: compiler.bin,
+    compilerVersion: version,
+  };
+}
+
 function compare(lumenLines, oracleLines, inputs) {
   if (lumenLines.length !== oracleLines.length) {
     return { ok: false, detail: `line count mismatch: lumen ${lumenLines.length} vs oracle ${oracleLines.length}` };
@@ -172,13 +264,36 @@ function compare(lumenLines, oracleLines, inputs) {
   return { ok: true, detail: `${oracleLines.length}/${oracleLines.length} cases identical` };
 }
 
-export async function absorb({ pyPath, fnName, candidatePath, n = 200, seed = 42, ranges = [] }) {
+// oracle: 'py' (default, CPython) | 'c' (gcc/clang) | 'cpp' (g++/clang++). srcPath is the
+// oracle source file in every mode (a .py, .c, or .cpp); the parameter name stays `pyPath`
+// for the py-mode call sites already in this file / its tests, `srcPath` is the general name
+// used by the CLI and by c/cpp callers.
+export async function absorb({ pyPath, srcPath, oracle = 'py', fnName, candidatePath, n = 200, seed = 42, ranges = [] }) {
+  const oracleSrcPath = srcPath ?? pyPath;
   const candidateSource = fs.readFileSync(candidatePath, 'utf8');
   const sig = parseSignature(candidateSource, fnName);
   const inputs = generateInputs({ params: sig.params, n, seed, ranges });
   const driver = lumenDriver(candidateSource, fnName, inputs, sig.ret);
   const lumenLines = await runLumen(driver);
-  const { lines: oracleLines, pyver } = runPythonOracle(pyPath, fnName, inputs, sig.ret);
+
+  let oracleLines, oracleMeta;
+  if (oracle === 'py') {
+    const r = runPythonOracle(oracleSrcPath, fnName, inputs, sig.ret);
+    oracleLines = r.lines;
+    oracleMeta = { language: 'python', version_at_absorption: r.pyver };
+  } else if (oracle === 'c' || oracle === 'cpp') {
+    const r = runCOracle(oracleSrcPath, fnName, inputs, sig.ret, oracle);
+    oracleLines = r.lines;
+    oracleMeta = {
+      language: oracle,
+      version_at_absorption: r.compilerVersion,
+      compiler: r.compilerLabel,
+      compiler_bin: r.compilerBin,
+    };
+  } else {
+    throw new Error(`unknown --oracle: ${oracle} (expected py|c|cpp)`);
+  }
+
   let verdict = compare(lumenLines, oracleLines, inputs);
   if (verdict.ok) {
     const nativeLines = await runLumenNative(driver);
@@ -187,10 +302,11 @@ export async function absorb({ pyPath, fnName, candidatePath, n = 200, seed = 42
       ? { ok: true, detail: `${verdict.detail}, interpreter AND native toolchain` }
       : { ok: false, detail: `interpreter matched but NATIVE diverged: ${nativeVerdict.detail}` };
   }
-  return { sig, inputs, lumenLines, oracleLines, pyver, verdict, candidateSource };
+  return { sig, inputs, lumenLines, oracleLines, oracleMeta, oracleSrcPath, verdict, candidateSource };
 }
 
-export function fixtureFrom(result, { pyPath, fnName, candidatePath, n, seed, ranges }) {
+export function fixtureFrom(result, { fnName, candidatePath, n, seed, ranges }) {
+  const oracleSrcPath = result.oracleSrcPath;
   return {
     version: 1,
     kind: 'lumen-absorb-fixture',
@@ -198,10 +314,11 @@ export function fixtureFrom(result, { pyPath, fnName, candidatePath, n, seed, ra
     candidate: path.relative(REPO_ROOT, path.resolve(candidatePath)),
     candidate_sha256: sha256(fs.readFileSync(candidatePath)),
     oracle: {
-      language: 'python',
-      source: path.relative(REPO_ROOT, path.resolve(pyPath)),
-      source_sha256: sha256(fs.readFileSync(pyPath)),
-      version_at_absorption: result.pyver,
+      language: result.oracleMeta.language,
+      source: path.relative(REPO_ROOT, path.resolve(oracleSrcPath)),
+      source_sha256: sha256(fs.readFileSync(oracleSrcPath)),
+      version_at_absorption: result.oracleMeta.version_at_absorption,
+      ...(result.oracleMeta.compiler ? { compiler: result.oracleMeta.compiler, compiler_bin: result.oracleMeta.compiler_bin } : {}),
     },
     comparison: result.sig.ret === 'Float' ? 'scaled-1e12 floor(v*1e12+0.5)' : 'exact-int-text',
     n, seed,
@@ -247,9 +364,16 @@ async function main() {
     console.log(r.ok ? `ABSORB CHECK OK: ${r.detail}` : `ABSORB CHECK FAILED: ${r.detail}`);
     process.exit(r.ok ? 0 : 1);
   }
-  const { py, fn, candidate } = args;
-  if (!py || !fn || !candidate) {
-    console.error('usage: absorb.mjs --py f.py --fn name --candidate f.lm [--n 200] [--seed 42] [--range lo..hi[,..]] [--emit-fixture dir] | --check-fixture f.json');
+  const { py, src, fn, candidate } = args;
+  const oracle = args.oracle || 'py';
+  if (!['py', 'c', 'cpp'].includes(oracle)) {
+    console.error(`bad --oracle: ${oracle} (expected py|c|cpp)`);
+    process.exit(2);
+  }
+  const oracleSrcPath = oracle === 'py' ? (py ?? src) : (src ?? py);
+  if (!oracleSrcPath || !fn || !candidate) {
+    console.error('usage: absorb.mjs --oracle py|c|cpp --src f.{py,c,cpp} --fn name --candidate f.lm [--n 200] [--seed 42] [--range lo..hi[,..]] [--emit-fixture dir] | --check-fixture f.json');
+    console.error('  (--py is kept as an alias for --src when --oracle is py or omitted, for backward compatibility)');
     process.exit(2);
   }
   const n = args.n ? parseInt(args.n, 10) : 200;
@@ -259,14 +383,17 @@ async function main() {
     if (!m) throw new Error(`bad --range segment: ${s}`);
     return { lo: parseInt(m[1], 10), hi: parseInt(m[2], 10) };
   });
-  const result = await absorb({ pyPath: py, fnName: fn, candidatePath: candidate, n, seed, ranges });
+  const result = await absorb({ srcPath: oracleSrcPath, oracle, fnName: fn, candidatePath: candidate, n, seed, ranges });
   if (!result.verdict.ok) {
     console.log(`REJECTED: ${result.verdict.detail}`);
     process.exit(1);
   }
-  console.log(`ABSORBED: ${result.verdict.detail} (python ${result.pyver}, mode ${result.sig.ret === 'Float' ? 'scaled-1e12' : 'exact'})`);
+  const oracleBanner = oracle === 'py'
+    ? `python ${result.oracleMeta.version_at_absorption}`
+    : `${oracle} oracle via ${result.oracleMeta.compiler} (${result.oracleMeta.version_at_absorption})`;
+  console.log(`ABSORBED: ${result.verdict.detail} (${oracleBanner}, mode ${result.sig.ret === 'Float' ? 'scaled-1e12' : 'exact'})`);
   if (args['emit-fixture']) {
-    const fx = fixtureFrom(result, { pyPath: py, fnName: fn, candidatePath: candidate, n, seed, ranges });
+    const fx = fixtureFrom(result, { fnName: fn, candidatePath: candidate, n, seed, ranges });
     fs.mkdirSync(args['emit-fixture'], { recursive: true });
     const out = path.join(args['emit-fixture'], `${fn}.fixture.json`);
     fs.writeFileSync(out, JSON.stringify(fx, null, 2) + '\n');

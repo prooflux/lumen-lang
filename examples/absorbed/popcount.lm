@@ -1,0 +1,19 @@
+# ABSORBED from a GCC/Clang compiler builtin, __builtin_popcountll (oracle:
+# examples/absorbed/c/popcount.c, --oracle c). Verified against a live C oracle at
+# absorption time (the C/C++ oracle backend added to tools/absorb/absorb.mjs); frozen
+# outputs in examples/absorbed/fixtures/popcount.fixture.json, re-verified hermetically in
+# CI. Domain: Int within the fixture's recorded ranges; popcount treats the value as its
+# 64-bit twos-complement bit pattern (matching the C oracle's cast through unsigned long
+# long), counted via the language's shr/band builtins (shr is logical/unsigned, so this is
+# well-defined for negative values too).
+fn popcount(x: Int) -> Int {
+  var v = x
+  var count = 0
+  var i = 0
+  while i < 64 {
+    count = count + band(v, 1)
+    v = shr(v, 1)
+    i = i + 1
+  }
+  return count
+}

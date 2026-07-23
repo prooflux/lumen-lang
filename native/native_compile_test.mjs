@@ -16,6 +16,8 @@ import { execFileSync } from 'node:child_process';
 import { compileToIR } from './pipeline.mjs';
 import { buildLumencNative, SRC_CAP } from './lumenc_native.mjs';
 import { createCompiler } from '../seed/compiler_core.mjs';
+import { ResidentCompiler, parseResidentPayload } from './native_compile.mjs';
+import { reapStaleResidents } from './reap_residents.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -95,6 +97,26 @@ function runNative(bin, src) {
   }
 }
 
+// Resident-server counterpart to runNative above: same return shape ({ crashed, nerr, emitCount,
+// words, mainEntry, literalHeap }), same binary (any binary matching lumenc_native.mjs's
+// patchMainToCompileDriver contract), through an already-spawned ResidentCompiler session instead
+// of a fresh execFileSync per program - used by the correctness corpus loop below, which spawns
+// the SAME already-built binary once per program today. The TIMING section further down
+// deliberately keeps using runNative (one process spawn per program) - it exists specifically to
+// measure that spawn-included cost, so it is left unconverted; likewise the trap-hardening probe
+// below needs the ONE-SHOT crash contract (a wild-memory trap there exits the process outright,
+// which would kill a resident server's whole session, not just that one request) and is also left
+// on the one-shot path.
+async function runNativeResident(server, src) {
+  try {
+    const payload = await server.compile(src);
+    const { nerr, words, main, literalHeap } = parseResidentPayload(payload);
+    return { crashed: false, nerr, emitCount: words.length, words, mainEntry: main, literalHeap };
+  } catch (e) {
+    return { crashed: true, signal: null, status: null, reason: e.message };
+  }
+}
+
 function compareWords(a, b) {
   const maxLen = Math.max(a.length, b.length);
   for (let i = 0; i < maxLen; i++) {
@@ -104,6 +126,10 @@ function compareWords(a, b) {
 }
 
 async function main() {
+  // Safety net: clean up any `--resident` processes orphaned by a previous interrupted run
+  // before spawning our own (see reap_residents.mjs's header for why this matters).
+  reapStaleResidents();
+
   console.log('== native lumenc: build ==');
   const buildStart = process.hrtime.bigint();
   const { bin, variant, entry } = await buildLumencNative();
@@ -116,11 +142,18 @@ async function main() {
   let fail = 0, pass = 0;
   const firstDivergence = [];
 
+  // R6: one resident session for this gate's already-built `bin`, reused across the corpus loop
+  // + SELF below, instead of a fresh execFileSync spawn per program (25 spawns total otherwise).
+  // The TIMING section further down still spawns `bin` fresh per program on purpose (it exists to
+  // measure exactly that cost - see its own header comment), so it is intentionally not switched
+  // to this resident session.
+  const binResident = new ResidentCompiler(bin);
+
   for (const rel of CORPUS) {
     const src = readSrc(rel);
     const name = path.basename(rel);
     const seedIR = await compileToIR(src);   // throws on nerr>0; none of these are expected to error
-    const native = runNative(bin, src);
+    const native = await runNativeResident(binResident, src);
     if (native.crashed) {
       console.log(`FAIL  ${name}: native binary crashed (signal=${native.signal}, status=${native.status})`);
       fail++;
@@ -153,7 +186,8 @@ async function main() {
   console.log('\n== SELF: lumenc.lm compiling itself ==');
   const lumencSrc = readSrc('../seed/lumenc.lm');
   const seedSelfIR = await compileToIR(lumencSrc);
-  const nativeSelf = runNative(bin, lumencSrc);
+  const nativeSelf = await runNativeResident(binResident, lumencSrc);
+  binResident.stop();
   let selfOk = false;
   if (nativeSelf.crashed) {
     console.log(`FAIL  SELF(lumenc.lm): native binary crashed (signal=${nativeSelf.signal}, status=${nativeSelf.status})`);

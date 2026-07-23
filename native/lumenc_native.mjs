@@ -22,6 +22,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { emitWith, EMIT_FN_BASE, EMIT_FN_CEIL } from './pipeline.mjs';
 import { compileToIRNativeRaw } from './native_compile.mjs';
+import { ccInvocation } from './cc_wrapper.mjs';
 
 const CODE_BASE = 11328;      // emitted IR words (matches seed/compiler_core.mjs CODE_BASE)
 const SRC_BASE = 100000;      // SRC() in the seed's memory map
@@ -289,8 +290,8 @@ export function buildNativeBinaryFromC(csrc, { opt = '-O2', tag = 'native', name
   const cfile = path.join(dir, `${name}.c`), bin = path.join(dir, name);
   fs.writeFileSync(cfile, csrc);
   try {
-    execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', opt, '-o', bin, cfile],
-      { stdio: ['ignore', 'ignore', 'pipe'] });
+    const { cmd, args } = ccInvocation(['-ffp-contract=off', '-fno-fast-math', opt, '-o', bin, cfile]);
+    execFileSync(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   } catch (e) {
     throw new Error(`clang failed: ${String(e.stderr || e.message).slice(0, 500)}`);
   }

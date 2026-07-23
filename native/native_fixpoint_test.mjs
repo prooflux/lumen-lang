@@ -30,8 +30,10 @@ import { execFileSync } from 'node:child_process';
 import { compileToIR, emitWith, EMIT_FN_BASE, EMIT_FN_CEIL } from './pipeline.mjs';
 import { buildLumencNative, patchMainToCompileDriver, buildNativeBinaryFromC } from './lumenc_native.mjs';
 import { buildLumemitNative, runLumemitNative } from './lumemit_native.mjs';
+import { ResidentCompiler } from './native_compile.mjs';
+import { reapStaleResidents } from './reap_residents.mjs';
 import {
-  runNativeLumenc, stringsFromBlob, firstDiverge, reportDivergence, LIT_HEAP_BASE,
+  runNativeLumenc, runNativeLumencResident, stringsFromBlob, firstDiverge, reportDivergence, LIT_HEAP_BASE,
 } from './native_pipeline_test.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -80,6 +82,10 @@ function compareExtendedOutput(a, b) {
 
 async function main() {
   let pass = 0, fail = 0;
+
+  // Safety net: clean up any `--resident` processes orphaned by a previous interrupted run
+  // before spawning our own (see reap_residents.mjs's header for why this matters).
+  reapStaleResidents();
 
   console.log('== Generation 1: native lumenc (built from the seed-path emitWith) ==');
   const { bin: lumencBin, entry: lexCompileEntry } = await buildLumencNative();
@@ -134,22 +140,33 @@ async function main() {
 
     // ============================== CORPUS: L2 vs pipeline.mjs compileToIR ==============================
     console.log('\n== Corpus: L2 compiled words vs pipeline.mjs compileToIR, per program ==');
-    for (const rel of CORPUS) {
-      const src = readSrc(rel);
-      const name = path.basename(rel);
-      const refOut = await compileToIR(src);
-      const l2Out = runNativeLumenc(l2Bin, src);
-      let ok = l2Out.nerr === 0 && l2Out.main === refOut.main && l2Out.words.length === refOut.words.length;
-      if (ok) {
-        for (let i = 0; i < refOut.words.length; i++) {
-          if (refOut.words[i] !== l2Out.words[i]) { ok = false; break; }
+    // R6: one resident session for l2Bin, reused across the whole corpus loop, instead of a fresh
+    // execFileSync spawn per program. l2Bin was built from patchMainToCompileDriver like every
+    // other binary this driver family produces, so its resident mode is the same proven-identical
+    // wire protocol native_resident_test.mjs already gates - this changes only how the ALREADY
+    // fixpoint-verified binary is invoked here, not what it computes (the single-shot fixpoint
+    // assertion above, which IS the correctness-critical comparison, is untouched).
+    const l2Resident = new ResidentCompiler(l2Bin);
+    try {
+      for (const rel of CORPUS) {
+        const src = readSrc(rel);
+        const name = path.basename(rel);
+        const refOut = await compileToIR(src);
+        const l2Out = await runNativeLumencResident(l2Resident, src);
+        let ok = l2Out.nerr === 0 && l2Out.main === refOut.main && l2Out.words.length === refOut.words.length;
+        if (ok) {
+          for (let i = 0; i < refOut.words.length; i++) {
+            if (refOut.words[i] !== l2Out.words[i]) { ok = false; break; }
+          }
+        }
+        if (ok) { console.log(`PASS  ${name}: ${l2Out.words.length} words, bit-identical (L2 vs pipeline.mjs compileToIR)`); pass++; }
+        else {
+          console.log(`FAIL  ${name}: L2 nerr=${l2Out.nerr}, main=f${l2Out.main}, ${l2Out.words.length} words vs ref main=f${refOut.main}, ${refOut.words.length} words`);
+          fail++;
         }
       }
-      if (ok) { console.log(`PASS  ${name}: ${l2Out.words.length} words, bit-identical (L2 vs pipeline.mjs compileToIR)`); pass++; }
-      else {
-        console.log(`FAIL  ${name}: L2 nerr=${l2Out.nerr}, main=f${l2Out.main}, ${l2Out.words.length} words vs ref main=f${refOut.main}, ${refOut.words.length} words`);
-        fail++;
-      }
+    } finally {
+      l2Resident.stop();
     }
 
     // ============================== END-TO-END TIMING ==============================

@@ -27,6 +27,8 @@ import { compileToIR, emitWith, optimizeIR, EMIT_FN_BASE, EMIT_FN_CEIL } from '.
 import { buildLumencNative } from './lumenc_native.mjs';
 import { buildLumemitNative, runLumemitNative, stagePayload, frame } from './lumemit_native.mjs';
 import { buildLumoptNative, runLumoptNative } from './lumopt_native.mjs';
+import { ResidentCompiler, parseResidentPayload } from './native_compile.mjs';
+import { reapStaleResidents } from './reap_residents.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EMIT_FN_SRC = fs.readFileSync(path.join(__dirname, 'emit_fn.lm'), 'utf8');
@@ -81,6 +83,20 @@ export function runNativeLumenc(bin, src) {
   return { nerr, words, main, literalHeap };
 }
 
+// Resident-server counterpart to runNativeLumenc above: same return shape ({ nerr, words, main,
+// literalHeap }), same binary (any binary built from lumenc_native.mjs's patchMainToCompileDriver
+// template, one-shot and resident modes share the same extended-output layout - see that file's
+// header comment), but through an already-spawned ResidentCompiler session instead of a fresh
+// execFileSync per call. Used by loops that call runNativeLumenc many times against the SAME
+// already-built binary (this file's own Part C corpus loop, native_fixpoint_test.mjs's L2 corpus
+// loop, native_compile_test.mjs's corpus+SELF loop) - the process-spawn cost of one-shot execution
+// is paid once (server startup) instead of once per program.
+export async function runNativeLumencResident(server, src) {
+  const payload = await server.compile(src);
+  const { nerr, words, main, literalHeap } = parseResidentPayload(payload);
+  return { nerr, words, main, literalHeap };
+}
+
 // Rebuild the strings sidecar from the raw literal-heap blob via the same op-15 walk
 // compileToIR/compileLumencRaw use: find MKTEXT operand pointers in the words, then read
 // [len:i32][bytes] at (ptr - LIT_HEAP_BASE) inside the blob.
@@ -107,6 +123,10 @@ export function stringsFromBlob(words, blob) {
 
 async function main() {
   let fail = 0, pass = 0;
+
+  // Safety net: clean up any `--resident` processes orphaned by a previous interrupted run
+  // before spawning our own (see reap_residents.mjs's header for why this matters).
+  reapStaleResidents();
 
   // ============================== PART B: native lumemit ==============================
   console.log('== Part B: native lumemit (emit_fn.lm self-compiled) vs seed-path C ==');
@@ -144,17 +164,27 @@ async function main() {
   console.log(`built ${lumencBin}`);
 
   console.log('\n-- corpus (chain machinery validation, small programs) --');
-  for (const rel of CORPUS) {
-    const src = readSrc(rel);
-    const name = path.basename(rel);
-    const nc = runNativeLumenc(lumencBin, src);
-    if (nc.nerr !== 0) { console.log(`FAIL  ${name}: native lumenc nerr=${nc.nerr}`); fail++; continue; }
-    const strings = stringsFromBlob(nc.words, nc.literalHeap);
-    const chainedC = runLumemitNative(emitBin, nc.words, nc.main, strings);
-    const ir = await compileToIR(src);
-    const refC = await emitWith(EMIT_FN_SRC, ir.words, ir.main, ir.strings, EMIT_FN_BASE, EMIT_FN_CEIL);
-    if (chainedC === refC) { console.log(`PASS  ${name}: natively-chained C bit-identical (${chainedC.length}B)`); pass++; }
-    else { reportDivergence(`chain(${name})`, refC, chainedC); fail++; }
+  // R6: one resident session for lumencBin, reused across the whole corpus loop, instead of a
+  // fresh execFileSync spawn per program (runNativeLumenc). Same binary, same extended-output
+  // contract (lumenc_native.mjs's patchMainToCompileDriver) - the resident path is proven
+  // byte-identical to the fresh one-shot path by native_resident_test.mjs, so this changes only
+  // how the binary is invoked, not what it computes.
+  const lumencResident = new ResidentCompiler(lumencBin);
+  try {
+    for (const rel of CORPUS) {
+      const src = readSrc(rel);
+      const name = path.basename(rel);
+      const nc = await runNativeLumencResident(lumencResident, src);
+      if (nc.nerr !== 0) { console.log(`FAIL  ${name}: native lumenc nerr=${nc.nerr}`); fail++; continue; }
+      const strings = stringsFromBlob(nc.words, nc.literalHeap);
+      const chainedC = runLumemitNative(emitBin, nc.words, nc.main, strings);
+      const ir = await compileToIR(src);
+      const refC = await emitWith(EMIT_FN_SRC, ir.words, ir.main, ir.strings, EMIT_FN_BASE, EMIT_FN_CEIL);
+      if (chainedC === refC) { console.log(`PASS  ${name}: natively-chained C bit-identical (${chainedC.length}B)`); pass++; }
+      else { reportDivergence(`chain(${name})`, refC, chainedC); fail++; }
+    }
+  } finally {
+    lumencResident.stop();
   }
 
   console.log('\n-- lumenc.lm end-to-end (native lumenc compiling lumenc.lm, native lumemit emitting it) --');

@@ -6,9 +6,10 @@ with the repo's standing discipline: an executable oracle and a frozen, tamper-e
 
 ## The trust contract
 
-1. At absorption time, the foreign implementation is EXECUTED as a live oracle (today:
-   CPython via `python3 -I`) on a deterministic, seeded input set derived from the Lumen
-   candidate's own type signature. The candidate is accepted only if every case matches.
+1. At absorption time, the foreign implementation is EXECUTED as a live oracle (CPython via
+   `python3 -I`, or a real C/C++ compiler, see "Oracle backends" below) on a deterministic,
+   seeded input set derived from the Lumen candidate's own type signature. The candidate is
+   accepted only if every case matches.
 2. Acceptance freezes the oracle's outputs into `examples/absorbed/fixtures/<fn>.fixture.json`
    together with the sha256 of the accepted `.lm`, the sha256 of the oracle source, the
    Python version, the seed, the input ranges, and the comparison mode.
@@ -40,6 +41,61 @@ is deliberately outside the trust boundary: whoever writes the candidate, the or
 the frozen fixture decide whether it is accepted. Wiring an LLM author into the front of
 this pipeline reuses the promptgreen author adapters once they land (W5 P-C).
 
+## Oracle backends
+
+`--oracle py|c|cpp` selects which live foreign implementation is executed at absorption
+time (default `py`, kept fully backward compatible: `--py <file>` still works with no
+`--oracle` flag). The other absorption mechanics (seeded input generation from the
+candidate's own signature, the interpreter+native double-check, fixture freezing, sha
+pinning, hermetic `absorb_gate.mjs` re-verification) are IDENTICAL across all three
+backends: the oracle only supplies the ground-truth output lines, nothing else changes.
+
+```
+# C oracle: --src is a .c file, the oracle function is called directly (no header needed
+# beyond what the .c file itself includes; wrap a libc call or a compiler builtin exactly
+# like the Python oracle .py files wrap a stdlib call).
+node tools/absorb/absorb.mjs \
+  --oracle c --src examples/absorbed/c/llabs.c --fn iabs \
+  --candidate examples/absorbed/iabs.lm \
+  --n 200 --seed 42 --emit-fixture examples/absorbed/fixtures
+
+# C++ oracle: --src is a .cpp file, compiled as C++20 so std::midpoint/std::clamp/etc are
+# available.
+node tools/absorb/absorb.mjs \
+  --oracle cpp --src examples/absorbed/cpp/midpoint.cpp --fn midpoint \
+  --candidate examples/absorbed/midpoint.lm \
+  --n 200 --seed 42 --emit-fixture examples/absorbed/fixtures
+```
+
+For a C/C++ oracle, `absorb.mjs` writes a throwaway harness that `#include`s the oracle
+source verbatim, then a `main()` that calls the real function once per generated input row
+and prints its output using the exact same convention as the Lumen driver and the Python
+oracle (`Int` return: decimal text; `Float` return: `floor(v * 1e12 + 0.5)` as a `double`,
+printed as decimal text), compiles it with a real compiler, executes the binary, and reads
+its stdout as ground truth. Nothing about the foreign function is transcribed by hand: the
+harness calls the actual compiled code.
+
+**Compiler discovery (documented honestly, not assumed):** for `--oracle c` this repo
+prefers a prebuilt `xgcc` under the cloned `/Users/freedom/repos-languages/gcc` sources, and
+for `--oracle cpp` a prebuilt `clang++` under the cloned `/Users/freedom/repos-languages/llvm`
+sources, falling back to whatever `gcc`/`clang` (C) or `clang++`/`g++` (C++) is on `PATH` if
+the clone has no prebuilt binary at that path yet, exactly the same fallback discipline the
+repo's bench-vs-c track already uses. Whichever compiler is actually used, its binary path,
+a human label (`"cloned gcc (prebuilt, repos-languages/gcc)"` vs `"system gcc"` etc.), and
+its `--version` banner are recorded in the frozen fixture's `oracle.compiler` /
+`oracle.compiler_bin` / `oracle.version_at_absorption` fields, so it is always inspectable
+after the fact which compiler produced the ground truth, never silently assumed. As of this
+writing the cloned `repos-languages/gcc` and `repos-languages/llvm` trees are source-only
+(no build products yet), so every C/C++ absorption to date in this repo used the **system**
+compiler (Apple clang, both as `gcc`/`clang` and as `clang++`), visible per-fixture in the
+`oracle.compiler` field.
+
+**Hermeticity is unchanged by the new backends.** `tools/absorb/absorb_gate.mjs` (the CI
+gate) never re-executes any oracle, Python or C/C++: it only re-runs the Lumen candidate
+(interpreter and native) against the fixture's already-frozen `expected` lines. No C/C++
+compiler is required in CI for a `c`/`cpp`-oracled kernel to stay verified, exactly like no
+Python is required for a `py`-oracled one.
+
 ## Comparison modes
 
 - `Int` return: exact decimal text equality.
@@ -61,15 +117,22 @@ extension (each absorbed `.lm` header states it), not an oracle-verified claim.
 
 | Kernel | Oracle | Cases | Mode |
 |---|---|---|---|
-| `examples/absorbed/gcd.lm` | `math.gcd` | 200 | exact |
-| `examples/absorbed/isqrt.lm` | `math.isqrt` | 200 | exact |
-| `examples/absorbed/comb.lm` | `math.comb` | 200 | exact |
-| `examples/absorbed/root.lm` | `math.sqrt` of magnitude | 200 | scaled-1e12 |
+| `examples/absorbed/gcd.lm` | Python `math.gcd` | 200 | exact |
+| `examples/absorbed/isqrt.lm` | Python `math.isqrt` | 200 | exact |
+| `examples/absorbed/comb.lm` | Python `math.comb` | 200 | exact |
+| `examples/absorbed/root.lm` | Python `math.sqrt` of magnitude | 200 | scaled-1e12 |
+| `examples/absorbed/iabs.lm` | C `llabs` (`<stdlib.h>`) | 200 | exact |
+| `examples/absorbed/popcount.lm` | C `__builtin_popcountll` (GCC/Clang builtin) | 200 | exact |
+| `examples/absorbed/midpoint.lm` | C++ `std::midpoint<long long>` (`<numeric>`) | 200 | exact |
 
 ## v1 limits, stated plainly
 
 Param types: `Int` and `Float`. Return types: `Int` and `Float`. One function per
-absorption. Text params, arrays, records, multi-function modules, and non-Python oracles
-are future work; the fixture format carries a version field for that evolution. The
-selftest (`absorb_selftest.mjs`) proves accept, reject, sha-drift, and expected-tampering
-behavior on throwaway kernels in a temp directory.
+absorption. Text params, arrays, records, and multi-function modules are future work; the
+fixture format carries a version field for that evolution. Oracle backends now cover
+Python, C, and C++ (see "Oracle backends" above); other foreign languages are future work
+on the same plugin shape (a signature-driven input generator, a live-execute step, and a
+line-based comparison already factor cleanly per backend). The selftest
+(`absorb_selftest.mjs`) proves accept, reject, sha-drift, and expected-tampering behavior
+on throwaway kernels in a temp directory, for the Python oracle and, since this backend
+landed, for the C and C++ oracles too.

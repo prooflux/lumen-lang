@@ -1,0 +1,10 @@
+# ABSORBED from C++ std::midpoint<long long> (oracle: examples/absorbed/cpp/midpoint.cpp,
+# --oracle cpp). Verified against a live g++/clang++ C++ oracle at absorption time (the
+# C/C++ oracle backend added to tools/absorb/absorb.mjs); frozen outputs in
+# examples/absorbed/fixtures/midpoint.fixture.json, re-verified hermetically in CI.
+# Domain: Int x Int within the fixture's recorded ranges (well inside i64, no overflow in
+# b - a). std::midpoint's no-overflow, round-toward-a definition is exactly a + (b - a) / 2
+# with truncating division, which is what this reimplements.
+fn midpoint(a: Int, b: Int) -> Int {
+  return a + (b - a) / 2
+}

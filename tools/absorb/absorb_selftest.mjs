@@ -56,5 +56,42 @@ const c3 = await checkFixture(fxPath);
 check('fixture check fails on tampered expected output', !c3.ok, c3.detail);
 
 fs.rmSync(tmp, { recursive: true, force: true });
+
+// --- C oracle backend: same three properties (accept / reject / tamper), throwaway kernel ---
+const tmpC = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-absorb-selftest-c-'));
+const cSrc = path.join(tmpC, 'triple.c');
+fs.writeFileSync(cSrc, 'long long triple(long long a) {\n    return a * 3;\n}\n');
+const goodC = path.join(tmpC, 'triple.lm');
+fs.writeFileSync(goodC, 'fn triple(a: Int) -> Int {\n  return a * 3\n}\n');
+const badC = path.join(tmpC, 'triple_bad.lm');
+fs.writeFileSync(badC, 'fn triple(a: Int) -> Int {\n  return a * 3 + 1\n}\n');
+
+const optsC = { srcPath: cSrc, oracle: 'c', fnName: 'triple', candidatePath: goodC, n: 30, seed: 3, ranges: [] };
+const rc1 = await absorb(optsC);
+check('C oracle: correct candidate is ABSORBED', rc1.verdict.ok, rc1.verdict.detail);
+
+const rc2 = await absorb({ ...optsC, candidatePath: badC });
+check('C oracle: off-by-one candidate is REJECTED', !rc2.verdict.ok, rc2.verdict.detail);
+
+fs.rmSync(tmpC, { recursive: true, force: true });
+
+// --- C++ oracle backend: same shape, a std::-library-flavored kernel ---
+const tmpCpp = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-absorb-selftest-cpp-'));
+const cppSrc = path.join(tmpCpp, 'maxi.cpp');
+fs.writeFileSync(cppSrc, '#include <algorithm>\n\nlong long maxi(long long a, long long b) {\n    return std::max(a, b);\n}\n');
+const goodCpp = path.join(tmpCpp, 'maxi.lm');
+fs.writeFileSync(goodCpp, 'fn maxi(a: Int, b: Int) -> Int {\n  if a > b { return a }\n  return b\n}\n');
+const badCpp = path.join(tmpCpp, 'maxi_bad.lm');
+fs.writeFileSync(badCpp, 'fn maxi(a: Int, b: Int) -> Int {\n  if a < b { return a }\n  return b\n}\n');
+
+const optsCpp = { srcPath: cppSrc, oracle: 'cpp', fnName: 'maxi', candidatePath: goodCpp, n: 30, seed: 5, ranges: [] };
+const rcpp1 = await absorb(optsCpp);
+check('C++ oracle: correct candidate is ABSORBED', rcpp1.verdict.ok, rcpp1.verdict.detail);
+
+const rcpp2 = await absorb({ ...optsCpp, candidatePath: badCpp });
+check('C++ oracle: inverted candidate is REJECTED', !rcpp2.verdict.ok, rcpp2.verdict.detail);
+
+fs.rmSync(tmpCpp, { recursive: true, force: true });
+
 console.log(failures === 0 ? 'absorb_selftest: all checks passed' : `absorb_selftest: ${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

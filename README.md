@@ -43,7 +43,7 @@ in one command. If you are an AI agent working this repo, read [`AGENTS.md`](AGE
 - [`docs/ROADMAP_2036.md`](docs/ROADMAP_2036.md): the plan of record.
 - [`RULES.md`](RULES.md): the operating laws and the canonical metric names.
 - [`bench/scoreboard.json`](bench/scoreboard.json) and [`bench/DASHBOARD.md`](bench/DASHBOARD.md): the live verdicts and numbers.
-- [`bench/vs-c/SCOREBOARD.md`](bench/vs-c/SCOREBOARD.md): matched-kernel timings against real C (`-O3`), gated on byte-identical output first.
+- [`bench/vs-lang/SCOREBOARD.md`](bench/vs-lang/SCOREBOARD.md): matched-kernel timings against real C, Rust, and Python, gated on byte-identical output across all four first.
 - [`tools/absorb/README.md`](tools/absorb/README.md): the oracle-gated contract for absorbing foreign (Python, C, C++) functions with a live, executed, sha-pinned oracle.
 - [`docs/SIMD_AUTOVECTORIZATION_PLAN.md`](docs/SIMD_AUTOVECTORIZATION_PLAN.md): what Lumen gets for free from clang/LLVM's own auto-vectorizer today, and the staged plan for closing the rest of the gap.
 - [`SELFHOST_CAMPAIGN_LOG.md`](SELFHOST_CAMPAIGN_LOG.md) and [`docs/VELOCITY_LEDGER.md`](docs/VELOCITY_LEDGER.md): the receipts.

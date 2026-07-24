@@ -80,7 +80,7 @@ prefers a prebuilt `xgcc` under the cloned `/Users/freedom/repos-languages/gcc` 
 for `--oracle cpp` a prebuilt `clang++` under the cloned `/Users/freedom/repos-languages/llvm`
 sources, falling back to whatever `gcc`/`clang` (C) or `clang++`/`g++` (C++) is on `PATH` if
 the clone has no prebuilt binary at that path yet, exactly the same fallback discipline the
-repo's bench-vs-c track already uses. Whichever compiler is actually used, its binary path,
+repo's bench/vs-lang track already uses. Whichever compiler is actually used, its binary path,
 a human label (`"cloned gcc (prebuilt, repos-languages/gcc)"` vs `"system gcc"` etc.), and
 its `--version` banner are recorded in the frozen fixture's `oracle.compiler` /
 `oracle.compiler_bin` / `oracle.version_at_absorption` fields, so it is always inspectable

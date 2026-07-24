@@ -170,6 +170,31 @@ export async function buildAndRunFn(src, opt = '-O2') {
   return { stdout, exit, csrc };
 }
 
+// Resident-backed twin of buildAndRunFn, for repeat-call callers that live in one long-running
+// process (seed/lumen_mcp.mjs's lumen_run_native tool is the intended caller - compileToIRAuto's
+// own header comment already named it as such, but nothing actually called it until this
+// function existed). Only the COMPILE step changes (compileToIRNative's per-call native-binary
+// process spawn -> compileToIRAuto's warm resident-server round trip, no spawn once warm); the
+// clang emit/build/execute steps after it are identical to buildAndRunFn on purpose, so behavior
+// (including the clang-failure and nonzero-exit handling) matches exactly. Deliberately NOT a
+// change to buildAndRunFn itself: that function has ~45 existing callers across this repo, and a
+// resident-vs-fresh-process behavioral difference is exactly the kind of thing that should not
+// silently ride along with an unrelated caller's request.
+export async function buildAndRunFnResident(src, opt = '-O2') {
+  const { words, main, strings } = await compileToIRAuto(src);
+  const optResult = optimizeIRNative(words, main);
+  const csrc = await emitC(optResult.words, optResult.main, strings);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lumen-fn-'));
+  const cfile = path.join(dir, 'p.c'), bin = path.join(dir, 'p');
+  fs.writeFileSync(cfile, csrc);
+  try { execFileSync('clang', ['-ffp-contract=off', '-fno-fast-math', opt, '-o', bin, cfile], { stdio: ['ignore', 'ignore', 'pipe'] }); }
+  catch (e) { throw new Error(`clang failed: ${String(e.stderr || e.message).slice(0, 300)}`); }
+  let stdout = '', exit = 0;
+  try { stdout = execFileSync(bin, { encoding: 'utf8' }); }
+  catch (e) { stdout = e.stdout ? e.stdout.toString() : ''; exit = typeof e.status === 'number' ? e.status : 1; }
+  return { stdout, exit, csrc };
+}
+
 // run optimize.lm's compiled-and-cached native binary over an injected IR snapshot.
 export async function optimizeIR(words, main) {
   return optimizeIRNative(words, main);

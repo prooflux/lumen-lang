@@ -169,7 +169,7 @@ function runPythonOracle(pyPath, fnName, inputs, ret) {
 // Compiler discovery prefers a prebuilt binary under the cloned /Users/freedom/repos-languages
 // sources (gcc/build/gcc/xgcc for C, llvm/build/bin/clang++ for C++) and falls back to
 // whatever gcc/g++/clang/clang++ is on PATH, exactly the fallback discipline already used by
-// the repo's bench-vs-c track: whichever compiler is actually used is recorded (binary path,
+// the repo's bench/vs-lang track: whichever compiler is actually used is recorded (binary path,
 // --version banner) in the frozen fixture, never silently assumed.
 const CLONED_LANGUAGES_ROOT = '/Users/freedom/repos-languages';
 

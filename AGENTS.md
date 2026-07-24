@@ -106,7 +106,7 @@ another agent is using concurrently.
 - `tools/gate_all.mjs` - the full gate suite, one command.
 - `tools/land_pr.mjs <pr-number>` - fetch, merge locally, gate, push - the careful merge protocol.
 - `tools/absorb/` - oracle-gated absorption of foreign (Python, C, C++) functions.
-- `bench/vs-c/` - matched-kernel timings against real C.
+- `bench/vs-lang/` - matched-kernel timings against real C, Rust, and Python.
 - `native/lumend_native.mjs` - the persistent native-compiler daemon (warm process over a socket).
 - `.claude/skills/lumen/SKILL.md` in the QUANTS repo is the parallel front door for Claude Code
   sessions whose working directory is QUANTS, not this repo (they cannot auto-load this file);

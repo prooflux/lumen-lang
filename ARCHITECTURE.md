@@ -231,14 +231,19 @@ acceptance run and every fixture re-check compile the candidate through the inte
 native toolchain, both required to reproduce the oracle. See `tools/absorb/README.md` for the full
 contract, including the v1 scope limits.
 
-## Benchmarking against other languages (`bench/vs-c/`)
+## Benchmarking against other languages (`bench/vs-lang/`)
 
-A matched-kernel scoreboard racing Lumen's native output against real C compiled with `-O3` (the
-cloned `gcc`/`llvm` sources when a prebuilt binary is available there, else the system compiler,
-disclosed either way): four kernel pairs (recursive call, matrix multiply, insertion sort, an
-open-addressing hash probe), gated `G0` on byte-identical stdout before any timing is trusted.
-Real measured results and the exact compiler versions used are in `bench/vs-c/SCOREBOARD.md`, not
-asserted here since they will drift as the toolchain improves.
+A matched-kernel scoreboard racing Lumen's native output against C (`clang -O3`), Rust (`rustc
+-O`), and Python (CPython, interpreted): four kernel quads (recursive call, matrix multiply,
+insertion sort, an open-addressing hash probe), gated `G0` on byte-identical stdout across all four
+languages before any timing is trusted. Honest framing, not just numbers: Lumen's native path
+compiles to C and is optimized by clang, so it can match hand-written C and Rust (both ultimately
+LLVM-backend-optimized) but has no architectural reason to consistently beat either - the measured
+results bear this out (roughly 0.83x-1.16x across kernels, no consistent direction). Against Python
+the gap is real and large (0.04x-0.12x, i.e. 8-25x faster), which is the structural, defensible win
+this scoreboard actually demonstrates. Real measured numbers and the exact compiler/interpreter
+versions used are in `bench/vs-lang/SCOREBOARD.md`, not asserted here since they will drift as the
+toolchain improves.
 
 ## The Forge (`forge/`)
 

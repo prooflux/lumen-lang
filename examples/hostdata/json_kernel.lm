@@ -1,0 +1,734 @@
+# KNOWN ISSUES (found by adversarial re-verification, 2026-07-23 - fix before relying on
+# this kernel for real payloads; NOT yet patched):
+#   1. SEVERE, SILENT: two iarray()s combined near ~4520+ elements make the seed
+#      interpreter halt with EXIT 0 and ZERO output - no error, no crash, indistinguishable
+#      from an empty-but-successful run. Root cause is a shared, never-freed ~36288-byte
+#      array/Text heap ceiling in the Lumen RUNTIME itself (native/lumenc_native.mjs,
+#      native/native_compile.mjs, native/ir_interpreter.mjs all reference the same
+#      LM_CAP_BYTES constant), not a bug specific to this file - confirmed with a bare
+#      2-line iarray() probe outside any JSON code. A mundane 150-int JSON array already
+#      reproduces it. Do not feed this kernel a document whose combined token+output arrays
+#      could approach that ceiling until the runtime heap limit is fixed or made growable
+#      (and, at minimum, made to fail LOUDLY instead of silently).
+#   2. Lone/unpaired UTF-16 surrogate escapes (e.g. "\ud800" alone) are legal JSON text per
+#      RFC 8259 but this kernel's emit_utf8() encodes them as invalid UTF-8 bytes that a
+#      strict decoder will reject.
+#   3. A high surrogate followed by an escape that is NOT a valid low surrogate (e.g.
+#      "\ud800A") is silently merged into a wrong, unrelated codepoint instead of being kept
+#      as two separate characters. parse_string() checks for a following "\u" but never
+#      validates the resulting value is actually in the low-surrogate range.
+#   4. Int parsing is inexact strictly inside this file's own documented "safe to 2^53"
+#      claim: 2^53-1 round-trips to 2^53. Root cause is a systemic Lumen builtin round()
+#      defect (seed/lumenc.wat FROUND: floor(x+0.5), the classic round-half-up bug, which
+#      mis-rounds an exact tie at this magnitude) - reproducible with a bare round() probe,
+#      not specific to this kernel. Any Lumen program relying on round() near 2^53 inherits
+#      this.
+# See examples/hostdata/README.md for the full adversarial-verification writeup.
+#
+# JSON parse + serialize, implemented from scratch in pure Lumen over a raw-memory byte
+# buffer (the same "host writes bytes, kernel is the authority" pattern as
+# examples/http/*.lm and examples/hostdata/decide_kernel.lm/sha256_kernel.lm).
+#
+# There is no byte-level Text access in this Lumen subset (LANGUAGE.md "Not in this
+# subset": no text indexing, no char-from-code builtin, no float-to-text builtin). So this
+# kernel:
+#   - reads the JSON document as raw bytes via load8/store8 over a fixed input buffer
+#     (IN_BASE/IN_LEN_ADDR, exactly the http_router.lm/hex_decode.lm convention);
+#   - represents the PARSED value as a flat, self-describing, recursively-walkable token
+#     stream in an Int array (a prefix/Polish encoding: every value starts with a tag,
+#     followed by however many payload/child tokens that tag implies) - a caller can walk
+#     this to reconstruct the real tree, not just round-trip opaque Text;
+#   - represents the RE-SERIALIZED JSON text as a byte-code stream in a second Int array
+#     (again because Lumen has no builtin to assemble a Text value from raw bytes at
+#     runtime); a host capability (out of scope here, same seam as the HTTP examples) would
+#     turn that byte stream into an actual response body.
+#
+# Token stream format (each element is one Int; recursive/self-describing, walk with a
+# cursor):
+#   NULL            -> [0]
+#   TRUE            -> [1]
+#   FALSE           -> [2]
+#   NUMBER (Int)    -> [3, value]
+#   NUMBER (Float)  -> [4, scaled]     scaled = round(value * 1e9); see LIMITATIONS below
+#   STRING          -> [5, len, byte0, byte1, ..., byte(len-1)]   decoded UTF-8 bytes
+#   ARRAY           -> [6, count, <token stream of element 0>, ..., <element count-1>]
+#   OBJECT          -> [7, count, <STRING key 0>, <value 0>, ..., <key count-1>, <value count-1>]
+#
+# LIMITATIONS (honest, by construction of this Lumen subset):
+#   - Float numbers are carried through the token stream as round(value * 1e9): a
+#     scaled-integer encoding, not the raw IEEE-754 bit pattern (Lumen has no bit-cast
+#     between Float and Int). This is the same "scaled equality" convention this repo's own
+#     absorption gate uses for Float returns (tools/absorb/README.md: "scaled-1e12
+#     equality"); here it is scaled-1e9 to keep round(value * 1e9) safely inside i64 for the
+#     REST-payload-sized numbers this kernel targets (roughly |value| < 1e9). A value whose
+#     magnitude or precision exceeds that will lose precision at the 9th significant digit,
+#     the same way any fixed-scale decimal encoding does.
+#   - Int numbers larger than 2^53 lose exactness during parsing: the digit-accumulation loop
+#     builds the integer part as a Float (so it can share code with fractional/exponent
+#     parsing) and only converts to Int at the end via round(); this is exact for any integer
+#     a real Float can represent exactly (|value| <= 2^53) and silently imprecise beyond that.
+#     A dedicated integer-only fast path (accumulate as Int, detect '.'/'e' before committing)
+#     would remove this, and is a natural follow-up, not implemented here to keep one parse
+#     path for both number shapes.
+#   - Fixed-capacity buffers: the input, token, and output-byte arrays are all allocated by
+#     the caller (see the demo main() below) at a size the caller picks; there is no
+#     growable/streaming array in this Lumen subset. A document or token stream that overflows
+#     the caller's chosen capacity will write out of the array's declared bounds via iaset,
+#     which this subset does not bounds-check on write (only iaget guards out-of-bounds reads
+#     by returning 0 - see mu/examples/iarrays.lm's own comment on that guard). Caller's
+#     responsibility to size generously; not a footgun specific to JSON.
+#   - No true bignum, no arbitrary-precision decimal: every number ultimately lives in a
+#     64-bit Int or a 1e9-scaled Int derived from a 64-bit Float, exactly like every other
+#     numeric kernel in this repo (see LANGUAGE.md's Int/Float sections).
+#   - Duplicate object keys are preserved in stream order (never deduplicated), matching
+#     Python's json module's "last key wins" semantics only insofar as the CALLER chooses to
+#     walk the pairs in order and overwrite; this kernel itself does not decide a policy.
+
+# --- input buffer: the host (or the demo main() below) writes raw JSON bytes here ---
+fn in_base() -> Int { return 700000 }
+fn in_len_addr() -> Int { return 699996 }
+
+# --- parse-time cursors (raw-memory globals; see http_router.lm for the same idiom) ---
+fn pos_addr() -> Int { return 690000 }
+fn tok_cursor_addr() -> Int { return 690004 }
+
+# --- serialize-time cursors ---
+fn tok_read_addr() -> Int { return 690008 }
+fn byte_cursor_addr() -> Int { return 690012 }
+
+fn ilen() -> Int { return load32(in_len_addr()) }
+fn pos() -> Int { return load32(pos_addr()) }
+fn set_pos(p: Int) -> Unit {
+  store32(pos_addr(), p)
+  return ()
+}
+fn advance() -> Unit {
+  set_pos(pos() + 1)
+  return ()
+}
+fn cur() -> Int { return load8(in_base() + pos()) }
+fn curat(o: Int) -> Int { return load8(in_base() + pos() + o) }
+
+fn tcursor() -> Int { return load32(tok_cursor_addr()) }
+fn set_tcursor(v: Int) -> Unit {
+  store32(tok_cursor_addr(), v)
+  return ()
+}
+fn emit(tok: Array, v: Int) -> Unit {
+  iaset(tok, tcursor(), v)
+  set_tcursor(tcursor() + 1)
+  return ()
+}
+
+fn tread() -> Int { return load32(tok_read_addr()) }
+fn set_tread(v: Int) -> Unit {
+  store32(tok_read_addr(), v)
+  return ()
+}
+fn next_tok(tok: Array) -> Int {
+  let v: Int = iaget(tok, tread())
+  set_tread(tread() + 1)
+  return v
+}
+
+fn bcursor() -> Int { return load32(byte_cursor_addr()) }
+fn set_bcursor(v: Int) -> Unit {
+  store32(byte_cursor_addr(), v)
+  return ()
+}
+fn emit_byte(out: Array, b: Int) -> Unit {
+  iaset(out, bcursor(), b)
+  set_bcursor(bcursor() + 1)
+  return ()
+}
+
+# =====================================================================================
+# PARSE
+# =====================================================================================
+
+fn is_ws(b: Int) -> Int {
+  if b == 32 { return 1 }
+  if b == 9 { return 1 }
+  if b == 10 { return 1 }
+  if b == 13 { return 1 }
+  return 0
+}
+
+fn skip_ws() -> Unit {
+  while pos() < ilen() and is_ws(cur()) == 1 {
+    advance()
+  }
+  return ()
+}
+
+fn is_digit(b: Int) -> Int {
+  if b >= 48 and b <= 57 { return 1 }
+  return 0
+}
+
+# UTF-8-encode a decoded Unicode code point straight into the token stream as 1..4 byte
+# tokens; returns how many bytes it emitted (used by the caller to accumulate the STRING
+# token's declared length).
+fn emit_utf8(tok: Array, cp: Int) -> Int {
+  if cp <= 127 {
+    emit(tok, cp)
+    return 1
+  }
+  if cp <= 2047 {
+    emit(tok, 192 + shr(cp, 6))
+    emit(tok, 128 + band(cp, 63))
+    return 2
+  }
+  if cp <= 65535 {
+    emit(tok, 224 + shr(cp, 12))
+    emit(tok, 128 + band(shr(cp, 6), 63))
+    emit(tok, 128 + band(cp, 63))
+    return 3
+  }
+  emit(tok, 240 + shr(cp, 18))
+  emit(tok, 128 + band(shr(cp, 12), 63))
+  emit(tok, 128 + band(shr(cp, 6), 63))
+  emit(tok, 128 + band(cp, 63))
+  return 4
+}
+
+fn hex_val(b: Int) -> Int {
+  if b >= 48 and b <= 57 { return b - 48 }
+  if b >= 97 and b <= 102 { return b - 97 + 10 }
+  if b >= 65 and b <= 70 { return b - 65 + 10 }
+  return 0
+}
+
+# cursor sits right after the 'u' of a \uXXXX escape; consumes exactly 4 hex digits.
+fn read_hex4() -> Int {
+  var v: Int = 0
+  var i: Int = 0
+  while i < 4 {
+    v = v * 16 + hex_val(cur())
+    advance()
+    i = i + 1
+  }
+  return v
+}
+
+# One-character backslash escapes that map to a single output byte; -1 means "not one of
+# these" (the caller falls back to emitting the escaped character literally, the JSON spec's
+# behavior for \/ and any other escaped ASCII punctuation).
+fn simple_escape(e: Int) -> Int {
+  if e == 34 { return 34 }    # \"
+  if e == 92 { return 92 }    # \\
+  if e == 47 { return 47 }    # \/
+  if e == 98 { return 8 }     # \b
+  if e == 102 { return 12 }   # \f
+  if e == 110 { return 10 }   # \n
+  if e == 114 { return 13 }   # \r
+  if e == 116 { return 9 }    # \t
+  return 0 - 1
+}
+
+# Assumes cur() == '"' at entry. Emits [5, len, byte0..byte(len-1)] (decoded UTF-8 bytes),
+# patching the length slot once the true byte count is known.
+fn parse_string(tok: Array) -> Unit {
+  advance()
+  emit(tok, 5)
+  let len_pos: Int = tcursor()
+  emit(tok, 0)
+  var count: Int = 0
+  while pos() < ilen() and cur() != 34 {
+    if cur() == 92 {
+      advance()
+      let e: Int = cur()
+      if e == 117 {
+        advance()
+        var cp: Int = read_hex4()
+        if cp >= 55296 and cp <= 56319 and cur() == 92 and curat(1) == 117 {
+          advance()
+          advance()
+          let lo: Int = read_hex4()
+          cp = 65536 + (cp - 55296) * 1024 + (lo - 56320)
+        }
+        count = count + emit_utf8(tok, cp)
+      } else {
+        let sc: Int = simple_escape(e)
+        if sc >= 0 {
+          emit(tok, sc)
+        } else {
+          emit(tok, e)
+        }
+        count = count + 1
+        advance()
+      }
+    } else {
+      emit(tok, cur())
+      count = count + 1
+      advance()
+    }
+  }
+  advance()
+  iaset(tok, len_pos, count)
+  return ()
+}
+
+# JSON number grammar: -?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?
+# Integer part is accumulated as Float so the same accumulator feeds the fraction/exponent
+# path; see the module header's LIMITATIONS note on exactness beyond 2^53.
+fn parse_number(tok: Array) -> Unit {
+  var neg: Int = 0
+  if cur() == 45 {
+    neg = 1
+    advance()
+  }
+  var int_part: Float = 0.0
+  while pos() < ilen() and is_digit(cur()) == 1 {
+    int_part = int_part * 10.0 + to_float(cur() - 48)
+    advance()
+  }
+  var is_float: Int = 0
+  var frac_part: Float = 0.0
+  var frac_scale: Float = 1.0
+  if pos() < ilen() and cur() == 46 {
+    is_float = 1
+    advance()
+    while pos() < ilen() and is_digit(cur()) == 1 {
+      frac_scale = frac_scale * 10.0
+      frac_part = frac_part * 10.0 + to_float(cur() - 48)
+      advance()
+    }
+  }
+  var exp_sign: Float = 1.0
+  var exp_val: Float = 0.0
+  if pos() < ilen() and (cur() == 101 or cur() == 69) {
+    is_float = 1
+    advance()
+    if pos() < ilen() and cur() == 43 {
+      advance()
+    } else if pos() < ilen() and cur() == 45 {
+      exp_sign = 0.0 - 1.0
+      advance()
+    }
+    while pos() < ilen() and is_digit(cur()) == 1 {
+      exp_val = exp_val * 10.0 + to_float(cur() - 48)
+      advance()
+    }
+  }
+  var mantissa: Float = int_part + frac_part / frac_scale
+  if neg == 1 {
+    mantissa = 0.0 - mantissa
+  }
+  if is_float == 1 {
+    let scaled_exp: Float = mantissa * pow(10.0, exp_sign * exp_val)
+    let scaled: Int = round(scaled_exp * 1000000000.0)
+    emit(tok, 4)
+    emit(tok, scaled)
+  } else {
+    var ival: Int = round(int_part)
+    if neg == 1 {
+      ival = 0 - ival
+    }
+    emit(tok, 3)
+    emit(tok, ival)
+  }
+  return ()
+}
+
+fn parse_array(tok: Array) -> Unit {
+  advance()
+  emit(tok, 6)
+  let len_pos: Int = tcursor()
+  emit(tok, 0)
+  skip_ws()
+  if pos() < ilen() and cur() == 93 {
+    advance()
+    iaset(tok, len_pos, 0)
+    return ()
+  }
+  var n: Int = 0
+  var more: Int = 1
+  while more == 1 {
+    parse_value(tok)
+    n = n + 1
+    skip_ws()
+    if pos() < ilen() and cur() == 44 {
+      advance()
+      skip_ws()
+    } else {
+      more = 0
+    }
+  }
+  skip_ws()
+  advance()
+  iaset(tok, len_pos, n)
+  return ()
+}
+
+fn parse_object(tok: Array) -> Unit {
+  advance()
+  emit(tok, 7)
+  let len_pos: Int = tcursor()
+  emit(tok, 0)
+  skip_ws()
+  if pos() < ilen() and cur() == 125 {
+    advance()
+    iaset(tok, len_pos, 0)
+    return ()
+  }
+  var n: Int = 0
+  var more: Int = 1
+  while more == 1 {
+    skip_ws()
+    parse_string(tok)
+    skip_ws()
+    advance()
+    skip_ws()
+    parse_value(tok)
+    n = n + 1
+    skip_ws()
+    if pos() < ilen() and cur() == 44 {
+      advance()
+      skip_ws()
+    } else {
+      more = 0
+    }
+  }
+  skip_ws()
+  advance()
+  iaset(tok, len_pos, n)
+  return ()
+}
+
+fn parse_value(tok: Array) -> Unit {
+  skip_ws()
+  let c: Int = cur()
+  if c == 34 {
+    parse_string(tok)
+    return ()
+  }
+  if c == 123 {
+    parse_object(tok)
+    return ()
+  }
+  if c == 91 {
+    parse_array(tok)
+    return ()
+  }
+  if c == 116 {
+    emit(tok, 1)
+    set_pos(pos() + 4)
+    return ()
+  }
+  if c == 102 {
+    emit(tok, 2)
+    set_pos(pos() + 5)
+    return ()
+  }
+  if c == 110 {
+    emit(tok, 0)
+    set_pos(pos() + 4)
+    return ()
+  }
+  parse_number(tok)
+  return ()
+}
+
+fn json_parse(tok: Array) -> Unit {
+  set_pos(0)
+  set_tcursor(0)
+  parse_value(tok)
+  return ()
+}
+
+fn print_tokens(console: Console, tok: Array) -> Unit {
+  console.print_int(tcursor())
+  var i: Int = 0
+  while i < tcursor() {
+    console.print_int(iaget(tok, i))
+    i = i + 1
+  }
+  return ()
+}
+
+# =====================================================================================
+# SERIALIZE (token stream -> JSON byte-code stream)
+# =====================================================================================
+
+fn digit_byte(d: Int) -> Int { return 48 + d }
+
+fn emit_uint_digits(out: Array, v: Int) -> Unit {
+  if v >= 10 {
+    emit_uint_digits(out, v / 10)
+  }
+  emit_byte(out, digit_byte(v % 10))
+  return ()
+}
+
+fn emit_int(out: Array, v: Int) -> Unit {
+  if v < 0 {
+    emit_byte(out, 45)
+    emit_uint_digits(out, 0 - v)
+  } else {
+    emit_uint_digits(out, v)
+  }
+  return ()
+}
+
+# Emit a 9-digit fractional part, zero-padded on the left, trailing zeros stripped but at
+# least one digit kept (the same convention LANGUAGE.md documents for dec_to_text).
+fn emit_frac9(out: Array, fp: Int) -> Unit {
+  let digits: Array = iarray(9)
+  var v: Int = fp
+  var i: Int = 8
+  while i >= 0 {
+    iaset(digits, i, v % 10)
+    v = v / 10
+    i = i - 1
+  }
+  var last: Int = 8
+  while last > 0 and iaget(digits, last) == 0 {
+    last = last - 1
+  }
+  var j: Int = 0
+  while j <= last {
+    emit_byte(out, digit_byte(iaget(digits, j)))
+    j = j + 1
+  }
+  return ()
+}
+
+fn emit_float_scaled(out: Array, scaled: Int) -> Unit {
+  var neg: Int = 0
+  var mag: Int = scaled
+  if scaled < 0 {
+    neg = 1
+    mag = 0 - scaled
+  }
+  let ip: Int = mag / 1000000000
+  let fp: Int = mag % 1000000000
+  if neg == 1 {
+    emit_byte(out, 45)
+  }
+  emit_uint_digits(out, ip)
+  emit_byte(out, 46)
+  emit_frac9(out, fp)
+  return ()
+}
+
+fn emit_hex_digit(out: Array, d: Int) -> Unit {
+  if d < 10 {
+    emit_byte(out, 48 + d)
+  } else {
+    emit_byte(out, 97 + d - 10)
+  }
+  return ()
+}
+
+fn emit_u_escape(out: Array, b: Int) -> Unit {
+  emit_byte(out, 92)
+  emit_byte(out, 117)
+  emit_byte(out, 48)
+  emit_byte(out, 48)
+  emit_hex_digit(out, b / 16)
+  emit_hex_digit(out, b % 16)
+  return ()
+}
+
+# Consumes `len` decoded-UTF-8-byte tokens from tok (already past the STRING tag+len) and
+# emits the escaped JSON text for them, including the surrounding quotes.
+fn emit_string_bytes(out: Array, tok: Array, len: Int) -> Unit {
+  emit_byte(out, 34)
+  var i: Int = 0
+  while i < len {
+    let b: Int = next_tok(tok)
+    if b == 34 {
+      emit_byte(out, 92)
+      emit_byte(out, 34)
+    } else if b == 92 {
+      emit_byte(out, 92)
+      emit_byte(out, 92)
+    } else if b == 10 {
+      emit_byte(out, 92)
+      emit_byte(out, 110)
+    } else if b == 9 {
+      emit_byte(out, 92)
+      emit_byte(out, 116)
+    } else if b == 13 {
+      emit_byte(out, 92)
+      emit_byte(out, 114)
+    } else if b == 8 {
+      emit_byte(out, 92)
+      emit_byte(out, 98)
+    } else if b == 12 {
+      emit_byte(out, 92)
+      emit_byte(out, 102)
+    } else if b < 32 {
+      emit_u_escape(out, b)
+    } else {
+      emit_byte(out, b)
+    }
+    i = i + 1
+  }
+  emit_byte(out, 34)
+  return ()
+}
+
+fn emit_true(out: Array) -> Unit {
+  emit_byte(out, 116)
+  emit_byte(out, 114)
+  emit_byte(out, 117)
+  emit_byte(out, 101)
+  return ()
+}
+
+fn emit_false(out: Array) -> Unit {
+  emit_byte(out, 102)
+  emit_byte(out, 97)
+  emit_byte(out, 108)
+  emit_byte(out, 115)
+  emit_byte(out, 101)
+  return ()
+}
+
+fn emit_null(out: Array) -> Unit {
+  emit_byte(out, 110)
+  emit_byte(out, 117)
+  emit_byte(out, 108)
+  emit_byte(out, 108)
+  return ()
+}
+
+fn serialize_value(tok: Array, out: Array) -> Unit {
+  let tag: Int = next_tok(tok)
+  if tag == 0 {
+    emit_null(out)
+    return ()
+  }
+  if tag == 1 {
+    emit_true(out)
+    return ()
+  }
+  if tag == 2 {
+    emit_false(out)
+    return ()
+  }
+  if tag == 3 {
+    let v: Int = next_tok(tok)
+    emit_int(out, v)
+    return ()
+  }
+  if tag == 4 {
+    let v: Int = next_tok(tok)
+    emit_float_scaled(out, v)
+    return ()
+  }
+  if tag == 5 {
+    let len: Int = next_tok(tok)
+    emit_string_bytes(out, tok, len)
+    return ()
+  }
+  if tag == 6 {
+    let n: Int = next_tok(tok)
+    emit_byte(out, 91)
+    var i: Int = 0
+    while i < n {
+      if i > 0 {
+        emit_byte(out, 44)
+      }
+      serialize_value(tok, out)
+      i = i + 1
+    }
+    emit_byte(out, 93)
+    return ()
+  }
+  # tag == 7: object
+  let n2: Int = next_tok(tok)
+  emit_byte(out, 123)
+  var j: Int = 0
+  while j < n2 {
+    if j > 0 {
+      emit_byte(out, 44)
+    }
+    let ktag: Int = next_tok(tok)
+    let klen: Int = next_tok(tok)
+    emit_string_bytes(out, tok, klen)
+    emit_byte(out, 58)
+    serialize_value(tok, out)
+    j = j + 1
+  }
+  emit_byte(out, 125)
+  return ()
+}
+
+fn json_serialize(tok: Array, out: Array) -> Unit {
+  set_tread(0)
+  set_bcursor(0)
+  serialize_value(tok, out)
+  return ()
+}
+
+fn print_bytes(console: Console, out: Array) -> Unit {
+  console.print_int(bcursor())
+  var i: Int = 0
+  while i < bcursor() {
+    console.print_int(iaget(out, i))
+    i = i + 1
+  }
+  return ()
+}
+
+# =====================================================================================
+# DEMO (self-contained; a real deployment strips this main() and appends a generated one
+# with the real document's bytes embedded, exactly like decide_kernel.lm/sha256_kernel.lm).
+# Document: {"a":1,"b":[true,false,null],"s":"hi\n"}
+# =====================================================================================
+
+fn main(console: Console) -> Unit {
+  store8(in_base() + 0, 123)
+  store8(in_base() + 1, 34)
+  store8(in_base() + 2, 97)
+  store8(in_base() + 3, 34)
+  store8(in_base() + 4, 58)
+  store8(in_base() + 5, 49)
+  store8(in_base() + 6, 44)
+  store8(in_base() + 7, 34)
+  store8(in_base() + 8, 98)
+  store8(in_base() + 9, 34)
+  store8(in_base() + 10, 58)
+  store8(in_base() + 11, 91)
+  store8(in_base() + 12, 116)
+  store8(in_base() + 13, 114)
+  store8(in_base() + 14, 117)
+  store8(in_base() + 15, 101)
+  store8(in_base() + 16, 44)
+  store8(in_base() + 17, 102)
+  store8(in_base() + 18, 97)
+  store8(in_base() + 19, 108)
+  store8(in_base() + 20, 115)
+  store8(in_base() + 21, 101)
+  store8(in_base() + 22, 44)
+  store8(in_base() + 23, 110)
+  store8(in_base() + 24, 117)
+  store8(in_base() + 25, 108)
+  store8(in_base() + 26, 108)
+  store8(in_base() + 27, 93)
+  store8(in_base() + 28, 44)
+  store8(in_base() + 29, 34)
+  store8(in_base() + 30, 115)
+  store8(in_base() + 31, 34)
+  store8(in_base() + 32, 58)
+  store8(in_base() + 33, 34)
+  store8(in_base() + 34, 104)
+  store8(in_base() + 35, 105)
+  store8(in_base() + 36, 92)
+  store8(in_base() + 37, 110)
+  store8(in_base() + 38, 34)
+  store8(in_base() + 39, 125)
+  store32(in_len_addr(), 40)
+
+  let tok: Array = iarray(2000)
+  json_parse(tok)
+  print_tokens(console, tok)
+
+  let out: Array = iarray(2000)
+  json_serialize(tok, out)
+  print_bytes(console, out)
+  return ()
+}

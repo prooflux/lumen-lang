@@ -1,0 +1,407 @@
+# KNOWN ISSUE (found by adversarial re-verification, 2026-07-23 - NOT yet patched): with a
+# 32- or 64-byte key, messages beyond ~886 bytes make the seed interpreter halt with EXIT 0
+# and ZERO output (no crash, no error). Root-caused to the SAME shared, never-freed Lumen
+# array/Text heap ceiling documented in examples/hostdata/json_kernel.lm's header (a runtime
+# limitation, not an HMAC or SHA-256 algorithm bug - the inner SHA-256 core, verified in
+# isolation on the same message lengths, is correct; the failure is specifically in the
+# final outer sha256_hex call once cumulative heap usage crosses the ceiling). Do not rely
+# on this kernel for messages beyond a few hundred bytes until the runtime heap limit is
+# fixed or made to fail loudly. See examples/hostdata/README.md for the full writeup.
+#
+# HMAC-SHA256 (RFC 2104 / FIPS 198-1), implemented from scratch in pure Lumen.
+#
+# This file is self-contained: it inlines the entire SHA-256 kernel from
+# examples/hostdata/sha256_kernel.lm (that kernel was built and verified separately; its
+# logic is reused verbatim here, not reimplemented) because this Lumen subset has no
+# cross-file import mechanism (confirmed absent in the build brief). The only functional
+# addition beyond the SHA-256 kernel is:
+#   - sha256_words: same pipeline as sha256_hex but returns the raw 8 Int words instead of
+#     formatting them to hex, so the inner HMAC hash can be fed as raw bytes into the outer
+#     hash without a hex round-trip.
+#   - words_to_bytes / concat_bytes: byte-array plumbing to build ipad||message and
+#     opad||inner_hash per RFC 2104.
+#   - hmac_sha256_hex: the HMAC construction itself.
+#
+# Input representation: key and message are each a Lumen Int array of byte values (0..255)
+# plus an explicit length, exactly like sha256_kernel.lm's `msg`/`msg_len`. Output is a
+# 64-character lowercase hex Text, matching Python's `hmac.new(key, msg,
+# hashlib.sha256).hexdigest()`.
+
+fn mask32(x: Int) -> Int {
+  return band(x, 4294967295)
+}
+
+fn add32(a: Int, b: Int) -> Int {
+  return mask32(a + b)
+}
+
+fn add32_4(a: Int, b: Int, c: Int, d: Int) -> Int {
+  return add32(add32(add32(a, b), c), d)
+}
+
+fn rotr(x: Int, n: Int) -> Int {
+  return bor(shr(x, n), mask32(shl(x, 32 - n)))
+}
+
+fn ch(x: Int, y: Int, z: Int) -> Int {
+  return bxor(band(x, y), band(bnot(x), z))
+}
+
+fn maj(x: Int, y: Int, z: Int) -> Int {
+  return bxor(bxor(band(x, y), band(x, z)), band(y, z))
+}
+
+fn big_sigma0(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 2), rotr(x, 13)), rotr(x, 22))
+}
+
+fn big_sigma1(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 6), rotr(x, 11)), rotr(x, 25))
+}
+
+fn small_sigma0(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 7), rotr(x, 18)), shr(x, 3))
+}
+
+fn small_sigma1(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 17), rotr(x, 19)), shr(x, 10))
+}
+
+fn make_k() -> Array {
+  let k = iarray(64)
+  iaset(k, 0, 1116352408)
+  iaset(k, 1, 1899447441)
+  iaset(k, 2, 3049323471)
+  iaset(k, 3, 3921009573)
+  iaset(k, 4, 961987163)
+  iaset(k, 5, 1508970993)
+  iaset(k, 6, 2453635748)
+  iaset(k, 7, 2870763221)
+  iaset(k, 8, 3624381080)
+  iaset(k, 9, 310598401)
+  iaset(k, 10, 607225278)
+  iaset(k, 11, 1426881987)
+  iaset(k, 12, 1925078388)
+  iaset(k, 13, 2162078206)
+  iaset(k, 14, 2614888103)
+  iaset(k, 15, 3248222580)
+  iaset(k, 16, 3835390401)
+  iaset(k, 17, 4022224774)
+  iaset(k, 18, 264347078)
+  iaset(k, 19, 604807628)
+  iaset(k, 20, 770255983)
+  iaset(k, 21, 1249150122)
+  iaset(k, 22, 1555081692)
+  iaset(k, 23, 1996064986)
+  iaset(k, 24, 2554220882)
+  iaset(k, 25, 2821834349)
+  iaset(k, 26, 2952996808)
+  iaset(k, 27, 3210313671)
+  iaset(k, 28, 3336571891)
+  iaset(k, 29, 3584528711)
+  iaset(k, 30, 113926993)
+  iaset(k, 31, 338241895)
+  iaset(k, 32, 666307205)
+  iaset(k, 33, 773529912)
+  iaset(k, 34, 1294757372)
+  iaset(k, 35, 1396182291)
+  iaset(k, 36, 1695183700)
+  iaset(k, 37, 1986661051)
+  iaset(k, 38, 2177026350)
+  iaset(k, 39, 2456956037)
+  iaset(k, 40, 2730485921)
+  iaset(k, 41, 2820302411)
+  iaset(k, 42, 3259730800)
+  iaset(k, 43, 3345764771)
+  iaset(k, 44, 3516065817)
+  iaset(k, 45, 3600352804)
+  iaset(k, 46, 4094571909)
+  iaset(k, 47, 275423344)
+  iaset(k, 48, 430227734)
+  iaset(k, 49, 506948616)
+  iaset(k, 50, 659060556)
+  iaset(k, 51, 883997877)
+  iaset(k, 52, 958139571)
+  iaset(k, 53, 1322822218)
+  iaset(k, 54, 1537002063)
+  iaset(k, 55, 1747873779)
+  iaset(k, 56, 1955562222)
+  iaset(k, 57, 2024104815)
+  iaset(k, 58, 2227730452)
+  iaset(k, 59, 2361852424)
+  iaset(k, 60, 2428436474)
+  iaset(k, 61, 2756734187)
+  iaset(k, 62, 3204031479)
+  iaset(k, 63, 3329325298)
+  return k
+}
+
+fn make_h() -> Array {
+  let h = iarray(8)
+  iaset(h, 0, 1779033703)
+  iaset(h, 1, 3144134277)
+  iaset(h, 2, 1013904242)
+  iaset(h, 3, 2773480762)
+  iaset(h, 4, 1359893119)
+  iaset(h, 5, 2600822924)
+  iaset(h, 6, 528734635)
+  iaset(h, 7, 1541459225)
+  return h
+}
+
+fn process_block(padded: Array, offset: Int, h: Array, k: Array) -> Unit {
+  let w = iarray(64)
+
+  var t = 0
+  while t < 16 {
+    let base = offset + t * 4
+    let b0 = iaget(padded, base)
+    let b1 = iaget(padded, base + 1)
+    let b2 = iaget(padded, base + 2)
+    let b3 = iaget(padded, base + 3)
+    let word = bor(bor(mask32(shl(b0, 24)), mask32(shl(b1, 16))), bor(mask32(shl(b2, 8)), b3))
+    iaset(w, t, word)
+    t = t + 1
+  }
+
+  t = 16
+  while t < 64 {
+    let s1 = small_sigma1(iaget(w, t - 2))
+    let s0 = small_sigma0(iaget(w, t - 15))
+    let extended = add32_4(s1, iaget(w, t - 7), s0, iaget(w, t - 16))
+    iaset(w, t, extended)
+    t = t + 1
+  }
+
+  var a = iaget(h, 0)
+  var b = iaget(h, 1)
+  var c = iaget(h, 2)
+  var d = iaget(h, 3)
+  var e = iaget(h, 4)
+  var f = iaget(h, 5)
+  var g = iaget(h, 6)
+  var hh = iaget(h, 7)
+
+  t = 0
+  while t < 64 {
+    let t1 = add32_4(hh, big_sigma1(e), ch(e, f, g), iaget(k, t))
+    let t1_full = add32(t1, iaget(w, t))
+    let t2 = add32(big_sigma0(a), maj(a, b, c))
+    hh = g
+    g = f
+    f = e
+    e = add32(d, t1_full)
+    d = c
+    c = b
+    b = a
+    a = add32(t1_full, t2)
+    t = t + 1
+  }
+
+  iaset(h, 0, add32(iaget(h, 0), a))
+  iaset(h, 1, add32(iaget(h, 1), b))
+  iaset(h, 2, add32(iaget(h, 2), c))
+  iaset(h, 3, add32(iaget(h, 3), d))
+  iaset(h, 4, add32(iaget(h, 4), e))
+  iaset(h, 5, add32(iaget(h, 5), f))
+  iaset(h, 6, add32(iaget(h, 6), g))
+  iaset(h, 7, add32(iaget(h, 7), hh))
+  return ()
+}
+
+fn hex_digit(n: Int) -> Text {
+  if n == 0 { return "0" }
+  if n == 1 { return "1" }
+  if n == 2 { return "2" }
+  if n == 3 { return "3" }
+  if n == 4 { return "4" }
+  if n == 5 { return "5" }
+  if n == 6 { return "6" }
+  if n == 7 { return "7" }
+  if n == 8 { return "8" }
+  if n == 9 { return "9" }
+  if n == 10 { return "a" }
+  if n == 11 { return "b" }
+  if n == 12 { return "c" }
+  if n == 13 { return "d" }
+  if n == 14 { return "e" }
+  return "f"
+}
+
+fn word_to_hex(word: Int) -> Text {
+  var out = ""
+  var shift = 28
+  while shift >= 0 {
+    let nibble = band(shr(word, shift), 15)
+    out = text_concat(out, hex_digit(nibble))
+    shift = shift - 4
+  }
+  return out
+}
+
+fn pad_message(msg: Array, msg_len: Int) -> Array {
+  let rem = (msg_len + 1) % 64
+  var zero_pad = 0
+  if rem <= 56 {
+    zero_pad = 56 - rem
+  } else {
+    zero_pad = 56 + (64 - rem)
+  }
+  let padded_len = msg_len + 1 + zero_pad + 8
+  let padded = iarray(padded_len)
+
+  var i = 0
+  while i < msg_len {
+    iaset(padded, i, iaget(msg, i))
+    i = i + 1
+  }
+  iaset(padded, msg_len, 128)
+
+  let bit_len = msg_len * 8
+  var j = 0
+  while j < 8 {
+    let shift_amount = 56 - j * 8
+    iaset(padded, padded_len - 8 + j, band(shr(bit_len, shift_amount), 255))
+    j = j + 1
+  }
+  return padded
+}
+
+# Hash `msg` (Int array of `msg_len` bytes) and return the 8 raw 32-bit hash words as an
+# Int array of length 8 (NOT hex-formatted). This is the shared core both `sha256_hex` and
+# the HMAC construction build on: HMAC needs raw bytes for its inner hash, not hex text.
+fn sha256_words(msg: Array, msg_len: Int) -> Array {
+  let padded = pad_message(msg, msg_len)
+  let padded_len = ialen(padded)
+  let k = make_k()
+  let h = make_h()
+
+  var offset = 0
+  while offset < padded_len {
+    process_block(padded, offset, h, k)
+    offset = offset + 64
+  }
+  return h
+}
+
+fn sha256_hex(msg: Array, msg_len: Int) -> Text {
+  let h = sha256_words(msg, msg_len)
+  var digest = ""
+  var i = 0
+  while i < 8 {
+    digest = text_concat(digest, word_to_hex(iaget(h, i)))
+    i = i + 1
+  }
+  return digest
+}
+
+# Expand `nwords` 32-bit words into `nwords * 4` bytes, big-endian, as a fresh Int array.
+fn words_to_bytes(words: Array, nwords: Int) -> Array {
+  let out = iarray(nwords * 4)
+  var i = 0
+  while i < nwords {
+    let word = iaget(words, i)
+    iaset(out, i * 4, band(shr(word, 24), 255))
+    iaset(out, i * 4 + 1, band(shr(word, 16), 255))
+    iaset(out, i * 4 + 2, band(shr(word, 8), 255))
+    iaset(out, i * 4 + 3, band(word, 255))
+    i = i + 1
+  }
+  return out
+}
+
+# Concatenate `a` (length alen) followed by `b` (length blen) into a fresh Int array of
+# length alen + blen.
+fn concat_bytes(a: Array, alen: Int, b: Array, blen: Int) -> Array {
+  let out = iarray(alen + blen)
+  var i = 0
+  while i < alen {
+    iaset(out, i, iaget(a, i))
+    i = i + 1
+  }
+  var j = 0
+  while j < blen {
+    iaset(out, alen + j, iaget(b, j))
+    j = j + 1
+  }
+  return out
+}
+
+# Build the 64-byte HMAC key block per RFC 2104 sec. 2: if the key is longer than the
+# SHA-256 block size (64 bytes), replace it with its own SHA-256 hash (32 bytes); either
+# way, zero-pad out to 64 bytes. Fresh arrays are zero-initialized (see sha256_kernel.lm's
+# note, verified empirically against the seed interpreter), so only the non-zero prefix is
+# written explicitly.
+fn build_key_block(key: Array, key_len: Int) -> Array {
+  let block = iarray(64)
+  if key_len > 64 {
+    let hashed = words_to_bytes(sha256_words(key, key_len), 8)
+    var i = 0
+    while i < 32 {
+      iaset(block, i, iaget(hashed, i))
+      i = i + 1
+    }
+  } else {
+    var i = 0
+    while i < key_len {
+      iaset(block, i, iaget(key, i))
+      i = i + 1
+    }
+  }
+  return block
+}
+
+# XOR every byte of a 64-byte block with the constant pad byte (0x36 for ipad, 0x5c for
+# opad), returning a fresh 64-byte Int array.
+fn xor_pad(block: Array, pad_byte: Int) -> Array {
+  let out = iarray(64)
+  var i = 0
+  while i < 64 {
+    iaset(out, i, bxor(iaget(block, i), pad_byte))
+    i = i + 1
+  }
+  return out
+}
+
+# HMAC-SHA256(key, msg) per RFC 2104 sec. 2:
+#   ipad = key_block xor 0x36 (repeated across 64 bytes)
+#   opad = key_block xor 0x5c (repeated across 64 bytes)
+#   HMAC = SHA256(opad || SHA256(ipad || msg))
+# Returns the 64-character lowercase hex digest (same format as Python's
+# hmac.new(key, msg, hashlib.sha256).hexdigest()).
+fn hmac_sha256_hex(key: Array, key_len: Int, msg: Array, msg_len: Int) -> Text {
+  let key_block = build_key_block(key, key_len)
+  let ipad = xor_pad(key_block, 54)
+  let opad = xor_pad(key_block, 92)
+
+  let inner_input = concat_bytes(ipad, 64, msg, msg_len)
+  let inner_hash_bytes = words_to_bytes(sha256_words(inner_input, 64 + msg_len), 8)
+
+  let outer_input = concat_bytes(opad, 64, inner_hash_bytes, 32)
+  return sha256_hex(outer_input, 64 + 32)
+}
+
+# ==== TEST-DRIVER MARKER: everything below this line is replaced by generated test cases. ====
+# Default smoke test: RFC 4231 test case 1.
+# key = 0x0b repeated 20 times, data = "Hi There" (ASCII)
+# Expected: b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7
+fn main(console: Console) -> Unit {
+  let key = iarray(20)
+  var ki = 0
+  while ki < 20 {
+    iaset(key, ki, 11)
+    ki = ki + 1
+  }
+  let msg = iarray(8)
+  iaset(msg, 0, 72)
+  iaset(msg, 1, 105)
+  iaset(msg, 2, 32)
+  iaset(msg, 3, 84)
+  iaset(msg, 4, 104)
+  iaset(msg, 5, 101)
+  iaset(msg, 6, 114)
+  iaset(msg, 7, 101)
+  console.print(hmac_sha256_hex(key, 20, msg, 8))
+  console.print("\n")
+  return ()
+}

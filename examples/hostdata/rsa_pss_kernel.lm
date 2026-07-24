@@ -1,0 +1,767 @@
+# VERIFICATION STATUS (2026-07-23): PROVEN on ONE real end-to-end case (see
+# examples/hostdata/signed_api_request_demo.lm: a 768-bit-key signature this kernel produced
+# was independently verified as cryptographically VALID by Python's `cryptography` library's
+# real PSS verifier). NOT YET proven across a broader vector suite - a planned 10-message +
+# reproducibility batch (examples/hostdata/rsa_pss_verify.py) did not finish inside the
+# build session's time budget (RSA modpow at 768 bits costs ~2.86B interpreter steps per
+# signature, ~16-36s each). Treat this kernel as "algorithm is right, breadth is unverified"
+# until that batch is completed and reported. Also inherits bignum_kernel.lm's 256-bit
+# NLIMBS scoping note below if used below 768 bits, and any Lumen array-heap-ceiling issue
+# documented in json_kernel.lm/hmac_kernel.lm's headers if chained with large inputs.
+#
+# rsa_pss_kernel.lm - RSA-PSS SIGNING (RFC 8017: RSASP1 + MGF1 + EMSA-PSS-ENCODE, hash =
+# SHA-256), implemented from scratch in pure Lumen. Self-contained: inlines the bignum kernel
+# (examples/hostdata/bignum_kernel.lm) and the SHA-256 kernel (examples/hostdata/sha256_kernel.lm)
+# verbatim, then adds the PSS/MGF1/RSASP1 glue on top.
+#
+# Scope (explicitly out of scope per the build brief): NO PEM/DER parsing. Key material (the
+# modulus n, the public exponent e, and the private exponent d) is supplied to `rsa_pss_sign`
+# already decomposed into little-endian 32-bit-limb Int arrays - the same representation
+# `bignum_kernel.lm` uses everywhere else. The caller (the Python verification harness) is
+# responsible for extracting those integers from a real key and slicing them into limbs.
+#
+# Determinism: RFC 8017 PSS signing normally draws a fresh random salt per signature. This
+# kernel takes the salt as an EXPLICIT INPUT byte array instead of generating one internally,
+# so a fixed test salt reproduces a fixed signature - required for a deterministic test harness
+# (a real deployment would instead pass in output from a CSPRNG at the call site).
+#
+# Size note: the modulus bit width `mod_bits` and the limb count `nlimbs` are both parameters,
+# not hardcoded, so this same code runs at any key size the caller allocates arrays for (the
+# verification harness below uses a 512-bit modulus, 16 limbs, the smallest size Python's
+# `cryptography` library's `rsa.generate_private_key` accepts).
+
+# ===========================================================================
+# Section 1: bignum kernel (inlined verbatim from bignum_kernel.lm)
+# ===========================================================================
+
+fn bn_zero(a: Int, n: Int) -> Unit {
+  var i: Int = 0
+  while i < n {
+    iaset(a, i, 0)
+    i = i + 1
+  }
+  return ()
+}
+
+fn bn_copy(src: Int, dst: Int, n: Int) -> Unit {
+  var i: Int = 0
+  while i < n {
+    iaset(dst, i, iaget(src, i))
+    i = i + 1
+  }
+  return ()
+}
+
+fn bn_cmp(a: Int, b: Int, n: Int) -> Int {
+  var i: Int = n - 1
+  var result: Int = 0
+  var deciding: Int = 1
+  while i >= 0 {
+    if deciding == 1 {
+      let av = iaget(a, i)
+      let bv = iaget(b, i)
+      if av > bv {
+        result = 1
+        deciding = 0
+      } else {
+        if av < bv {
+          result = -1
+          deciding = 0
+        }
+      }
+    }
+    i = i - 1
+  }
+  return result
+}
+
+fn bn_add(a: Int, b: Int, out: Int, n: Int) -> Int {
+  var carry: Int = 0
+  var i: Int = 0
+  while i < n {
+    let s = iaget(a, i) + iaget(b, i) + carry
+    iaset(out, i, band(s, 4294967295))
+    carry = shr(s, 32)
+    i = i + 1
+  }
+  return carry
+}
+
+fn bn_sub(a: Int, b: Int, out: Int, n: Int) -> Int {
+  var borrow: Int = 0
+  var i: Int = 0
+  while i < n {
+    var d: Int = iaget(a, i) - iaget(b, i) - borrow
+    if d < 0 {
+      d = d + 4294967296
+      borrow = 1
+    } else {
+      borrow = 0
+    }
+    iaset(out, i, d)
+    i = i + 1
+  }
+  return borrow
+}
+
+fn bn_get_bit(a: Int, n: Int, i: Int) -> Int {
+  let limb_idx = i / 32
+  let bit_idx = i % 32
+  return band(shr(iaget(a, limb_idx), bit_idx), 1)
+}
+
+fn bn_shl1(a: Int, n: Int) -> Int {
+  var carry_in: Int = 0
+  var i: Int = 0
+  while i < n {
+    let limb = iaget(a, i)
+    let bit_out = band(shr(limb, 31), 1)
+    let new_limb = bor(band(shl(limb, 1), 4294967295), carry_in)
+    iaset(a, i, new_limb)
+    carry_in = bit_out
+    i = i + 1
+  }
+  return carry_in
+}
+
+fn bn_mul(a: Int, b: Int, out: Int, n: Int) -> Unit {
+  bn_zero(out, 2 * n)
+  var i: Int = 0
+  while i < n {
+    var carry: Int = 0
+    var j: Int = 0
+    while j < n {
+      let prod = iaget(a, i) * iaget(b, j)
+      let s = prod + iaget(out, i + j) + carry
+      iaset(out, i + j, band(s, 4294967295))
+      carry = shr(s, 32)
+      j = j + 1
+    }
+    var k: Int = i + n
+    var c: Int = carry
+    while c > 0 {
+      let s2 = iaget(out, k) + c
+      iaset(out, k, band(s2, 4294967295))
+      c = shr(s2, 32)
+      k = k + 1
+    }
+    i = i + 1
+  }
+  return ()
+}
+
+fn bn_mod(a: Int, alen: Int, m: Int, n: Int, r: Int) -> Unit {
+  bn_zero(r, n)
+  var i: Int = alen * 32 - 1
+  while i >= 0 {
+    let carry_bit = bn_shl1(r, n)
+    let a_bit = bn_get_bit(a, alen, i)
+    iaset(r, 0, bor(iaget(r, 0), a_bit))
+    if carry_bit == 1 {
+      bn_sub(r, m, r, n)
+    } else {
+      if bn_cmp(r, m, n) >= 0 {
+        bn_sub(r, m, r, n)
+      }
+    }
+    i = i - 1
+  }
+  return ()
+}
+
+fn bn_modpow(base: Int, exp: Int, m: Int, n: Int, result: Int) -> Unit {
+  let base_cur = iarray(n)
+  bn_mod(base, n, m, n, base_cur)
+
+  bn_zero(result, n)
+  iaset(result, 0, 1)
+
+  let sq = iarray(2 * n)
+  let sq_mod = iarray(n)
+  let mul_buf = iarray(2 * n)
+  let mul_mod = iarray(n)
+
+  var i: Int = n * 32 - 1
+  while i >= 0 {
+    bn_mul(result, result, sq, n)
+    bn_mod(sq, 2 * n, m, n, sq_mod)
+    bn_copy(sq_mod, result, n)
+
+    if bn_get_bit(exp, n, i) == 1 {
+      bn_mul(result, base_cur, mul_buf, n)
+      bn_mod(mul_buf, 2 * n, m, n, mul_mod)
+      bn_copy(mul_mod, result, n)
+    }
+    i = i - 1
+  }
+  return ()
+}
+
+fn bn_print(console: Console, a: Int, n: Int) -> Unit {
+  var i: Int = 0
+  while i < n {
+    console.print_int(iaget(a, i))
+    i = i + 1
+  }
+  return ()
+}
+
+# ===========================================================================
+# Section 2: SHA-256 kernel (inlined verbatim from sha256_kernel.lm)
+# ===========================================================================
+
+fn mask32(x: Int) -> Int {
+  return band(x, 4294967295)
+}
+
+fn add32(a: Int, b: Int) -> Int {
+  return mask32(a + b)
+}
+
+fn add32_4(a: Int, b: Int, c: Int, d: Int) -> Int {
+  return add32(add32(add32(a, b), c), d)
+}
+
+fn rotr(x: Int, n: Int) -> Int {
+  return bor(shr(x, n), mask32(shl(x, 32 - n)))
+}
+
+fn ch(x: Int, y: Int, z: Int) -> Int {
+  return bxor(band(x, y), band(bnot(x), z))
+}
+
+fn maj(x: Int, y: Int, z: Int) -> Int {
+  return bxor(bxor(band(x, y), band(x, z)), band(y, z))
+}
+
+fn big_sigma0(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 2), rotr(x, 13)), rotr(x, 22))
+}
+
+fn big_sigma1(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 6), rotr(x, 11)), rotr(x, 25))
+}
+
+fn small_sigma0(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 7), rotr(x, 18)), shr(x, 3))
+}
+
+fn small_sigma1(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 17), rotr(x, 19)), shr(x, 10))
+}
+
+fn make_k() -> Array {
+  let k = iarray(64)
+  iaset(k, 0, 1116352408)
+  iaset(k, 1, 1899447441)
+  iaset(k, 2, 3049323471)
+  iaset(k, 3, 3921009573)
+  iaset(k, 4, 961987163)
+  iaset(k, 5, 1508970993)
+  iaset(k, 6, 2453635748)
+  iaset(k, 7, 2870763221)
+  iaset(k, 8, 3624381080)
+  iaset(k, 9, 310598401)
+  iaset(k, 10, 607225278)
+  iaset(k, 11, 1426881987)
+  iaset(k, 12, 1925078388)
+  iaset(k, 13, 2162078206)
+  iaset(k, 14, 2614888103)
+  iaset(k, 15, 3248222580)
+  iaset(k, 16, 3835390401)
+  iaset(k, 17, 4022224774)
+  iaset(k, 18, 264347078)
+  iaset(k, 19, 604807628)
+  iaset(k, 20, 770255983)
+  iaset(k, 21, 1249150122)
+  iaset(k, 22, 1555081692)
+  iaset(k, 23, 1996064986)
+  iaset(k, 24, 2554220882)
+  iaset(k, 25, 2821834349)
+  iaset(k, 26, 2952996808)
+  iaset(k, 27, 3210313671)
+  iaset(k, 28, 3336571891)
+  iaset(k, 29, 3584528711)
+  iaset(k, 30, 113926993)
+  iaset(k, 31, 338241895)
+  iaset(k, 32, 666307205)
+  iaset(k, 33, 773529912)
+  iaset(k, 34, 1294757372)
+  iaset(k, 35, 1396182291)
+  iaset(k, 36, 1695183700)
+  iaset(k, 37, 1986661051)
+  iaset(k, 38, 2177026350)
+  iaset(k, 39, 2456956037)
+  iaset(k, 40, 2730485921)
+  iaset(k, 41, 2820302411)
+  iaset(k, 42, 3259730800)
+  iaset(k, 43, 3345764771)
+  iaset(k, 44, 3516065817)
+  iaset(k, 45, 3600352804)
+  iaset(k, 46, 4094571909)
+  iaset(k, 47, 275423344)
+  iaset(k, 48, 430227734)
+  iaset(k, 49, 506948616)
+  iaset(k, 50, 659060556)
+  iaset(k, 51, 883997877)
+  iaset(k, 52, 958139571)
+  iaset(k, 53, 1322822218)
+  iaset(k, 54, 1537002063)
+  iaset(k, 55, 1747873779)
+  iaset(k, 56, 1955562222)
+  iaset(k, 57, 2024104815)
+  iaset(k, 58, 2227730452)
+  iaset(k, 59, 2361852424)
+  iaset(k, 60, 2428436474)
+  iaset(k, 61, 2756734187)
+  iaset(k, 62, 3204031479)
+  iaset(k, 63, 3329325298)
+  return k
+}
+
+fn make_h() -> Array {
+  let h = iarray(8)
+  iaset(h, 0, 1779033703)
+  iaset(h, 1, 3144134277)
+  iaset(h, 2, 1013904242)
+  iaset(h, 3, 2773480762)
+  iaset(h, 4, 1359893119)
+  iaset(h, 5, 2600822924)
+  iaset(h, 6, 528734635)
+  iaset(h, 7, 1541459225)
+  return h
+}
+
+fn process_block(padded: Array, offset: Int, h: Array, k: Array) -> Unit {
+  let w = iarray(64)
+
+  var t = 0
+  while t < 16 {
+    let base = offset + t * 4
+    let b0 = iaget(padded, base)
+    let b1 = iaget(padded, base + 1)
+    let b2 = iaget(padded, base + 2)
+    let b3 = iaget(padded, base + 3)
+    let word = bor(bor(mask32(shl(b0, 24)), mask32(shl(b1, 16))), bor(mask32(shl(b2, 8)), b3))
+    iaset(w, t, word)
+    t = t + 1
+  }
+
+  t = 16
+  while t < 64 {
+    let s1 = small_sigma1(iaget(w, t - 2))
+    let s0 = small_sigma0(iaget(w, t - 15))
+    let extended = add32_4(s1, iaget(w, t - 7), s0, iaget(w, t - 16))
+    iaset(w, t, extended)
+    t = t + 1
+  }
+
+  var a = iaget(h, 0)
+  var b = iaget(h, 1)
+  var c = iaget(h, 2)
+  var d = iaget(h, 3)
+  var e = iaget(h, 4)
+  var f = iaget(h, 5)
+  var g = iaget(h, 6)
+  var hh = iaget(h, 7)
+
+  t = 0
+  while t < 64 {
+    let t1 = add32_4(hh, big_sigma1(e), ch(e, f, g), iaget(k, t))
+    let t1_full = add32(t1, iaget(w, t))
+    let t2 = add32(big_sigma0(a), maj(a, b, c))
+    hh = g
+    g = f
+    f = e
+    e = add32(d, t1_full)
+    d = c
+    c = b
+    b = a
+    a = add32(t1_full, t2)
+    t = t + 1
+  }
+
+  iaset(h, 0, add32(iaget(h, 0), a))
+  iaset(h, 1, add32(iaget(h, 1), b))
+  iaset(h, 2, add32(iaget(h, 2), c))
+  iaset(h, 3, add32(iaget(h, 3), d))
+  iaset(h, 4, add32(iaget(h, 4), e))
+  iaset(h, 5, add32(iaget(h, 5), f))
+  iaset(h, 6, add32(iaget(h, 6), g))
+  iaset(h, 7, add32(iaget(h, 7), hh))
+  return ()
+}
+
+fn hex_digit(n: Int) -> Text {
+  if n == 0 { return "0" }
+  if n == 1 { return "1" }
+  if n == 2 { return "2" }
+  if n == 3 { return "3" }
+  if n == 4 { return "4" }
+  if n == 5 { return "5" }
+  if n == 6 { return "6" }
+  if n == 7 { return "7" }
+  if n == 8 { return "8" }
+  if n == 9 { return "9" }
+  if n == 10 { return "a" }
+  if n == 11 { return "b" }
+  if n == 12 { return "c" }
+  if n == 13 { return "d" }
+  if n == 14 { return "e" }
+  return "f"
+}
+
+fn byte_to_hex(byte: Int) -> Text {
+  let hi = band(shr(byte, 4), 15)
+  let lo = band(byte, 15)
+  return text_concat(hex_digit(hi), hex_digit(lo))
+}
+
+fn pad_message(msg: Array, msg_len: Int) -> Array {
+  let rem = (msg_len + 1) % 64
+  var zero_pad = 0
+  if rem <= 56 {
+    zero_pad = 56 - rem
+  } else {
+    zero_pad = 56 + (64 - rem)
+  }
+  let padded_len = msg_len + 1 + zero_pad + 8
+  let padded = iarray(padded_len)
+
+  var i = 0
+  while i < msg_len {
+    iaset(padded, i, iaget(msg, i))
+    i = i + 1
+  }
+  iaset(padded, msg_len, 128)
+
+  let bit_len = msg_len * 8
+  var j = 0
+  while j < 8 {
+    let shift_amount = 56 - j * 8
+    iaset(padded, padded_len - 8 + j, band(shr(bit_len, shift_amount), 255))
+    j = j + 1
+  }
+  return padded
+}
+
+# Hash `msg` (Int array of `msg_len` byte values, 0..255) and return the 32-byte raw digest as
+# an Int array (each element 0..255), NOT hex text - this is the form MGF1/EMSA-PSS need to
+# concatenate and XOR against other byte arrays.
+fn sha256_bytes(msg: Array, msg_len: Int) -> Array {
+  let padded = pad_message(msg, msg_len)
+  let padded_len = ialen(padded)
+  let k = make_k()
+  let h = make_h()
+
+  var offset = 0
+  while offset < padded_len {
+    process_block(padded, offset, h, k)
+    offset = offset + 64
+  }
+
+  let out = iarray(32)
+  var i = 0
+  while i < 8 {
+    let w = iaget(h, i)
+    iaset(out, i * 4 + 0, band(shr(w, 24), 255))
+    iaset(out, i * 4 + 1, band(shr(w, 16), 255))
+    iaset(out, i * 4 + 2, band(shr(w, 8), 255))
+    iaset(out, i * 4 + 3, band(w, 255))
+    i = i + 1
+  }
+  return out
+}
+
+# ===========================================================================
+# Section 3: byte-array helpers shared by MGF1 / EMSA-PSS / RSASP1
+# ===========================================================================
+
+fn bytes_to_hex(bytes: Array, len: Int) -> Text {
+  var out = ""
+  var i = 0
+  while i < len {
+    out = text_concat(out, byte_to_hex(iaget(bytes, i)))
+    i = i + 1
+  }
+  return out
+}
+
+# out[0..alen-1] = a, out[alen..alen+blen-1] = b. Caller pre-allocates out with alen+blen slots.
+fn bytes_concat_into(a: Array, alen: Int, b: Array, blen: Int, out: Array) -> Unit {
+  var i = 0
+  while i < alen {
+    iaset(out, i, iaget(a, i))
+    i = i + 1
+  }
+  var j = 0
+  while j < blen {
+    iaset(out, alen + j, iaget(b, j))
+    j = j + 1
+  }
+  return ()
+}
+
+# out[i] = a[i] xor b[i] for i in 0..len-1. `out` may alias `a`.
+fn bytes_xor_into(a: Array, b: Array, len: Int, out: Array) -> Unit {
+  var i = 0
+  while i < len {
+    iaset(out, i, bxor(iaget(a, i), iaget(b, i)))
+    i = i + 1
+  }
+  return ()
+}
+
+# ===========================================================================
+# Section 4: MGF1 (RFC 8017 Appendix B.2.1), hash = SHA-256 (hLen = 32)
+# ===========================================================================
+
+fn mgf1_sha256(seed: Array, seed_len: Int, mask_len: Int) -> Array {
+  let h_len = 32
+  let num_blocks = (mask_len + h_len - 1) / h_len
+  let out = iarray(mask_len)
+
+  var counter = 0
+  var written = 0
+  while counter < num_blocks {
+    let input = iarray(seed_len + 4)
+    var i = 0
+    while i < seed_len {
+      iaset(input, i, iaget(seed, i))
+      i = i + 1
+    }
+    iaset(input, seed_len + 0, band(shr(counter, 24), 255))
+    iaset(input, seed_len + 1, band(shr(counter, 16), 255))
+    iaset(input, seed_len + 2, band(shr(counter, 8), 255))
+    iaset(input, seed_len + 3, band(counter, 255))
+
+    let block = sha256_bytes(input, seed_len + 4)
+
+    var k = 0
+    while k < h_len {
+      let pos = written + k
+      if pos < mask_len {
+        iaset(out, pos, iaget(block, k))
+      }
+      k = k + 1
+    }
+
+    written = written + h_len
+    counter = counter + 1
+  }
+  return out
+}
+
+# ===========================================================================
+# Section 5: EMSA-PSS-ENCODE (RFC 8017 sec. 9.1.1), hash = SHA-256, sLen = 32 (hLen).
+# `salt` is an EXPLICIT INPUT (32 bytes) rather than internally generated, for determinism.
+# `em_bits` = modBits - 1 (RSASP1's caller passes the modulus bit length in separately).
+# ===========================================================================
+
+fn emsa_pss_encode(msg: Array, msg_len: Int, salt: Array, salt_len: Int, em_bits: Int) -> Array {
+  let h_len = 32
+  let em_len = (em_bits + 7) / 8
+
+  # Step 2: mHash = Hash(M)
+  let m_hash = sha256_bytes(msg, msg_len)
+
+  # Step 4/5/6: M' = (8 zero bytes) || mHash || salt ; H = Hash(M')
+  let mprime_len = 8 + h_len + salt_len
+  let mprime = iarray(mprime_len)
+  var z = 0
+  while z < 8 {
+    iaset(mprime, z, 0)
+    z = z + 1
+  }
+  var i = 0
+  while i < h_len {
+    iaset(mprime, 8 + i, iaget(m_hash, i))
+    i = i + 1
+  }
+  var j = 0
+  while j < salt_len {
+    iaset(mprime, 8 + h_len + j, iaget(salt, j))
+    j = j + 1
+  }
+  let hh = sha256_bytes(mprime, mprime_len)
+
+  # Step 7/8/9: DB = PS || 0x01 || salt, where PS is (em_len - salt_len - h_len - 2) zero bytes.
+  let db_len = em_len - h_len - 1
+  let ps_len = db_len - salt_len - 1
+  let db = iarray(db_len)
+  var p = 0
+  while p < ps_len {
+    iaset(db, p, 0)
+    p = p + 1
+  }
+  iaset(db, ps_len, 1)
+  var s = 0
+  while s < salt_len {
+    iaset(db, ps_len + 1 + s, iaget(salt, s))
+    s = s + 1
+  }
+
+  # Step 9/10: dbMask = MGF1(H, db_len) ; maskedDB = DB xor dbMask
+  let db_mask = mgf1_sha256(hh, h_len, db_len)
+  let masked_db = iarray(db_len)
+  bytes_xor_into(db, db_mask, db_len, masked_db)
+
+  # Step 11: clear the leftmost (8*em_len - em_bits) bits of the leftmost byte of maskedDB.
+  let clear_bits = 8 * em_len - em_bits
+  if clear_bits > 0 {
+    let keep_mask = band(shr(255, clear_bits), 255)
+    iaset(masked_db, 0, band(iaget(masked_db, 0), keep_mask))
+  }
+
+  # Step 12/13: EM = maskedDB || H || 0xbc
+  let em = iarray(em_len)
+  var k = 0
+  while k < db_len {
+    iaset(em, k, iaget(masked_db, k))
+    k = k + 1
+  }
+  var w = 0
+  while w < h_len {
+    iaset(em, db_len + w, iaget(hh, w))
+    w = w + 1
+  }
+  iaset(em, em_len - 1, 188)
+  return em
+}
+
+# ===========================================================================
+# Section 6: byte-string <-> bignum-limb conversions (OS2IP / I2OSP, RFC 8017 sec. 4)
+# ===========================================================================
+
+# Big-endian byte array (length blen) -> little-endian 32-bit-limb bignum (nlimbs limbs).
+# Bytes beyond the represented width (if blen < nlimbs*4) implicitly zero-pad the high limbs.
+fn bytes_to_bignum(bytes: Array, blen: Int, nlimbs: Int) -> Array {
+  let limbs = iarray(nlimbs)
+  var i = 0
+  while i < nlimbs {
+    var limb = 0
+    var b = 0
+    while b < 4 {
+      let byte_pos_from_lsb = i * 4 + b
+      var byte_val = 0
+      if byte_pos_from_lsb < blen {
+        byte_val = iaget(bytes, blen - 1 - byte_pos_from_lsb)
+      }
+      limb = bor(limb, mask32(shl(byte_val, b * 8)))
+      b = b + 1
+    }
+    iaset(limbs, i, limb)
+    i = i + 1
+  }
+  return limbs
+}
+
+# Little-endian 32-bit-limb bignum (nlimbs limbs) -> big-endian byte array of exactly `outlen`
+# bytes (outlen should be >= the number of limbs' worth of significant bytes needed; any
+# higher-order bytes beyond nlimbs*4 are emitted as zero).
+fn bignum_to_bytes(limbs: Array, nlimbs: Int, outlen: Int) -> Array {
+  let out = iarray(outlen)
+  var k = 0
+  while k < outlen {
+    let limb_idx = k / 4
+    var byte_val = 0
+    if limb_idx < nlimbs {
+      let shift_amount = (k % 4) * 8
+      byte_val = band(shr(iaget(limbs, limb_idx), shift_amount), 255)
+    }
+    iaset(out, outlen - 1 - k, byte_val)
+    k = k + 1
+  }
+  return out
+}
+
+# ===========================================================================
+# Section 7: top level - RSASP1 signature primitive composed with EMSA-PSS-ENCODE.
+#
+# `n_arr` (modulus) and `d_arr` (private exponent) are little-endian 32-bit-limb bignums,
+# `nlimbs` limbs each. `e_arr` (public exponent) is accepted for interface completeness (RFC
+# 8017's key-material triple is n/e/d) but is NOT used by signing - only n and d are needed for
+# RSASP1; e is a verification-side input. `mod_bits` is the modulus's true bit length (e.g. 512).
+# `salt` (salt_len bytes, conventionally = hash length = 32) is an explicit input: see the
+# determinism note at the top of this file.
+# ===========================================================================
+
+fn rsa_pss_sign(
+  msg: Array,
+  msg_len: Int,
+  salt: Array,
+  salt_len: Int,
+  n_arr: Array,
+  e_arr: Array,
+  d_arr: Array,
+  nlimbs: Int,
+  mod_bits: Int
+) -> Array {
+  let em_bits = mod_bits - 1
+  let em_len = (em_bits + 7) / 8
+
+  # EMSA-PSS-ENCODE(M, emBits) -> EM, an em_len-byte string representing an integer < 2^em_bits.
+  let em = emsa_pss_encode(msg, msg_len, salt, salt_len, em_bits)
+
+  # OS2IP(EM) -> integer, as a little-endian limb bignum.
+  let base = bytes_to_bignum(em, em_len, nlimbs)
+
+  # RSASP1: s = EM^d mod n.
+  let sig_limbs = iarray(nlimbs)
+  bn_modpow(base, d_arr, n_arr, nlimbs, sig_limbs)
+
+  # I2OSP(s, k) where k = ceil(mod_bits / 8), the modulus's byte length.
+  let sig_len = (mod_bits + 7) / 8
+  let sig_bytes = bignum_to_bytes(sig_limbs, nlimbs, sig_len)
+  return sig_bytes
+}
+
+# ===========================================================================
+# Smoke-test main: exercised directly by `lumen run`. Small toy key (NOT cryptographically
+# meaningful, purely to prove the pipeline compiles and runs end to end without an external
+# oracle). The real verification harness (rsa_pss_verify.py) replaces this main with a
+# generated one per real-RSA-key test case, exactly like bignum_kernel.lm's pattern.
+# ===========================================================================
+
+fn main(console: Console) -> Unit {
+  let nlimbs = 24
+  let mod_bits = 768
+
+  # Toy "message" = the 3 bytes "abc".
+  let msg = iarray(3)
+  iaset(msg, 0, 97)
+  iaset(msg, 1, 98)
+  iaset(msg, 2, 99)
+
+  # Toy fixed salt: 32 bytes, value = index (0..31). Not a real key's salt - just proves the
+  # plumbing produces a stable, non-crashing signature for a fixed input.
+  let salt = iarray(32)
+  var si = 0
+  while si < 32 {
+    iaset(salt, si, si)
+    si = si + 1
+  }
+
+  # Toy modulus/exponent: NOT a real RSA key (no primality/coprimality guarantees), just
+  # nonzero 512-bit-shaped limb arrays so bn_modpow has well-defined (if cryptographically
+  # meaningless) inputs to run on.
+  let n_arr = iarray(nlimbs)
+  let e_arr = iarray(nlimbs)
+  let d_arr = iarray(nlimbs)
+  var i = 0
+  while i < nlimbs {
+    iaset(n_arr, i, 0)
+    iaset(e_arr, i, 0)
+    iaset(d_arr, i, 0)
+    i = i + 1
+  }
+  iaset(n_arr, nlimbs - 1, 2147483648)
+  iaset(n_arr, 0, 4294967291)
+  iaset(e_arr, 0, 65537)
+  iaset(d_arr, 0, 65537)
+
+  let sig = rsa_pss_sign(msg, 3, salt, 32, n_arr, e_arr, d_arr, nlimbs, mod_bits)
+  console.print(bytes_to_hex(sig, ialen(sig)))
+  console.print("\n")
+  return ()
+}

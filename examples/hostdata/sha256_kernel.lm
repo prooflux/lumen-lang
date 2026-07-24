@@ -1,0 +1,319 @@
+# SHA-256 (FIPS 180-4) implemented from scratch in pure Lumen.
+#
+# Input representation: the message is a Lumen Int array (`Array`, built with `iarray`/
+# `iaget`/`iaset`/`ialen`) of byte values in 0..255, plus its length in bytes. There is no
+# byte-level Text access in this Lumen subset (see LANGUAGE.md "Not in this subset"), so the
+# caller is responsible for turning its real input into an Int-array-of-bytes before calling
+# `sha256_hex`.
+#
+# Output representation: a 64-character lowercase hex `Text` (the same format
+# `hashlib.sha256(...).hexdigest()` returns in Python), NOT an Int array of the 8 raw 32-bit
+# words. Chosen because Text is what the verifier's oracle (`hashlib`) naturally produces, so
+# the two can be compared with plain string equality; an Int-array-of-8-words return would
+# still be correct but would push the hex formatting into the caller/oracle instead.
+#
+# 64-bit-Int-as-32-bit-word discipline: Lumen's `Int` is 64-bit twos-complement (see the build
+# brief: Int add/mul/shift never trap, and `shr` is `i64.shr_u`, logical/unsigned). Every value
+# that represents a 32-bit SHA word is kept in the low 32 bits and masked back to
+# `band(x, 4294967295)` (0xFFFFFFFF) after any operation that could push bits above bit 31:
+# left shifts (`shl`) and additions (`+`). `band`/`bor`/`bxor` never need an extra mask when
+# every *input* is already a well-formed 32-bit-masked word (proof: AND/OR/XOR of two values
+# whose bits 32..63 are both 0 has bits 32..63 equal to 0; `bnot(x)` is the one exception,
+# since it flips the high 32 bits to all-ones, but every call site below only ever feeds
+# `bnot(x)` straight into a `band(bnot(x), z)` where `z` already has zero high bits, so the
+# AND kills those high ones before they can leak into the surrounding XOR).
+
+fn mask32(x: Int) -> Int {
+  return band(x, 4294967295)
+}
+
+fn add32(a: Int, b: Int) -> Int {
+  return mask32(a + b)
+}
+
+fn add32_4(a: Int, b: Int, c: Int, d: Int) -> Int {
+  return add32(add32(add32(a, b), c), d)
+}
+
+# Right-rotate a 32-bit word by n bits (0 < n < 32). x is assumed already 32-bit-masked, so
+# shr(x, n) needs no extra mask; the shl(x, 32-n) branch is masked because it can spill above
+# bit 31.
+fn rotr(x: Int, n: Int) -> Int {
+  return bor(shr(x, n), mask32(shl(x, 32 - n)))
+}
+
+fn ch(x: Int, y: Int, z: Int) -> Int {
+  return bxor(band(x, y), band(bnot(x), z))
+}
+
+fn maj(x: Int, y: Int, z: Int) -> Int {
+  return bxor(bxor(band(x, y), band(x, z)), band(y, z))
+}
+
+fn big_sigma0(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 2), rotr(x, 13)), rotr(x, 22))
+}
+
+fn big_sigma1(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 6), rotr(x, 11)), rotr(x, 25))
+}
+
+fn small_sigma0(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 7), rotr(x, 18)), shr(x, 3))
+}
+
+fn small_sigma1(x: Int) -> Int {
+  return bxor(bxor(rotr(x, 17), rotr(x, 19)), shr(x, 10))
+}
+
+# The 64 round constants K[0..63]: the fractional part of the cube root of the first 64 primes,
+# times 2^32, floored (FIPS 180-4 sec. 4.2.2). Computed once (see the build brief for the exact
+# derivation used to generate these decimal literals from the primes; there is no hex-literal
+# syntax in this Lumen subset, so they are written out in decimal).
+fn make_k() -> Array {
+  let k = iarray(64)
+  iaset(k, 0, 1116352408)
+  iaset(k, 1, 1899447441)
+  iaset(k, 2, 3049323471)
+  iaset(k, 3, 3921009573)
+  iaset(k, 4, 961987163)
+  iaset(k, 5, 1508970993)
+  iaset(k, 6, 2453635748)
+  iaset(k, 7, 2870763221)
+  iaset(k, 8, 3624381080)
+  iaset(k, 9, 310598401)
+  iaset(k, 10, 607225278)
+  iaset(k, 11, 1426881987)
+  iaset(k, 12, 1925078388)
+  iaset(k, 13, 2162078206)
+  iaset(k, 14, 2614888103)
+  iaset(k, 15, 3248222580)
+  iaset(k, 16, 3835390401)
+  iaset(k, 17, 4022224774)
+  iaset(k, 18, 264347078)
+  iaset(k, 19, 604807628)
+  iaset(k, 20, 770255983)
+  iaset(k, 21, 1249150122)
+  iaset(k, 22, 1555081692)
+  iaset(k, 23, 1996064986)
+  iaset(k, 24, 2554220882)
+  iaset(k, 25, 2821834349)
+  iaset(k, 26, 2952996808)
+  iaset(k, 27, 3210313671)
+  iaset(k, 28, 3336571891)
+  iaset(k, 29, 3584528711)
+  iaset(k, 30, 113926993)
+  iaset(k, 31, 338241895)
+  iaset(k, 32, 666307205)
+  iaset(k, 33, 773529912)
+  iaset(k, 34, 1294757372)
+  iaset(k, 35, 1396182291)
+  iaset(k, 36, 1695183700)
+  iaset(k, 37, 1986661051)
+  iaset(k, 38, 2177026350)
+  iaset(k, 39, 2456956037)
+  iaset(k, 40, 2730485921)
+  iaset(k, 41, 2820302411)
+  iaset(k, 42, 3259730800)
+  iaset(k, 43, 3345764771)
+  iaset(k, 44, 3516065817)
+  iaset(k, 45, 3600352804)
+  iaset(k, 46, 4094571909)
+  iaset(k, 47, 275423344)
+  iaset(k, 48, 430227734)
+  iaset(k, 49, 506948616)
+  iaset(k, 50, 659060556)
+  iaset(k, 51, 883997877)
+  iaset(k, 52, 958139571)
+  iaset(k, 53, 1322822218)
+  iaset(k, 54, 1537002063)
+  iaset(k, 55, 1747873779)
+  iaset(k, 56, 1955562222)
+  iaset(k, 57, 2024104815)
+  iaset(k, 58, 2227730452)
+  iaset(k, 59, 2361852424)
+  iaset(k, 60, 2428436474)
+  iaset(k, 61, 2756734187)
+  iaset(k, 62, 3204031479)
+  iaset(k, 63, 3329325298)
+  return k
+}
+
+# The 8 initial hash words H0..H7 (fractional part of the square root of the first 8 primes,
+# FIPS 180-4 sec. 5.3.3), as a fresh mutable Int array.
+fn make_h() -> Array {
+  let h = iarray(8)
+  iaset(h, 0, 1779033703)
+  iaset(h, 1, 3144134277)
+  iaset(h, 2, 1013904242)
+  iaset(h, 3, 2773480762)
+  iaset(h, 4, 1359893119)
+  iaset(h, 5, 2600822924)
+  iaset(h, 6, 528734635)
+  iaset(h, 7, 1541459225)
+  return h
+}
+
+# Process one 64-byte block of `padded` starting at `offset`, folding it into `h` (the 8
+# running hash words) in place. `k` is the 64 round constants (built once by the caller and
+# reused across every block, not rebuilt per block).
+fn process_block(padded: Array, offset: Int, h: Array, k: Array) -> Unit {
+  let w = iarray(64)
+
+  # First 16 words: big-endian 4-byte groups straight from the block.
+  var t = 0
+  while t < 16 {
+    let base = offset + t * 4
+    let b0 = iaget(padded, base)
+    let b1 = iaget(padded, base + 1)
+    let b2 = iaget(padded, base + 2)
+    let b3 = iaget(padded, base + 3)
+    let word = bor(bor(mask32(shl(b0, 24)), mask32(shl(b1, 16))), bor(mask32(shl(b2, 8)), b3))
+    iaset(w, t, word)
+    t = t + 1
+  }
+
+  # Message schedule extension, W[16..63].
+  t = 16
+  while t < 64 {
+    let s1 = small_sigma1(iaget(w, t - 2))
+    let s0 = small_sigma0(iaget(w, t - 15))
+    let extended = add32_4(s1, iaget(w, t - 7), s0, iaget(w, t - 16))
+    iaset(w, t, extended)
+    t = t + 1
+  }
+
+  var a = iaget(h, 0)
+  var b = iaget(h, 1)
+  var c = iaget(h, 2)
+  var d = iaget(h, 3)
+  var e = iaget(h, 4)
+  var f = iaget(h, 5)
+  var g = iaget(h, 6)
+  var hh = iaget(h, 7)
+
+  t = 0
+  while t < 64 {
+    let t1 = add32_4(hh, big_sigma1(e), ch(e, f, g), iaget(k, t))
+    let t1_full = add32(t1, iaget(w, t))
+    let t2 = add32(big_sigma0(a), maj(a, b, c))
+    hh = g
+    g = f
+    f = e
+    e = add32(d, t1_full)
+    d = c
+    c = b
+    b = a
+    a = add32(t1_full, t2)
+    t = t + 1
+  }
+
+  iaset(h, 0, add32(iaget(h, 0), a))
+  iaset(h, 1, add32(iaget(h, 1), b))
+  iaset(h, 2, add32(iaget(h, 2), c))
+  iaset(h, 3, add32(iaget(h, 3), d))
+  iaset(h, 4, add32(iaget(h, 4), e))
+  iaset(h, 5, add32(iaget(h, 5), f))
+  iaset(h, 6, add32(iaget(h, 6), g))
+  iaset(h, 7, add32(iaget(h, 7), hh))
+  return ()
+}
+
+fn hex_digit(n: Int) -> Text {
+  if n == 0 { return "0" }
+  if n == 1 { return "1" }
+  if n == 2 { return "2" }
+  if n == 3 { return "3" }
+  if n == 4 { return "4" }
+  if n == 5 { return "5" }
+  if n == 6 { return "6" }
+  if n == 7 { return "7" }
+  if n == 8 { return "8" }
+  if n == 9 { return "9" }
+  if n == 10 { return "a" }
+  if n == 11 { return "b" }
+  if n == 12 { return "c" }
+  if n == 13 { return "d" }
+  if n == 14 { return "e" }
+  return "f"
+}
+
+# 8 lowercase hex characters for one 32-bit word, most-significant nibble first.
+fn word_to_hex(word: Int) -> Text {
+  var out = ""
+  var shift = 28
+  while shift >= 0 {
+    let nibble = band(shr(word, shift), 15)
+    out = text_concat(out, hex_digit(nibble))
+    shift = shift - 4
+  }
+  return out
+}
+
+# Pad `msg` (an Int array of `msg_len` byte values, 0..255) per FIPS 180-4 sec. 5.1.1:
+# append 0x80, zero bytes, then the 64-bit big-endian bit length, out to a multiple of 64
+# bytes. Fresh arrays are zero-initialized (verified empirically against the seed
+# interpreter), so only the non-zero bytes (the original message, the 0x80 marker, and the
+# 8 length bytes) are written explicitly; the zero-padding bytes are left at their default.
+fn pad_message(msg: Array, msg_len: Int) -> Array {
+  let rem = (msg_len + 1) % 64
+  var zero_pad = 0
+  if rem <= 56 {
+    zero_pad = 56 - rem
+  } else {
+    zero_pad = 56 + (64 - rem)
+  }
+  let padded_len = msg_len + 1 + zero_pad + 8
+  let padded = iarray(padded_len)
+
+  var i = 0
+  while i < msg_len {
+    iaset(padded, i, iaget(msg, i))
+    i = i + 1
+  }
+  iaset(padded, msg_len, 128)
+
+  let bit_len = msg_len * 8
+  var j = 0
+  while j < 8 {
+    let shift_amount = 56 - j * 8
+    iaset(padded, padded_len - 8 + j, band(shr(bit_len, shift_amount), 255))
+    j = j + 1
+  }
+  return padded
+}
+
+# Hash `msg` (an Int array of `msg_len` byte values, 0..255) and return the 64-character
+# lowercase hex digest.
+fn sha256_hex(msg: Array, msg_len: Int) -> Text {
+  let padded = pad_message(msg, msg_len)
+  let padded_len = ialen(padded)
+  let k = make_k()
+  let h = make_h()
+
+  var offset = 0
+  while offset < padded_len {
+    process_block(padded, offset, h, k)
+    offset = offset + 64
+  }
+
+  var digest = ""
+  var i = 0
+  while i < 8 {
+    digest = text_concat(digest, word_to_hex(iaget(h, i)))
+    i = i + 1
+  }
+  return digest
+}
+
+# Default smoke test: FIPS 180-4 example vector 1, "abc".
+# Expected: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+fn main(console: Console) -> Unit {
+  let msg = iarray(3)
+  iaset(msg, 0, 97)
+  iaset(msg, 1, 98)
+  iaset(msg, 2, 99)
+  console.print(sha256_hex(msg, 3))
+  console.print("\n")
+  return ()
+}

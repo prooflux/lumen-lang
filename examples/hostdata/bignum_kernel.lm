@@ -1,0 +1,275 @@
+# bignum_kernel.lm - arbitrary-precision unsigned integer arithmetic in pure Lumen.
+#
+# Representation: a big unsigned integer is an Int array of 32-bit limbs, little-endian
+# (limb 0 = least significant), each limb held 0..4294967295 inside a 64-bit Lumen Int.
+# Multiply-accumulate (a[i]*b[j] + out[i+j] + carry) can reach up to 2^64-1, which overflows
+# a SIGNED 64-bit comparison/interpretation - but Lumen's Int +/- /* opcodes are raw
+# i64.add/i64.mul (wrap mod 2^64, never trap), and band/bor/bxor/shr are pure bit operations
+# on the two's-complement pattern regardless of the operand's signed "value". So as long as we
+# only ever read a wide intermediate back out via band(x, 4294967295) (low 32 bits) and
+# shr(x, 32) (logical/unsigned, confirmed in LANGUAGE.md), never via a signed comparison, the
+# full 0..4294967295 limb range is safe. This was verified by hand against the documented
+# opcode semantics before writing a single test, not assumed.
+#
+# Scope for this proof turn (see the build brief's notes for the full discussion): NLIMBS = 8
+# limbs = 256 bits for stored operands/moduli. The algorithms themselves (add/sub/cmp/mul/mod/
+# modpow) take the limb count n as a parameter and are completely size-independent - the exact
+# same code runs correctly at n=64 (2048-bit RSA) or n=4; only the wall-clock cost changes
+# (mul is O(n^2), mod is a bit-serial O(n * n*32) binary long division, modpow is
+# O(n*32) squarings+multiplies+reductions). 8 limbs was chosen to keep the interpreted proof
+# run fast while still exercising real multi-limb carry/borrow/reduction logic, not to claim
+# RSA-2048 is out of reach - it is the same code, just more limbs and more wall-clock time.
+
+# ---------------------------------------------------------------------------
+# Basic limb utilities
+# ---------------------------------------------------------------------------
+
+fn bn_zero(a: Int, n: Int) -> Unit {
+  var i: Int = 0
+  while i < n {
+    iaset(a, i, 0)
+    i = i + 1
+  }
+  return ()
+}
+
+fn bn_copy(src: Int, dst: Int, n: Int) -> Unit {
+  var i: Int = 0
+  while i < n {
+    iaset(dst, i, iaget(src, i))
+    i = i + 1
+  }
+  return ()
+}
+
+# 3-way compare of two n-limb numbers. Returns 1 if a>b, -1 if a<b, 0 if equal.
+fn bn_cmp(a: Int, b: Int, n: Int) -> Int {
+  var i: Int = n - 1
+  var result: Int = 0
+  var deciding: Int = 1
+  while i >= 0 {
+    if deciding == 1 {
+      let av = iaget(a, i)
+      let bv = iaget(b, i)
+      if av > bv {
+        result = 1
+        deciding = 0
+      } else {
+        if av < bv {
+          result = -1
+          deciding = 0
+        }
+      }
+    }
+    i = i - 1
+  }
+  return result
+}
+
+# ---------------------------------------------------------------------------
+# Add / subtract (fixed-width n limbs, ripple carry/borrow)
+# ---------------------------------------------------------------------------
+
+# out = a + b (both n limbs). Returns the carry out of the top limb (0 or 1); a genuine
+# 256-bit-wide sum that needs a 257th bit is truncated in `out` and reported via this return
+# value instead of silently dropped - callers that need the full width must check it.
+fn bn_add(a: Int, b: Int, out: Int, n: Int) -> Int {
+  var carry: Int = 0
+  var i: Int = 0
+  while i < n {
+    let s = iaget(a, i) + iaget(b, i) + carry
+    iaset(out, i, band(s, 4294967295))
+    carry = shr(s, 32)
+    i = i + 1
+  }
+  return carry
+}
+
+# out = a - b (both n limbs). Caller guarantees a >= b (per the brief's scoping: this kernel
+# does not need signed bignums). Returns the borrow out of the top limb - should always be 0
+# under that precondition; a nonzero return is evidence the precondition was violated.
+fn bn_sub(a: Int, b: Int, out: Int, n: Int) -> Int {
+  var borrow: Int = 0
+  var i: Int = 0
+  while i < n {
+    var d: Int = iaget(a, i) - iaget(b, i) - borrow
+    if d < 0 {
+      d = d + 4294967296
+      borrow = 1
+    } else {
+      borrow = 0
+    }
+    iaset(out, i, d)
+    i = i + 1
+  }
+  return borrow
+}
+
+# ---------------------------------------------------------------------------
+# Bit-level helpers (used by the binary long-division mod, below)
+# ---------------------------------------------------------------------------
+
+# Bit i (0 = least significant) of an n-limb number.
+fn bn_get_bit(a: Int, n: Int, i: Int) -> Int {
+  let limb_idx = i / 32
+  let bit_idx = i % 32
+  return band(shr(iaget(a, limb_idx), bit_idx), 1)
+}
+
+# Shift an n-limb number left by 1 bit, in place. Returns the bit shifted out past the top
+# limb (the (n*32)-th bit that does not fit back into the n limbs).
+fn bn_shl1(a: Int, n: Int) -> Int {
+  var carry_in: Int = 0
+  var i: Int = 0
+  while i < n {
+    let limb = iaget(a, i)
+    let bit_out = band(shr(limb, 31), 1)
+    let new_limb = bor(band(shl(limb, 1), 4294967295), carry_in)
+    iaset(a, i, new_limb)
+    carry_in = bit_out
+    i = i + 1
+  }
+  return carry_in
+}
+
+# ---------------------------------------------------------------------------
+# Multiply: schoolbook, limb by limb, with explicit ripple-carry propagation past each row
+# ---------------------------------------------------------------------------
+
+# out = a * b. a and b are n limbs each; out must have 2n limbs (never overflows: the true
+# product of two n-limb numbers always fits in exactly 2n limbs).
+fn bn_mul(a: Int, b: Int, out: Int, n: Int) -> Unit {
+  bn_zero(out, 2 * n)
+  var i: Int = 0
+  while i < n {
+    var carry: Int = 0
+    var j: Int = 0
+    while j < n {
+      let prod = iaget(a, i) * iaget(b, j)
+      let s = prod + iaget(out, i + j) + carry
+      iaset(out, i + j, band(s, 4294967295))
+      carry = shr(s, 32)
+      j = j + 1
+    }
+    # Ripple the row's final carry forward. This is its own small carry-propagation loop
+    # (not a single add) because out[i+n] may already hold a nonzero value written by an
+    # earlier row, and adding the two can itself overflow one limb.
+    var k: Int = i + n
+    var c: Int = carry
+    while c > 0 {
+      let s2 = iaget(out, k) + c
+      iaset(out, k, band(s2, 4294967295))
+      c = shr(s2, 32)
+      k = k + 1
+    }
+    i = i + 1
+  }
+  return ()
+}
+
+# ---------------------------------------------------------------------------
+# Mod: bit-serial binary long division. Numerator `a` has `alen` limbs (may be wider than
+# the modulus, e.g. 2n limbs from bn_mul), modulus `m` and remainder `r` both have n limbs.
+# r must be pre-allocated by the caller (n limbs); its input contents are ignored.
+# ---------------------------------------------------------------------------
+
+fn bn_mod(a: Int, alen: Int, m: Int, n: Int, r: Int) -> Unit {
+  bn_zero(r, n)
+  var i: Int = alen * 32 - 1
+  while i >= 0 {
+    let carry_bit = bn_shl1(r, n)
+    let a_bit = bn_get_bit(a, alen, i)
+    iaset(r, 0, bor(iaget(r, 0), a_bit))
+    if carry_bit == 1 {
+      bn_sub(r, m, r, n)
+    } else {
+      if bn_cmp(r, m, n) >= 0 {
+        bn_sub(r, m, r, n)
+      }
+    }
+    i = i - 1
+  }
+  return ()
+}
+
+# ---------------------------------------------------------------------------
+# Modpow: square-and-multiply, MSB to LSB, reducing mod m after every squaring and every
+# conditional multiply. base, exp, m and result are all n limbs; result is pre-allocated by
+# the caller and is overwritten with base^exp mod m. Handles base >= m by reducing it first.
+# ---------------------------------------------------------------------------
+
+fn bn_modpow(base: Int, exp: Int, m: Int, n: Int, result: Int) -> Unit {
+  let base_cur = iarray(n)
+  bn_mod(base, n, m, n, base_cur)
+
+  bn_zero(result, n)
+  iaset(result, 0, 1)
+
+  let sq = iarray(2 * n)
+  let sq_mod = iarray(n)
+  let mul_buf = iarray(2 * n)
+  let mul_mod = iarray(n)
+
+  var i: Int = n * 32 - 1
+  while i >= 0 {
+    bn_mul(result, result, sq, n)
+    bn_mod(sq, 2 * n, m, n, sq_mod)
+    bn_copy(sq_mod, result, n)
+
+    if bn_get_bit(exp, n, i) == 1 {
+      bn_mul(result, base_cur, mul_buf, n)
+      bn_mod(mul_buf, 2 * n, m, n, mul_mod)
+      bn_copy(mul_mod, result, n)
+    }
+    i = i - 1
+  }
+  return ()
+}
+
+# ---------------------------------------------------------------------------
+# Output: print an n-limb number as n decimal lines, little-endian (limb 0 first). Confirmed
+# empirically that console.print_int already appends its own trailing newline (each call is
+# one line), so the caller-side parser just reads n consecutive lines per number - no manual
+# separators needed.
+# ---------------------------------------------------------------------------
+
+fn bn_print(console: Console, a: Int, n: Int) -> Unit {
+  var i: Int = 0
+  while i < n {
+    console.print_int(iaget(a, i))
+    i = i + 1
+  }
+  return ()
+}
+
+# ---------------------------------------------------------------------------
+# Smoke-test main: exercised directly by `lumen run`. The real verification harness
+# (bignum_verify.py) replaces this main with a generated one per test case.
+# ---------------------------------------------------------------------------
+
+fn main(console: Console) -> Unit {
+  let n = 8
+  let a = iarray(n)
+  let b = iarray(n)
+  let out = iarray(n)
+
+  iaset(a, 0, 4294967295)
+  iaset(a, 1, 0)
+  var i: Int = 2
+  while i < n {
+    iaset(a, i, 0)
+    i = i + 1
+  }
+
+  iaset(b, 0, 1)
+  i = 1
+  while i < n {
+    iaset(b, i, 0)
+    i = i + 1
+  }
+
+  let carry = bn_add(a, b, out, n)
+  bn_print(console, out, n)
+  console.print_int(carry)
+  return ()
+}

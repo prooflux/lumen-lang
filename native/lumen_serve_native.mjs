@@ -20,6 +20,7 @@ import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import { buildAndRunFn } from './pipeline.mjs';
@@ -610,13 +611,60 @@ function proxyRequest(origin, reqBytes) {
   });
 }
 
+// Cache the COMPILED native server binary on disk, keyed by everything that determines its
+// bytes (routes, proxy mode, handler source, cache-format version). Every deploy of a static
+// Lumen-edge site invokes runServer() TWICE against the identical cfgPath with identical
+// inputs: once during the Docker build's warmup RUN step, once again at every runtime cold
+// start (the CMD). Before this cache existed, both invocations independently ran the full
+// emit_fn.lm -> C -> clang -O2 pipeline - meaning EVERY Cloud Run cold start paid a fresh
+// clang compile, and the transient memory that compile needs (measured ~345 MiB against a
+// 256 MiB limit on 2026-07-24, root-caused via direct instrumentation, not guessed: see
+// docs root-cause note in the PR that added this) OOM-killed the container before it could
+// even bind its listening port. The warmup step's own comment already claimed cold starts
+// "skip the clang compile entirely" - that was aspirational, not true, until this cache made
+// it true: a build-time compile now writes the binary to a fixed path inside the image
+// (NOT /tmp - a real path under the config's own directory, so it survives into the image
+// layer), and every later invocation against the same inputs reuses it byte-for-byte instead
+// of recompiling. This changes WHEN the binary is produced, never WHAT gets served.
+function nativeCacheKey(routes, proxyMode, handlersSrc) {
+  const CACHE_FORMAT_VERSION = 1; // bump to force a rebuild if genServeSrc/patchMainToServeLoop change
+  const h = crypto.createHash('sha256');
+  h.update(String(CACHE_FORMAT_VERSION));
+  h.update(proxyMode ? 'proxy' : 'noproxy');
+  h.update(JSON.stringify(routes));
+  if (handlersSrc) h.update(handlersSrc);
+  return h.digest('hex').slice(0, 32);
+}
+
+export async function buildNativeServeCached(cfgPath, routes, proxyMode, handlersSrc) {
+  const cacheDir = path.join(path.dirname(cfgPath), '.lumen-native-cache');
+  const key = nativeCacheKey(routes, proxyMode, handlersSrc);
+  const binPath = path.join(cacheDir, `serve-${key}.bin`);
+  if (fs.existsSync(binPath)) {
+    try {
+      fs.accessSync(binPath, fs.constants.X_OK);
+      const { bodyBlock } = genServeSrc(routes, proxyMode); // cheap (pure JS, no compile) - needed either way
+      console.log(`native binary cache HIT (${path.basename(binPath)}) - skipping clang`);
+      return { bin: binPath, bodyBlock };
+    } catch { /* file missing/not executable/corrupt - fall through and rebuild */ }
+  }
+  console.log('native binary cache MISS - compiling (expected once, at image build time)');
+  const built = handlersSrc
+    ? await buildNativeServeHandlers(routes, proxyMode, handlersSrc)
+    : await buildNativeServe(routes, proxyMode);
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.copyFileSync(built.bin, binPath);
+  fs.chmodSync(binPath, 0o755);
+  return { bin: binPath, bodyBlock: built.bodyBlock };
+}
+
 async function runServer(cfgPath) {
   const cfg = loadConfig(cfgPath);
   const origin = cfg.proxyPass ? new URL(cfg.proxyPass) : null;
   const port = process.env.PORT ? Number(process.env.PORT) : cfg.port;   // Cloud Run injects PORT
-  const { bin, bodyBlock } = cfg.handlersSrc
-    ? await buildNativeServeHandlers(cfg.routes, !!origin || cfg.hostFiles.size > 0, cfg.handlersSrc)
-    : await buildNativeServe(cfg.routes, !!origin || cfg.hostFiles.size > 0);
+  const { bin, bodyBlock } = await buildNativeServeCached(
+    cfgPath, cfg.routes, !!origin || cfg.hostFiles.size > 0, cfg.handlersSrc,
+  );
   // proxy-mode flag doubles as yield-unmatched-to-host: with host-served files declared, the
   // kernel must hand unmatched requests back (empty response) so the host can serve the file
   // or produce the 404 itself; without either, the kernel's own in-kernel 404 stays in force.

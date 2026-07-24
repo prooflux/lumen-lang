@@ -429,5 +429,32 @@ deepEq('lumenc.lm compiles clean', codesOf(fs.readFileSync('lumenc.lm', 'utf8'))
   eq('token capacity new guard (KNOWN GAP: lumenc.lm has no ntok>=16000 check; wasm seed had E0003 here - see HIGHER PRIORITY note above)', codesOf(tokSrcOver)[0], undefined);
 }
 
+// ---- fuel exhaustion is REPORTED, not silent (root-caused 2026-07-23: a real 2048-bit-class
+// bignum modpow silently exhausted the default 4e9-step cap - exit 0, zero output, indistinguishable
+// from a genuinely empty successful run. compiler_core.mjs's run() now reports fuelExhausted+steps
+// on the result whenever the interpreter's own step count reaches the configured cap.) ----
+{
+  // A trivial counting loop with far more iterations than a tiny fuel cap allows - fast and
+  // deterministic (no need to wait for anything close to the real 4e9 default to test this).
+  const loopSrc = 'fn main(c: Console) -> Unit {\n  var i: Int = 0\n  while i < 1000000 {\n    i = i + 1\n  }\n  c.print_int(i)\n}\n';
+  const rTiny = L.run(loopSrc, 50n);
+  eq('fuel exhaustion: reported (tiny cap)', rTiny.fuelExhausted, true);
+  // fuel increments THEN checks (fuel++; if (fuel > fuelCap) break;), so the loop halts one
+  // step past the configured cap, not exactly at it - confirmed empirically against the
+  // real 4e9 default (measured steps=4000000001) before writing this assertion.
+  eq('fuel exhaustion: steps == cap + 1 (increment-then-check semantics)', rTiny.steps, '51');
+  eq('fuel exhaustion: stdout is partial (empty, loop never reached print)', rTiny.stdout, '');
+
+  const rPlenty = L.run(loopSrc, 100000000n);
+  eq('fuel NOT exhausted with a generous cap', rPlenty.fuelExhausted, false);
+  eq('fuel NOT exhausted: program completes normally', rPlenty.stdout, '1000000\n');
+
+  // Default fuel (no second arg) is unaffected - existing callers see no behavior change,
+  // only an added (and previously entirely absent) fuelExhausted:false field.
+  const rDefault = L.run('fn main(c: Console) -> Unit {\n  c.print_int(42)\n}\n');
+  eq('default fuel: unaffected, program completes', rDefault.stdout, '42\n');
+  eq('default fuel: fuelExhausted is false on a trivial program', rDefault.fuelExhausted, false);
+}
+
 console.log(`\n${pass}/${total} basics checks passed.`);
 process.exit(pass === total ? 0 : 1);

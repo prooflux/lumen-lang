@@ -97,19 +97,25 @@ async function checkViaDaemon(src) {
   cacheWrite('check', src, result);
   return result;
 }
-async function runViaDaemon(src) {
-  const cached = cacheRead('run', src);
-  if (cached) return cached;
+async function runViaDaemon(src, fuel) {
+  // fuel (string) is only honored on an uncached, non-default-fuel call - same reasoning as
+  // the CLI's --fuel=N: two different fuel limits over the same source are different runs,
+  // so a custom fuel bypasses the cache entirely rather than keying it (kept simple: fuel
+  // overrides are the rare, deliberate "let this heavy program finish" case, not a hot path).
+  if (fuel === undefined) {
+    const cached = cacheRead('run', src);
+    if (cached) return cached;
+  }
   let result;
   try {
-    const [r] = await daemonRPC([{ id: 1, op: 'run', src }]);
+    const [r] = await daemonRPC([{ id: 1, op: 'run', src, ...(fuel !== undefined ? { fuel } : {}) }]);
     if (!r || r.error) throw new Error((r && r.error) || 'lumend: no response');
-    result = { ok: r.ok, stdout: r.stdout, diagnostics: r.diagnostics };
+    result = { ok: r.ok, stdout: r.stdout, diagnostics: r.diagnostics, fuelExhausted: r.fuelExhausted, steps: r.steps, fuelMax: r.fuelMax };
   } catch {
-    const r = lumen.run(src);
-    result = { ok: r.ok, stdout: r.stdout, diagnostics: buildDiagnostics(r.rawDiags, src) };
+    const r = fuel !== undefined ? lumen.run(src, BigInt(fuel)) : lumen.run(src);
+    result = { ok: r.ok, stdout: r.stdout, diagnostics: buildDiagnostics(r.rawDiags, src), fuelExhausted: r.fuelExhausted, steps: r.steps, fuelMax: r.fuelMax };
   }
-  cacheWrite('run', src, result);
+  if (fuel === undefined) cacheWrite('run', src, result);
   return result;
 }
 async function irViaDaemon(src) {
@@ -380,8 +386,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { source: { type: 'string', description: 'Lumen (.lm) source' } }, required: ['source'] } },
   { name: 'lumen_fix', description: 'Apply the compiler\'s confident fixes to Lumen source (delete an unexpected token, close an unterminated block) and return the repaired source plus any remaining diagnostics.',
     inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
-  { name: 'lumen_run', description: 'Compile and run Lumen source; return its stdout, or diagnostics if it does not compile.',
-    inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
+  { name: 'lumen_run', description: 'Compile and run Lumen source; return its stdout, or diagnostics if it does not compile. The interpreter has a 4-billion-step safety cap (default); if a program needs more (e.g. large bignum modpow), pass fuel as a decimal-string step count to raise it. If the result has fuelExhausted:true, the program did NOT finish - any stdout is partial, not a genuine empty/short result - retry with a higher fuel.',
+    inputSchema: { type: 'object', properties: { source: { type: 'string' }, fuel: { type: 'string', description: 'optional: raise the interpreter step cap above the 4e9 default, as a decimal string (e.g. "20000000000")' } }, required: ['source'] } },
   { name: 'lumen_ir', description: 'Compile Lumen source and return the IR disassembly (one instruction per line).',
     inputSchema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] } },
   { name: 'lumen_explain', description: 'Explain a Lumen diagnostic code (e.g. E0003).',
@@ -421,7 +427,7 @@ async function callTool(name, args) {
     const fc = lumen.compile(cur);
     return { source: cur, applied, diagnostics: buildDiagnostics(fc.rawDiags, cur) };
   }
-  if (name === 'lumen_run') return await runViaDaemon(src);
+  if (name === 'lumen_run') return await runViaDaemon(src, args && args.fuel);
   if (name === 'lumen_ir') return await irViaDaemon(src);
   if (name === 'lumen_explain') {
     const reg = explain((args && args.code) || ''); return reg ? { code: reg.id, msg: reg.msg, explain: reg.explain } : { error: 'unknown code' };

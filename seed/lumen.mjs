@@ -20,15 +20,20 @@ import { withCache, withCacheAsync } from './cache.mjs';
 import { checkAuto } from './native_check.mjs';
 
 function usage() {
-  console.error('usage: lumen <run|check|fix|ir|effects|explain|serve|mcp> [file.lm|CODE|socket] [--json] [--write]');
+  console.error('usage: lumen <run|check|fix|ir|effects|explain|serve|mcp> [file.lm|CODE|socket] [--json] [--write] [--fuel=N]');
   process.exit(2);
 }
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
-const flags = new Set(argv.filter(a => a.startsWith('--')));
+const flags = new Set(argv.filter(a => a.startsWith('--') && !a.includes('=')));
 const positionals = argv.slice(1).filter(a => !a.startsWith('--'));
 const arg = positionals[0];
+// --fuel=N (run only): raises the interpreter's step cap above the 4e9 default for
+// programs that legitimately need more (e.g. large bignum modpow) - see compiler_core.mjs's
+// run() doc comment for why this exists and why exhausting it is now reported, not silent.
+const fuelFlag = argv.find(a => a.startsWith('--fuel='));
+const fuelMax = fuelFlag ? BigInt(fuelFlag.slice('--fuel='.length)) : undefined;
 if (!cmd) usage();
 
 // `explain` needs no file and no compiler
@@ -130,11 +135,21 @@ if (cmd === 'serve' || cmd === 'mcp') {
   }
 
   // cmd === 'run'
-  const r = withCache('run', source, () => lumen.run(source));
+  // fuelMax bypasses the cache (cache key is source-only elsewhere; a custom fuel run is
+  // never cached, since two different fuel limits over the same source are different runs).
+  const r = fuelMax !== undefined
+    ? lumen.run(source, fuelMax)
+    : withCache('run', source, () => lumen.run(source));
   if (!r.ok) {
     for (const d of buildDiagnostics(r.rawDiags, source)) console.error(renderHuman(arg, d));
     console.error(`lumen: ${r.rawDiags.length} error(s); not run.`);
     process.exit(1);
   }
   process.stdout.write(r.stdout);
+  if (r.fuelExhausted) {
+    // Root-caused 2026-07-23: this used to be silent - exit 0, whatever partial stdout had
+    // been written (often none), indistinguishable from a genuinely successful quiet run.
+    console.error(`lumen: FUEL EXHAUSTED after ${r.steps} steps (limit ${r.fuelMax}) - the program did NOT finish; output above (if any) is partial. Pass --fuel=<N> to raise the limit.`);
+    process.exit(3);
+  }
 }

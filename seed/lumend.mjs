@@ -68,8 +68,17 @@ async function handle(req) {
     }
     case 'run': {
       const t = process.hrtime.bigint();
-      const r = lumen.run(req.src || '');
-      return { id, ok: r.ok, stdout: r.stdout, diagnostics: buildDiagnostics(r.rawDiags, req.src || ''), ms: ms(t) };
+      // req.fuel (string, since JSON has no BigInt) optionally raises the interpreter's
+      // step cap above the 4e9 default - see compiler_core.mjs's run() doc comment.
+      const fuelMax = req.fuel !== undefined ? BigInt(req.fuel) : undefined;
+      const r = fuelMax !== undefined ? lumen.run(req.src || '', fuelMax) : lumen.run(req.src || '');
+      return {
+        id, ok: r.ok, stdout: r.stdout, diagnostics: buildDiagnostics(r.rawDiags, req.src || ''), ms: ms(t),
+        // Root-caused 2026-07-23: a run that silently exhausted its fuel used to look
+        // identical to a successful run over the daemon RPC too - forward the fields so
+        // no caller (CLI fallback, MCP) loses this signal.
+        fuelExhausted: r.fuelExhausted, steps: r.steps, fuelMax: r.fuelMax,
+      };
     }
     case 'ir': {
       const r = lumen.ir(req.src || '');

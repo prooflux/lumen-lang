@@ -122,16 +122,31 @@ export async function createCompiler() {
   }
 
   // compile then run; returns stdout (empty if compile produced diagnostics)
-  function run(source) {
+  //
+  // fuelMax bounds interpreter dispatch steps (default 4e9) - the SAFETY mechanism that
+  // guarantees a runaway/infinite-loop program terminates rather than hanging forever
+  // (see native/ir_interpreter.mjs's pcRun comment). Root-caused 2026-07-23: hitting this
+  // cap was previously SILENT - the interpreter just stops mid-execution and returns
+  // whatever partial stdout had been written so far (often none, if the exhausting
+  // computation runs entirely before its first print), with no error and no distinguishing
+  // signal from a genuinely successful, intentionally-quiet run. A real 2048-bit-class
+  // bignum modpow needs more than 4e9 steps and was silently truncated to zero output,
+  // easily misread as "ran successfully, produced nothing" instead of "did not finish".
+  // Fixed by reporting `fuelExhausted` + `steps` on the result whenever the interpreter's
+  // own step count reaches the configured cap, so every caller (CLI, daemon, MCP) can
+  // surface it instead of treating it as ordinary success.
+  function run(source, fuelMax = 4000000000n) {
     const c = compile(source);
     if (!c.ok) return { ...c, stdout: '' };
     const interp = createInterpreter();
     interp.writeCode(c.words);
     interp.seedStrings(c.strings);
-    interp.set_fuel_max(4000000000n);
+    interp.set_fuel_max(fuelMax);
     try { interp.run(c.main); }
     catch (e) { return { ...c, stdout: interp.getOut(), crash: String(e.message || e) }; }
-    return { ...c, stdout: interp.getOut() };
+    const steps = interp.get_last_steps();
+    const fuelExhausted = steps >= fuelMax;
+    return { ...c, stdout: interp.getOut(), fuelExhausted, steps: steps.toString(), fuelMax: fuelMax.toString() };
   }
 
   // IR disassembly text (one instruction per line) - reads straight off compile()'s own `words`
